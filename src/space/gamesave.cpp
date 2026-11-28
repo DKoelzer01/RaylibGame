@@ -53,6 +53,7 @@ static int savedCols = 9;          // the loading save's inventory width (inv_co
 static bool playerLoaded = false;  // the load found the player's record
 static double recordFirstSeen = 0.0, recordPlayTime = 0.0, recordLoadedAt = 0.0;
 static std::function<void()> newPlayerHook;
+static std::function<void()> serverSpawnHook; // (#2157)
 static bool bodyFramed = false;  // the record being read gave a player_body line (its up and velocity are rebuilt)
 // Body-frame positions read during a world load (#901): the records are read in the save's extras, before the load puts the
 // bodies back in their saved rotation, so the conversion to world space waits for loadDoneHook. Outside a load (a record
@@ -377,6 +378,7 @@ std::vector<PlayerRecordMeta> PlayerRecord_List() {
 bool GameSave_PlayerLoaded() { return playerLoaded; }
 double GameSave_PlayTime() { return recordPlayTime + std::max(0.0, GetTime() - recordLoadedAt); }
 void GameSave_SetNewPlayerHook(std::function<void()> hook) { newPlayerHook = std::move(hook); }
+void GameSave_SetServerSpawnHook(std::function<void()> hook) { serverSpawnHook = std::move(hook); }
 
 void GameSave_Register() {
     saveExtrasHook = [](FILE* f) {
@@ -421,6 +423,7 @@ void GameSave_Register() {
                 if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
             }
         pendingFrames.clear();
+        if (!LocalPlayer() && serverSpawnHook) serverSpawnHook(); // (#2157) no record placed it: else it stays at body-local zero
         Farm_LoadDone(); // (#1085) an old save's farmland parts become tilled ground, with their crops
         inWorldLoad = false;
     };

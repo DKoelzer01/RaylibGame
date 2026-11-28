@@ -291,6 +291,7 @@ void Farm_Draw3D(Scene& world) {
         if (!c) continue;
         const Vector3 base = body->toWorld(pos);
         if (Vector3Distance(base, world.camera.position) > 120.0f) continue;
+        if (!world.inView(base, 0.9f)) continue; // (#2140) a plant under 0.8 m tall, a quarter metre across
         // A frame on the ground: up from the body's centre, east and south across it (right-handed, so the cubes are not
         // turned inside out under backface culling).
         const Vector3 ul = Vector3Normalize(pos);

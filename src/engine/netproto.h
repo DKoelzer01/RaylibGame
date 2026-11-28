@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 60; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44-52 are the ladder branch's; 53: a creative flyer's pose in each input step (#1922); 54-56 are the ladder branch's; 57: TeamStore, the team's progression store to its members (#1886); 58 is #2047's (#1886); 59 is #2059's (#1735); 60: the ruin cache part type in NetPart, MachineAction 13 opens a cache (#2072)
+constexpr uint32_t kNetProtocol = 65; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44-52 are the ladder branch's; 53: a creative flyer's pose in each input step (#1922); 54-56 are the ladder branch's; 57: TeamStore, the team's progression store to its members (#1886); 58 (unused, was #2047's first number); 59 is #2059's (#1735); 60: the ruin cache part type in NetPart, MachineAction 13 opens a cache (#2072); 61-64 are open PRs'; 65: MapPin and ResearchQueue, a client's map pins and research queue changes for its team (#1886)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -70,6 +70,8 @@ enum class NetMsg : uint8_t {
                         // hurt, death) near the client, for its own flights and sounds
     TeamStore = 48,     // server -> client (#1886): the player's team's progression store (research, explored map, blueprint
                         // library) as TeamStore_Text, on join, on a team change and when it changes (47 is the ladder's SetGem)
+    MapPin = 49,        // client -> server (#1886): a pin placed on (or removed from) the map, for the player's team's shared pins
+    ResearchQueue = 50, // client -> server (#1886): a change to the team's research queue (add, remove, up), from the research tab
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -228,6 +230,13 @@ struct MsgTeamStore { // #1886: the team's TeamStore_Text
     uint32_t team = 0;
     std::string text;
 };
+struct MsgMapPin { // #1886: the team's pins come back in the store's "pins" section
+    static constexpr size_t kMaxName = 48; // bytes
+    bool add = true;                       // false: remove the team's pin of this name on this body
+    std::string body, name;
+    float dir[3] = { 0, 1, 0 };            // body-local unit direction (f32: a unit vector's int16 is ~2 m on a 60 km planet)
+};
+struct MsgResearchQueue { uint8_t op = 1; std::string node; }; // #1886: op as ResearchQueueOp (1 add, 2 remove, 3 up); the store answers
 struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count = 1; bool useChests = false; bool recursive = false; }; // recursive (#946): the server plans and crafts the missing intermediates first (#928) // useChests (#854): what the inventory lacks, from the chests near the player // #338 (output: a check that both sides mean the same recipe)
 // #332. action: 1 insert item (count), 2 insert all it takes, 3 insert fuel (item, count), 4 extract the outputs,
 // 5 take one slot (slot, which: 0 inputs, 1 outputs, 2 fuel), 6 watch (its screen opened), 7 unwatch.
@@ -413,6 +422,10 @@ void NetWrite(NetWriter& w, const MsgQuestBook& m);
 bool NetRead(NetReader& r, MsgQuestBook& m);
 void NetWrite(NetWriter& w, const MsgTeamStore& m);
 bool NetRead(NetReader& r, MsgTeamStore& m);
+void NetWrite(NetWriter& w, const MsgMapPin& m);
+bool NetRead(NetReader& r, MsgMapPin& m);
+void NetWrite(NetWriter& w, const MsgResearchQueue& m);
+bool NetRead(NetReader& r, MsgResearchQueue& m);
 void NetWrite(NetWriter& w, const MsgCraftRequest& m);
 bool NetRead(NetReader& r, MsgCraftRequest& m);
 void NetWrite(NetWriter& w, const MsgMachineAction& m);

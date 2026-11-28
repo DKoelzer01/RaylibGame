@@ -18,10 +18,12 @@ struct Section {
     void (*apply)(int team, const std::string& text); // a client: the host's text ("" when the host had none)
 };
 void ApplyMap(int, const std::string& text) { Nav_MergeTilesText(text); } // added to the local map: the player keeps their own
+void ApplyPins(int, const std::string& text) { Nav_SetTeamPins(text); } // the team's pins replace the ones shown
 const Section kSections[] = {
     {"research", Research_TeamText, Research_SetTeamText, Research_SetTeamText}, // (#1030) ResearchState::Text lines
     {"map", TeamQuests_TilesText, nullptr, ApplyMap}, // (#338) saved with the team's book (team_tiles); Nav_TilesText lines
     {"blueprints", Blueprint_TeamText, Blueprint_SetTeamText, Blueprint_ApplyTeamText}, // the team library: .bp texts
+    {"pins", TeamQuests_PinsText, TeamQuests_SetPinsText, ApplyPins}, // (#1886) the team's shared map pins (MsgMapPin): Nav_PinsText lines
     {"alt_recipes", Caches_TeamAltsText, Caches_SetTeamAltsText, Caches_SetTeamAltsText}, // (#2072) alternate recipes from caches: one id a line
 };
 
@@ -288,5 +290,55 @@ TEST_F(TeamStoreTest, NListsTheTeamsBlueprintsFirst) {
     EXPECT_EQ(list.front().team, team);
     EXPECT_EQ(list.front().parts.size(), 2u);
     for (size_t i = 1; i < list.size(); ++i) EXPECT_EQ(list[i].team, 0) << "then files: the player's and the presets";
+}
+
+TEST_F(TeamMapTest, PinsAreTheTeamsAndReachItsMembers) {
+    const int a = 9201, b = 9202;
+    ASSERT_TRUE(TeamQuests_SetPin(a, true, "terra", kSpotA, "Copper hill"));
+    ASSERT_TRUE(TeamQuests_SetPin(a, true, "terra", kSpotB, "Copper hill")) << "a second member's pin of the same name";
+    EXPECT_EQ(TeamQuests_PinCount(a), 2);
+    EXPECT_EQ(TeamQuests_PinCount(b), 0) << "team b's pins are its own";
+    const std::string text = TeamStore_Text(a);
+    EXPECT_NE(text.find("section pins\npin terra 0 1 0 Copper_hill\npin terra 0 0 1 Copper_hill_2\n"), std::string::npos) << text;
+    EXPECT_EQ(TeamStore_Text(b).find("section pins"), std::string::npos);
+
+    Nav_AddWaypoint("terra", kSpotB, "Home", false); // the client's own waypoint
+    ASSERT_TRUE(TeamStore_SetText(a, text));
+    EXPECT_EQ(Nav_TeamPinCount(), 2);
+    EXPECT_EQ(Nav_WaypointCount(), 3) << "the team's pins beside the player's own";
+    ASSERT_TRUE(TeamQuests_SetPin(a, false, "terra", kSpotA, "Copper_hill"));
+    ASSERT_TRUE(TeamStore_SetText(a, TeamStore_Text(a)));
+    EXPECT_EQ(Nav_TeamPinCount(), 1) << "a removed pin goes from the members' maps";
+    TeamStore_ApplyFromHost(a, TeamStore_Text(b)); // (empty: what a client does with a store of nothing)
+    EXPECT_EQ(Nav_TeamPinCount(), 0) << "a store without pins clears them";
+    EXPECT_EQ(Nav_WaypointCount(), 1) << "...and keeps the player's own";
+    TeamStore_ResetLocalTeam();
+
+    EXPECT_FALSE(TeamQuests_SetPin(a, false, "terra", kSpotA, "nothing_here"));
+    EXPECT_FALSE(TeamQuests_SetPin(a, true, "terra", Vector3{ 0, 0, 0 }, "zero"));
+    EXPECT_FALSE(TeamQuests_SetPin(a, true, "terra two", kSpotA, "x")) << "body names are one word";
+    EXPECT_FALSE(TeamQuests_SetPin(0, true, "terra", kSpotA, "x")) << "no team";
+}
+
+TEST_F(TeamMapTest, PinsSaveWithTheTeamAndComeWithAJoiner) {
+    const int team = 9301;
+    ASSERT_TRUE(TeamQuests_SetPin(team, true, "luna", kSpotB, "Crater"));
+    FILE* f = tmpfile();
+    ASSERT_NE(f, nullptr);
+    TeamStore_SaveTeam(f, team);
+    rewind(f);
+    TeamQuests_Reset();
+    EXPECT_EQ(TeamQuests_PinCount(team), 0);
+    char tok[64];
+    ASSERT_EQ(fscanf(f, " %63s", tok), 1);
+    EXPECT_STREQ(tok, "team_pins");
+    ASSERT_TRUE(TeamStore_LoadLine(tok, f));
+    fclose(f);
+    EXPECT_EQ(TeamQuests_PinsText(team), "pin luna 0 0 1 Crater\n");
+
+    const int solo = 9302;
+    ASSERT_TRUE(TeamQuests_SetPin(solo, true, "terra", kSpotA, "Crater"));
+    TeamQuests_Merge(solo, team);
+    EXPECT_EQ(TeamQuests_PinCount(team), 2) << "a joiner's own pins come along (as their explored map does)";
 }
 #endif

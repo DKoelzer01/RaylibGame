@@ -1,5 +1,6 @@
 #include "ruincache.h"
 #include "buildtool.h"
+#include "cacheopeners.h"
 #include "inventory.h"
 #include "worldtypes.h"
 #include "research.h"
@@ -33,20 +34,20 @@ const char* CacheKindName(CacheKind k) {
     }
 }
 
-std::string CacheNeedText(CacheKind k) {
-    switch (k) {
-    case CacheKind::Vault: return "needs a crowbar";
-    case CacheKind::DeepVault: return "needs a crowbar and a power cell";
-    default: return "needs a power cell";
+std::string CacheMissing(const Planetoid& body, const Plot& plot, int part, const Inventory& inv) {
+    if (part < 0 || part >= (int)plot.parts.size()) return "";
+    const CacheOpener* o = CacheOpenerOf(plot.parts[part]);
+    if (!o) return "Sealed: nothing opens it"; // an empty or broken cache_openers.txt (logged at load)
+    switch (o->kind) {
+    case OpenerKind::Power: {
+        const float charge = CacheOpener_Charge(body, plot, part);
+        if (charge >= 1.0f) return "";
+        if (charge > 0.0f) return TextFormat("Charging %d%%: %s", (int)(charge * 100.0f), CacheOpener_NeedText(*o).c_str());
+        return "Sealed: its lock " + CacheOpener_NeedText(*o);
     }
-}
-
-std::string CacheMissing(const Inventory& inv, CacheKind k) {
-    const bool cell = k != CacheKind::Vault, bar = k != CacheKind::Small;
-    const bool noCell = cell && inv.count("power_cell") <= 0, noBar = bar && inv.count("crowbar") <= 0;
-    if (noCell && noBar) return "Sealed: it needs a crowbar and a power cell";
-    if (noBar) return "Sealed: it needs a crowbar to pry it open";
-    if (noCell) return "Sealed: its lock needs a power cell";
+    case OpenerKind::Tool:
+    case OpenerKind::Part: return inv.count(o->item) > 0 ? "" : "Sealed: it " + CacheOpener_NeedText(*o);
+    }
     return "";
 }
 
@@ -82,9 +83,12 @@ bool Cache_Open(Planetoid& body, Plot& plot, int part, Inventory& inv, int team,
     const Part p = plot.parts[part];
     if (CacheOpened(p)) return no("Opened already: empty");
     const CacheKind kind = CacheKindOf(p);
-    const std::string missing = CacheMissing(inv, kind);
+    const std::string missing = CacheMissing(body, plot, part, inv);
     if (!missing.empty()) return no(missing);
-    if (kind != CacheKind::Vault) inv.remove("power_cell", 1); // the crowbar is kept
+    if (const CacheOpener* o = CacheOpenerOf(p)) { // a tool is kept
+        if (o->kind == OpenerKind::Power) CacheOpener_Spend(body, plot, part); // the lock's charge, emptied
+        else if (o->kind == OpenerKind::Part) inv.remove(o->item, 1);
+    }
     const int band = 0; // surface ruins only so far: the depth bands come with the underground templates (#1468)
     const PlanetField* pf = dynamic_cast<const PlanetField*>(body.field.get());
     rolls = Caches_Roll(pf ? (uint64_t)pf->foliageSeed : 0, CacheId(body, plot, p), kind, band, CacheTeamOf(team));

@@ -155,6 +155,28 @@ ResearchSight Research_Sight(const ResearchState& s, const ResearchNode& n, int 
     return ResearchSight::Hidden;
 }
 
+bool Research_QueueAction(ResearchState& s, ResearchQueueOp op, const std::string& node, int teamTier) {
+    const auto it = std::find(s.queue.begin(), s.queue.end(), node);
+    switch (op) {
+    case ResearchQueueOp::Add: {
+        const ResearchNode* n = Research_Find(node);
+        if (!n || s.Done(node) || it != s.queue.end() || s.queue.size() >= kResearchQueueMax) return false;
+        if (Research_Sight(s, *n, teamTier) != ResearchSight::Full) return false; // (a node the team can't see the cost of)
+        s.queue.push_back(node);
+        return true;
+    }
+    case ResearchQueueOp::Remove:
+        if (it == s.queue.end()) return false;
+        s.queue.erase(it);
+        return true;
+    case ResearchQueueOp::Up:
+        if (it == s.queue.end() || it == s.queue.begin()) return false;
+        std::iter_swap(it, it - 1);
+        return true;
+    }
+    return false;
+}
+
 void Research_Merge(const ResearchState& from, ResearchState& into) {
     into.done.insert(from.done.begin(), from.done.end());
     for (const auto& [id, units] : from.progress) {
@@ -296,6 +318,30 @@ TEST(Research, LabsRunTheQueueHeadTheyCanAndUnitsFinishNodes) {
     EXPECT_TRUE(s.queue.empty() && s.progress.empty()) << "done: out of the queue (the extra units are spent)";
     EXPECT_TRUE(Research_AddUnits(s, 4, 3).empty()) << "units of a tier nothing queued needs change nothing";
     EXPECT_EQ(Research_HeadFor(s, 7), nullptr);
+}
+
+// (#1886) The queue changes the tab makes, and a host takes from a client: only what the team may queue.
+TEST(Research, QueueActionsCheckWhatTheTeamMayQueue) {
+    ASSERT_TRUE(Research_Load());
+    ResearchState s;
+    s.done = { "steam_power" };
+    using Op = ResearchQueueOp;
+    EXPECT_TRUE(Research_QueueAction(s, Op::Add, "wire_drawing", 3));
+    EXPECT_TRUE(Research_QueueAction(s, Op::Add, "steelmaking", 3));
+    EXPECT_FALSE(Research_QueueAction(s, Op::Add, "steelmaking", 3)) << "already queued";
+    EXPECT_FALSE(Research_QueueAction(s, Op::Add, "steam_power", 3)) << "done";
+    EXPECT_FALSE(Research_QueueAction(s, Op::Add, "basic_circuits", 3)) << "the next tier is names only";
+    EXPECT_FALSE(Research_QueueAction(s, Op::Add, "aluminium", 3)) << "hidden";
+    EXPECT_FALSE(Research_QueueAction(s, Op::Add, "no_such_node", 3));
+    EXPECT_TRUE(Research_QueueAction(s, Op::Add, "basic_circuits", 4)) << "in full at tier 4";
+    EXPECT_EQ(s.queue, (std::vector<std::string>{ "wire_drawing", "steelmaking", "basic_circuits" }));
+    EXPECT_TRUE(Research_QueueAction(s, Op::Up, "basic_circuits", 3));
+    EXPECT_FALSE(Research_QueueAction(s, Op::Up, "wire_drawing", 3)) << "the head can't move up";
+    EXPECT_EQ(s.queue, (std::vector<std::string>{ "wire_drawing", "basic_circuits", "steelmaking" }));
+    EXPECT_TRUE(Research_QueueAction(s, Op::Remove, "wire_drawing", 3));
+    EXPECT_FALSE(Research_QueueAction(s, Op::Remove, "wire_drawing", 3)) << "not queued";
+    EXPECT_EQ(s.queue, (std::vector<std::string>{ "basic_circuits", "steelmaking" }));
+    EXPECT_FALSE(Research_QueueAction(s, (Op)9, "steelmaking", 3)) << "an unknown op (a bad message)";
 }
 
 #include "playerrecord.h"

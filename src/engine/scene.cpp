@@ -1067,7 +1067,9 @@ void Scene::drawScene(int gamestate) {
         drawTrees(-1);
         GpuTimer_Mark("trees");
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+        GpuTimer_Mark("terrain"); // after "parts" (world.cpp): the bodies' chunks
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+        GpuTimer_Mark("objects");
         if (drawPassExtra) drawPassExtra(ctx, revZ); // one pass: it also rebuilds (the mid pass did)
         GpuTimer_Mark("near");
         KickGpu();
@@ -1172,7 +1174,12 @@ void Scene::drawScene(int gamestate) {
         frameLighting = setFoliageLighting;
         frameSun = lightDirection; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+        frameFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection())); // (#2140) this pass's planes
+        // A/B switch: RAYLIBGAME_FRAME_CULL=0 draws these paths as before (distance cuts only).
+        static const bool frameCull = [] { const char* e = getenv("RAYLIBGAME_FRAME_CULL"); return !(e && e[0]) || EnvFlag("RAYLIBGAME_FRAME_CULL"); }();
+        frameFrustumOn = frameCull;
         if (onDraw3D) onDraw3D();
+        frameFrustumOn = false;
         frameLighting = nullptr;
     EndMode3D();
     GpuTimer_Mark("draw3d");

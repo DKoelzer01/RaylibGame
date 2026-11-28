@@ -26,6 +26,7 @@ class Planetoid;
 
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled);
 void Animals_Draw3D(Scene& world);
+int Animals_DrawnCount(); // tests (#2140): creatures past the distance and view culls in the last Animals_Draw3D
 void Animals_DrawHUD();
 struct PlayerInput;
 void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
