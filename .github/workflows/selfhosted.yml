@@ -229,6 +229,7 @@ jobs:
       # `pose` (not `frames`), so they are not in part 1; they run in their own step below, nightly and on integration branches.
       - name: Affected scenarios only (a PR's run, #1871)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED != 'ALL' }}
+        continue-on-error: true # (#2120) reports; the "Failures, known or NEW" step decides the job
         timeout-minutes: 60
         working-directory: ${{ env.RUN }}
         env:
@@ -236,16 +237,19 @@ jobs:
           RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
         run: |
           if [ -z "$AFFECTED" ]; then echo "scenarios: none for these changes (tools/ci/scenario_map.txt)" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          echo "scenarios-affected.log started" > rc-affected.txt # (#2120) still "started" if the step's timeout kills it
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
             --scenario "$AFFECTED" --scenario-no-record --scenario-out "$RUN/scenarios/affected" > scenarios-affected.log 2>&1
           rc=$?
           set -e
+          echo "scenarios-affected.log $rc" > rc-affected.txt
           grep -E "^scenario: " scenarios-affected.log | grep -vE "heartbeat|waiting" | tail -60 || true
           echo "scenarios (affected: $AFFECTED): exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
           exit $rc
       - name: Headless scenarios, parts 1 and 2 at the same time (#1768)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED == 'ALL' }}
+        continue-on-error: true # (#2120) reports; the "Failures, known or NEW" step decides the job
         timeout-minutes: 60
         working-directory: ${{ env.RUN }}
         env:
@@ -254,6 +258,8 @@ jobs:
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           # Part 1: fluid, frames, factory.
+          echo "scenarios-1.log started" > rc-part1.txt # (#2120) still "started" if the step's timeout kills it
+          echo "scenarios-2.log started" > rc-part2.txt
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
             --scenario tag:fluid,tag:frames,tag:factory --scenario-no-record --scenario-out "$RUN/scenarios/part1" \
             > scenarios-1.log 2>&1 &
@@ -267,6 +273,8 @@ jobs:
           wait $pid1; rc1=$?
           wait $pid2; rc2=$?
           set -e
+          echo "scenarios-1.log $rc1" > rc-part1.txt
+          echo "scenarios-2.log $rc2" > rc-part2.txt
           for n in 1 2; do
             echo "--- part $n ---"
             grep -E "^scenario: " scenarios-$n.log | grep -vE "heartbeat|waiting" | tail -60 || true
@@ -275,18 +283,21 @@ jobs:
           [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ]
       - name: Pose twins (frames/*-pose, rocket/*-pose; nightly and integration branches only, #1768)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && env.FULL_RUN == 'true' }}
+        continue-on-error: true # (#2120) reports; the "Failures, known or NEW" step decides the job
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
           RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }}
         run: |
+          echo "scenarios-pose.log started" > rc-pose.txt # (#2120) still "started" if the step's timeout kills it
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
             --scenario tag:pose --scenario-no-record --scenario-out "$RUN/scenarios/pose" \
             > scenarios-pose.log 2>&1
           rc=$?
           set -e
+          echo "scenarios-pose.log $rc" > rc-pose.txt
           grep -E "^scenario: " scenarios-pose.log | grep -vE "heartbeat|waiting" | tail -40 || true
           echo "scenarios pose twins: exit $rc" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
@@ -295,11 +306,13 @@ jobs:
       # 1-seed variant by name through its affected set (tools/ci/scenario_map.txt).
       - name: World generation metrics (tag:worldgen; full tier and manual runs, #1882)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && (env.TIER == 'full' || (github.event_name == 'workflow_dispatch' && env.TIER == 'batch' && inputs.tier != 'scheduled')) }}
+        continue-on-error: true # (#2120) reports; the "Failures, known or NEW" step decides the job
         timeout-minutes: 40
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
         run: |
+          echo "scenarios-worldgen.log started" > rc-worldgen.txt # (#2120) still "started" if the step's timeout kills it
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
             --scenario tag:worldgen --scenario-no-record --scenario-out "$RUN/scenarios/worldgen" \
@@ -307,7 +320,8 @@ jobs:
           rc=$?
           set -e
           # no worldgen scenario on this branch yet: the game exits 2 ("no scenario matches")
-          if [ $rc = 2 ] && grep -q "no scenario matches" scenarios-worldgen.log; then echo "worldgen: no scenarios on this branch" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          if [ $rc = 2 ] && grep -q "no scenario matches" scenarios-worldgen.log; then echo "worldgen: no scenarios on this branch" | tee -a "$GITHUB_STEP_SUMMARY"; rm -f rc-worldgen.txt; exit 0; fi
+          echo "scenarios-worldgen.log $rc" > rc-worldgen.txt
           grep -E "^scenario: " scenarios-worldgen.log | grep -vE "heartbeat|waiting" | tail -40 || true
           echo "scenarios worldgen: exit $rc" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
@@ -369,9 +383,11 @@ jobs:
       - name: Failures, known or NEW (#1479)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
-        # summary (the runner-check skill's matching). Labels only: the steps above carry the verdicts.
+        # summary (the runner-check skill's matching). (#2120) The scenario steps above only report: this step fails the job
+        # when a scenario failure has no known line (or a scenario step broke without listing one); the build, GPU check,
+        # server and join steps still fail it themselves.
         run: |
-          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-pose.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
+          bash tools/ci/mark_failures.sh --verdict "$RUN" "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-pose.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
             "$RUN/half.log" "$RUN/terrain-gpu.log" "$RUN/join-logs"
       - name: GPU state over the job (#1447)
         if: ${{ !cancelled() }}
