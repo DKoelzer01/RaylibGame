@@ -10,24 +10,23 @@
 #include <string>
 #include <vector>
 #include "caches.h"
+#include "cacheopeners.h" // kCacheOpened, CacheOpened (the factory reads them too)
 #include "plots.h"
 
 class Planetoid;
 class Inventory;
 struct PartEdit;
 
-constexpr uint8_t kCacheOpened = 0x10;      // a RuinCache part's material: kind in the low bits, this bit once opened
 constexpr float kCacheHoldSeconds = 3.0f;   // GUESS (the user confirms): how long E is held to open one
 constexpr float kCacheReach = 4.0f;         // m: the host's reach check (as machine actions)
 
 inline CacheKind CacheKindOf(const Part& p) { const int k = p.material & 3; return k > 2 ? CacheKind::Small : (CacheKind)k; }
-inline bool CacheOpened(const Part& p) { return (p.material & kCacheOpened) != 0; }
 const char* CacheKindName(CacheKind k);     // "sealed cache", "sealed vault", "deep vault"
 
-// What a kind needs (GUESS, the user confirms): a small cache a power cell (spent), a vault a crowbar (kept), a deep vault
-// both. The line the prompt shows when the opener lacks it ("" when they have it).
-std::string CacheMissing(const Inventory& inv, CacheKind k);
-std::string CacheNeedText(CacheKind k);     // "needs a power cell" ...
+// What the cache needs is its opener (cacheopeners.h, resources/data/cache_openers.txt): power charged into its lock from a
+// grid or a battery bank, a tool (kept) or a part (spent). The line the prompt shows while it can't open ("" when it can):
+// "Sealed: ..." or, while its lock charges, "Charging 40%: ...".
+std::string CacheMissing(const Planetoid& body, const Plot& plot, int part, const Inventory& inv);
 
 // The cache's id: the world's seed and where the cache is on its body (a ruin is built in the same place on every peer).
 uint64_t CacheId(const Planetoid& body, const Plot& plot, const Part& p);

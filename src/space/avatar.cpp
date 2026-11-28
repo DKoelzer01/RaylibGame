@@ -226,6 +226,8 @@ void Avatar_Draw3D(Scene& world, const std::vector<AvatarState>& avatars) {
         an.gait += dt * an.speed / 1.4f * PI;
         const float stride = std::clamp(an.speed / 6.0f, 0.0f, 1.0f); // 0 standing .. 1 running
         const Vector3 u = Vector3Normalize(a.up), f = Vector3Normalize(a.facing);
+        // (#2140) Out of view: a 2 m figure with a held tool (after the gait update, so the stride stays continuous).
+        if (!world.inView(Vector3Add(base, u), 1.8f)) continue;
         const Vector3 r = Vector3CrossProduct(u, f);
         const Matrix m = { r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 };
         rlPushMatrix();
