@@ -94,9 +94,9 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
     }
     fprintf(f, "player_up %f %f %f\n", t.p.up.x, t.p.up.y, t.p.up.z);
     fprintf(f, "player_vel %f %f %f\n", t.p.velocity.x, t.p.velocity.y, t.p.velocity.z);
-    // (Plan 11 F7a, #2074) With RAYLIBGAME_FRAMES=1, the state physics runs on: its frame (F Fixed, C Centred), position and
-    // velocity in it, in double. After the lines above, so a load that reads it takes it over them (mid-jump keeps its speed).
-    if (Frames_On() && t.p.frame.frame.body != 0 && !t.p.flyMode) {
+    // (Plan 11 F7a, #2074) The state physics runs on: its frame (F Fixed, C Centred), position and velocity in it, in
+    // double. After the lines above, so a load that reads it takes it over them (mid-jump keeps its speed).
+    if (t.p.frame.frame.body != 0 && !t.p.flyMode) {
         const FramePos& fp = t.p.frame;
         fprintf(f, "player_frame %llu %c %.9f %.9f %.9f %.9f %.9f %.9f\n", (unsigned long long)fp.frame.body, fp.frame.kind == FrameKind::Fixed ? 'F' : 'C',
                 fp.pos.x, fp.pos.y, fp.pos.z, fp.vel.x, fp.vel.y, fp.vel.z);
@@ -180,10 +180,10 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
             }
         return true;
     }
-    if (strcmp(tok, "player_frame") == 0) { // (F7a, #2074) read only on the frame path (else player_body's spot stands)
+    if (strcmp(tok, "player_frame") == 0) { // (F7a, #2074)
         unsigned long long id = 0; char kind = 'F'; FramePos fp;
         if (fscanf(f, " %llu %c %lf %lf %lf %lf %lf %lf", &id, &kind, &fp.pos.x, &fp.pos.y, &fp.pos.z, &fp.vel.x, &fp.vel.y, &fp.vel.z) == 8 &&
-            Frames_On() && (kind == 'F' || kind == 'C')) {
+            (kind == 'F' || kind == 'C')) {
             fp.frame = FrameRef{ id, kind == 'F' ? FrameKind::Fixed : FrameKind::Centred };
             if (inWorldLoad) pendingFrames.push_back({ &t.p, id, {}, true, fp }); // with the bodies in their saved state
             else t.p.restoreFrame(fp);

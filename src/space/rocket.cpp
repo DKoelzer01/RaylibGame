@@ -170,7 +170,7 @@ namespace {
     // (Plan 11 F5, #1457) The body the flying rocket belongs to: its frame's body on the frame path (the SOI rule), else the
     // strongest pull as before. Its orbit about that body: from the Centred state on the frame path (exact, double), else
     // from the global state.
-    bool Framed() { return Frames_On() && rfValid && state == RocketState::Flying; }
+    bool Framed() { return rfValid && state == RocketState::Flying; }
     Planetoid* FlightBody(Scene& world) {
         if (Framed()) if (Planetoid* b = Planetoid::findNet(rf.frame.body)) return b;
         return Dominant(world, com);
@@ -534,7 +534,7 @@ namespace {
         if (thrust > 0.0f) Exhaust(world, *plot, h);
         if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
         bool framed = false;
-        if (Frames_On()) { // (Plan 11 F5, #1457) the flight in its body frame, in doubles
+        { // (Plan 11 F5, #1457) the flight in its body frame, in doubles
             const std::vector<Planetoid*>& bodies = Planetoid::All();
             const bool moved = !rfValid || (com - rfCom).length() > 1e-6 || Vector3Distance(vel, rfVel) > 1e-4f;
             // Launched, bounced, loaded or placed by a test: that state belongs to the step's start, but advanceBodies has
@@ -581,7 +581,7 @@ namespace {
                 framed = true;
             }
         }
-        if (!framed) { // the global path (RAYLIBGAME_FRAMES=0)
+        if (!framed) { // the global path: a step whose state was set from outside, or with no frame body
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
         if (Planetoid* air = Dominant(world, com)) {
@@ -605,7 +605,7 @@ namespace {
         vel = Vector3Add(vel, Vector3Scale(Vector3Add(g, Vector3Scale(force, 1.0f / std::max(mass, 1.0f))), h));
         com = com + DVec3(Vector3Scale(vel, h));
         }
-        if (Frames_On() && !framed && stepEnd) { // (F5) the frame state from the global one, both at the step's end
+        if (!framed && stepEnd) { // (F5) the frame state from the global one, both at the step's end
             const std::vector<Planetoid*> bodies = Planetoid::All();
             const FrameRef to = Frames_Choose(bodies, com, FrameRef{});
             rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
@@ -1130,10 +1130,10 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
         if (fscanf(f, " %llu", &id) == 1 && id != 0) { if (Planetoid* v = Vehicle()) v->netId = id; NetId_Note(id); }
         return true;
     }
-    if (strcmp(tok, "rocket_frame") == 0) { // (F7a, #2074) after the rocket line; the frame path only
+    if (strcmp(tok, "rocket_frame") == 0) { // (F7a, #2074) after the rocket line
         unsigned long long id = 0; char kind = 'F'; FramePos fp;
         if (fscanf(f, " %llu %c %lf %lf %lf %lf %lf %lf", &id, &kind, &fp.pos.x, &fp.pos.y, &fp.pos.z, &fp.vel.x, &fp.vel.y, &fp.vel.z) == 8 &&
-            Frames_On() && state == RocketState::Flying && (kind == 'F' || kind == 'C')) {
+            state == RocketState::Flying && (kind == 'F' || kind == 'C')) {
             fp.frame = FrameRef{ id, kind == 'F' ? FrameKind::Fixed : FrameKind::Centred };
             // The global com and vel above were written at the same instant, and the load puts the bodies back where they
             // were then: the pair stands for this frame state, so the next step continues on it (not re-seeded).

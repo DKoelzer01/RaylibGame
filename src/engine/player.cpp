@@ -118,14 +118,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
                 world.camera.position = (flyCarried - world.renderOrigin).toFloat();
                 world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
                 world.camera.up = ref->dirToWorld(flyLocalUp);
-            } else if (Frames_On()) { // (F4, #1412) centred on the body: its centre + the double offset, the view kept
+            } else { // (F4, #1412) centred on the body: its centre + the double offset, the view kept
                 const Vector3 view = Vector3Subtract(world.camera.target, world.camera.position);
                 world.camera.position = (ref->worldPos + flyOffset - world.renderOrigin).toFloat();
                 world.camera.target = Vector3Add(world.camera.position, view);
-            } else {
-                const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
-                world.camera.position = Vector3Add(world.camera.position, move);
-                world.camera.target = Vector3Add(world.camera.target, move);
             }
         }
         // Near a body the fly camera keeps the horizon level (#232): its local up while gravity there is felt (> 0.5 m/s^2),
@@ -191,7 +187,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // dt. An airborne frame velocity is kept in the body's axes between updates (it turns with the body, as the position
     // does); entering or leaving the frame path converts once. (Centred frames keep today's path until they are wired.)
     {
-        const bool fx = Frames_On() && nearest && frame.frame.kind == FrameKind::Fixed && frame.frame.body == nearest->netId;
+        const bool fx = nearest && frame.frame.kind == FrameKind::Fixed && frame.frame.body == nearest->netId;
         if (fx && !grounded) {
             if (fxActive && airVelBody == nearest->id) velocity = Vector3Scale(nearest->dirToWorld(airVelDir), airVelLen); // turned with the body
             else velocity = Vector3Subtract(velocity, nearest->surfaceVelocity(feet));                                      // into the frame, once
@@ -398,7 +394,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         airVelBody = 0; // (F2b) on the ground: the next flight starts from the grounded velocity, not the last one stored
     }
     lastEndPosition = position;
-    if (Frames_On()) updateFrame(world);
+    updateFrame(world);
     if (fxActive && nearest) { DVec3 w; BodyRotationAndSpin(*nearest, viewR, w); viewBody = nearest->id; } // (F2c) the pose the view was last turned to
     else viewBody = 0;
     CacheNetState(world);
@@ -406,10 +402,9 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
     if (nearest) {
         const DVec3 l = nearest->toLocalD(position);
-        // (F2d, RAYLIBGAME_FRAMES=1) the update knows when the player was moved from outside, so the frame path restarts on
-        // that instead of guessing from a 5 m step (which also cut the interpolation for anything faster than 300 m/s).
-        const bool jumped = Frames_On() ? movedOutside : (l - interpCur).length() * nearest->scale >= 5.0;
-        const bool cont = nearest->id == interpBody && interpSpawns == spawns && !jumped;
+        // (F2d) the update knows when the player was moved from outside, so the interpolation restarts on that, not on a
+        // guess from a 5 m step (which also cut it for anything faster than 300 m/s).
+        const bool cont = nearest->id == interpBody && interpSpawns == spawns && !movedOutside;
         interpPrev = cont ? interpCur : l;
         interpCur = l;
         interpBody = nearest->id;
@@ -860,7 +855,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
 }
 
 void Player::aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const {
-    if (Frames_On() && !flyMode && lastEyeD.length() > 0.0) {
+    if (!flyMode && lastEyeD.length() > 0.0) {
         dirWorld = Vector3Normalize(forward);
         originLocal = body.toLocalD(lastEyeD);
     } else {
@@ -989,13 +984,12 @@ void Player::recordFly(Scene& world) {
     if (!ref) return;
     flyBodyId = ref->id;
     flyRotate = rotate;
-    flyBodyPos = ref->worldPos;
     // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
     const DVec3 cam = world.renderOrigin + world.camera.position;
     flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
     // (F4, #1412) unmoved by input since the centred carry: keep the double offset (the float camera rounds it each frame)
     const DVec3 offsetNow = cam - ref->worldPos;
-    if (!(Frames_On() && !rotate && ref->id == flyBodyIdPrev && (offsetNow - flyOffset).length() < 0.01)) flyOffset = offsetNow;
+    if (!(!rotate && ref->id == flyBodyIdPrev && (offsetNow - flyOffset).length() < 0.01)) flyOffset = offsetNow;
     flyBodyIdPrev = ref->id;
     flyCarriedValid = false;
     flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));

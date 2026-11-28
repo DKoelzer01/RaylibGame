@@ -198,7 +198,7 @@ private:
     bool airFelt = false;
     uint64_t flyBodyId = 0;           // body the fly camera was recorded against (0: none)
     bool flyRotate = false;
-    DVec3 flyLocal{}, flyBodyPos{};
+    DVec3 flyLocal{};
     Vector3 flyLocalFwd{}, flyLocalUp{};
     DVec3 flyCarried{};               // the carried camera in double (float render space rounds it)
     bool flyCarriedValid = false;
