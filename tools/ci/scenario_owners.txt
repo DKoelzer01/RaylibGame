@@ -1,0 +1,12 @@
+# Who owns a scenario (#2127): the session a flake or a failure of it is routed to (the 4-hourly digest, known lines).
+#   <extended regex on the scenario name> | <owner>      (split at the last " | ", as in scenario_map.txt)
+# The first matching line wins, so put exact names above their area's prefix. Owners are static check 8's: L&G, Water,
+# UI/UX, Progression, Space, Tools, Coordinator. Static check 9 fails when a scenario on the branch matches no line.
+# GUESS (Tools and CI, 2026-11-28): every line below; owners, correct yours.
+^determinism/                 | Tools
+^(fluid|water|frames)/        | Water
+^(visual|light|fx|render|caves|terrain|worldgen|world|creatures|combat|tools|slides)/ | L&G
+^(factory|build|machines|research|magic|skills|craft|farm)/ | Progression
+^(rocket|space)/              | Space
+^(ui|input|saves|net|audio|player|survival|quests|adventure|hazards)/ | UI/UX
+^perf/                        | Tools

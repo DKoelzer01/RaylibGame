@@ -19,6 +19,7 @@
 #      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
 #   8. Every tools/ci/known_failures.txt line's note starts "[<owner>, until <date>]", at most 7 days ahead (#2122): else an
 #      error; a line past its date is a warning.
+#   9. Every scenario (SCENARIO("...") in tests/scenarios) has an owner in tools/ci/scenario_owners.txt (#2127): else an error.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
@@ -318,6 +319,29 @@ if [ -f "$KF" ]; then
     printf '%s\n' "$kf_out" | grep -E '^::'
     sum ""; sum "**Known failures (check 8):** $(printf '%s\n' "$kf_out" | grep '^known_lines:' | sed 's/^known_lines: //')"
     [ "$kf_rc" -ne 0 ] && errors=$((errors + 1))
+fi
+
+# ---- 9. (#2127) every scenario has an owner (tools/ci/scenario_owners.txt), so a flake is routed to a session ----
+SO=tools/ci/scenario_owners.txt
+if [ -f "$SO" ]; then
+    so_out=$(grep -rhoE 'SCENARIO\("[^"]+"\)' tests/scenarios 2> /dev/null | sed 's/SCENARIO("\(.*\)")/\1/' | sort -u |
+        awk -v so="$SO" '
+        FNR == NR { # the owners file: the regex before the last " | ", the owner after it
+            sub(/\r$/, ""); if ($0 ~ /^[[:space:]]*(#|$)/) next
+            i = 0; for (p = 1; p <= length($0) - 2; p++) if (substr($0, p, 3) == " | ") i = p
+            if (!i) { printf "::error file=%s,line=%d::no \" | <owner>\" on the line (#2127)\n", so, FNR; bad++; next }
+            re = substr($0, 1, i - 1); sub(/[[:space:]]+$/, "", re); o = substr($0, i + 3); sub(/[[:space:]].*/, "", o)
+            if (o !~ /^(L&G|Water|UI\/UX|Progression|Space|Tools|Coordinator)$/) {
+                printf "::error file=%s,line=%d::owner \"%s\" is not one of L&G, Water, UI/UX, Progression, Space, Tools, Coordinator (#2127)\n", so, FNR, o; bad++ }
+            res[++nre] = re; next
+        }
+        { n++; hit = 0; for (k = 1; k <= nre; k++) if ($0 ~ res[k]) { hit = 1; break }
+          if (!hit) { printf "::error file=%s::scenario %s has no owner: add a line to %s (#2127)\n", so, $0, so; bad++ } }
+        END { printf "owners: %d scenarios, %d problems\n", n, bad; exit bad > 0 }' "$SO" -)
+    so_rc=$?
+    printf '%s\n' "$so_out" | grep -E '^::'
+    sum ""; sum "**Scenario owners (check 9):** $(printf '%s\n' "$so_out" | grep '^owners:' | sed 's/^owners: //')"
+    [ "$so_rc" -ne 0 ] && errors=$((errors + 1))
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
