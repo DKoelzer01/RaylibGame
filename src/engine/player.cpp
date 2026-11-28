@@ -26,22 +26,27 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, outer + 60.0f));
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
-    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
-    else if (!body.flat) {
-        // (#2000) No mesh there yet (a body far from where the player was: nothing built near): the raycast missed and
-        // R + 5 m could be far above the ground (a deadly fall) or under it. Find the surface on the field itself: march
-        // down from maxRadius in 2 m steps, then halve to ~1 cm. Unedited ground; edits only exist where chunks were built.
+    bool found = false;
+    if (!body.flat) {
+        // (#2000) The surface from the field itself, edits included: march down from maxRadius in 2 m steps, then halve to
+        // ~1 cm. A mesh raycast only sees what is built so far: with no mesh there (a far body) R + 5 m could be a deadly
+        // fall or underground, and a coarse LOD mesh sits up to ~2 m under the real ground, so the player stood inside it
+        // when the fine chunks came and was thrown out ("fall" deaths on Luna, runner).
         const DensityField& f = *body.field;
+        const TerrainDeltas* ed = body.edits.get();
         const Vector3 local = body.dirToLocal(dir); // the field is in the body's own (turning) axes
         const float top = f.maxRadius(), bottom = std::max(0.0f, f.minRadius());
         for (float r = top; r > bottom; r -= 2.0f) {
-            if (f.baseDensity(Vector3Scale(local, r - 2.0f)) < ISO_LEVEL) continue;
+            if (f.density(Vector3Scale(local, r - 2.0f), ed) < ISO_LEVEL) continue;
             float lo = r - 2.0f, hi = r; // lo solid, hi air
-            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.baseDensity(Vector3Scale(local, m)) >= ISO_LEVEL ? lo : hi) = m; }
+            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.density(Vector3Scale(local, m), ed) >= ISO_LEVEL ? lo : hi) = m; }
             feet = Vector3Add(c, Vector3Scale(dir, hi * body.scale + 0.2f));
+            found = true;
             break;
         }
     }
+    if (!found && RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit))
+        feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
@@ -49,6 +54,10 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
+    // (#2000) The body put on is the nearest now, before the next update finds it: the spawn's loading screen holds the
+    // player in player.nearest's frame, and the old one (Terra, for a move to Luna) held them still against Terra while Luna
+    // moved on at ~1 km/s: released, its ground hit them at hundreds of m/s, a fatal "fall".
+    nearest = &body;
     anchorTo(body);
     flyMode = false;
 }
@@ -1139,6 +1148,7 @@ void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     velocity = body.surfaceVelocity(renderFeet);
     grounded = false;
     groundBody = nullptr;
+    nearest = &body; // (#2000) the loading screen's hold uses it (spawnOn)
     flyMode = false;
     anchorTo(body);
 }
