@@ -177,8 +177,10 @@ jobs:
           echo "build: $((SECONDS - start)) s"
           ccache -s | tee ccache-stats.txt
           { echo "### Windows build"; echo "$((SECONDS - start)) s"; echo '```'; cat ccache-stats.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # (#2131) Only a push to staging, ladder or develop saves: a PR restores its base's cache (a PR's own saves filled
+      # the 10 GB repository cache, ~370 MB a push, and evicted the base caches every PR starts from).
       - name: Save ccache
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci/ccache
@@ -254,8 +256,10 @@ jobs:
           echo "build: $((SECONDS - start)) s"
           ccache -s | tee ccache-stats.txt
           { echo "### Linux build"; echo "$((SECONDS - start)) s"; echo '```'; cat ccache-stats.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # (#2131) Only a push to staging, ladder or develop saves: a PR restores its base's cache (a PR's own saves filled
+      # the 10 GB repository cache, ~370 MB a push, and evicted the base caches every PR starts from).
       - name: Save ccache
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name == 'push' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CI_ROOT }}/ccache
