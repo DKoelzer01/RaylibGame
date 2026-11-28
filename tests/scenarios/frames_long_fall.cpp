@@ -97,7 +97,16 @@ static void BuildLongFall(ScenarioDef& s) {
                 st.peakSpeed = std::max(st.peakSpeed, (double)Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet))));
                 st.lowAir = std::min(st.lowAir, b.toLocalD(player.position).length() - st.groundR);
             }
-            st.deadSeen = st.deadSeen || survival.dead;
+            // (#2038) Every landing here is fatal (100 m: ~33 m/s into the floor). A dead player is not updated, so `grounded`
+            // stays as the death left it: when that was in the air (a bounce, a clip rescue), the touchdown below never came
+            // and the respawn 3 s later carried the player to the start, 29 km away. Revived on the tick the death is seen.
+            if (survival.dead) {
+                if (!st.deadSeen)
+                    c.note(std::string(d.name) + TextFormat(": died at %.2f s, %.2f m from the drop point, grounded %d, falling %d; revived",
+                                                            c.t, (b.toLocalD(player.position) - st.startLocal).length(), (int)player.grounded, (int)st.falling));
+                survival.dead = false; survival.health = 100.0f;
+                st.deadSeen = true;
+            }
             // The spawn hold keeps the player at the drop point while the place loads: the fall starts when it moves.
             const double fallen = (b.toLocalD(player.position) - st.startLocal).length();
             if (!st.falling) {
