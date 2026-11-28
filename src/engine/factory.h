@@ -19,6 +19,7 @@
 // twentieth of the cost, never more output than the full simulation.
 
 #include "voxel.h" // Int3
+#include "beltsync.h" // (#1735 PR 4) BeltSyncSnapshot, BeltSyncStep
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -253,6 +254,14 @@ namespace Factory {
     bool Remote();
     void SetRemoteView(const MachineKey& key, const MachineView& view);
     void SetRemoteWorking(uint64_t bodyId, uint32_t plotId, const std::vector<int>& parts); // that plot's working machines
+    // (#1735 PR 4) Server: belts for clients to replay (beltsync.h). WatchBelts: the plots whose belt steps are recorded
+    // (the clients' near plots; replaces the set). BeltSnapshot: a watched plot's belts at a step boundary; false the first
+    // time (asked for: ready after the next tick). BeltSteps: the recorded steps after `after` of that epoch (at most max)
+    // and the checksum after the last; false when the client needs a snapshot (a new layout, or it fell out of the ring).
+    void WatchBelts(const std::vector<std::pair<uint64_t, uint32_t>>& plots);
+    bool BeltSnapshot(uint64_t bodyId, uint32_t plotId, BeltSyncSnapshot& out);
+    bool BeltSteps(uint64_t bodyId, uint32_t plotId, uint32_t epoch, int64_t after, size_t max, std::vector<BeltSyncStep>& out, int64_t& first, uint32_t& sum);
+    std::string ItemName(int id); // the factory's item ids (belt items) by name
 
     // ---- (#1254) Fluid in machine slots: alchemy's essences ----
     // Items whose names start with a registered prefix ("essence_") are fluid held in a machine's slots, not things: no

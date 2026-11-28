@@ -280,7 +280,10 @@ ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupa
         std::vector<CInt3> cap;
         if (belt) {
             const int back = Get(other, axis) > Get(pt, axis) ? 1 : -1;
-            for (int t = 0; t < kBeltWidth / 2; ++t) AddBeltBlock(Add(pt, axis, back * t), axis, cap);
+            // A belt spans [c - 2, c + 1] across its centreline c: arriving from the low side (back -1) an end on c overlaps
+            // 3 slots of it, from the high side 2 (#2057: merges from -x and -z were always blocked).
+            const int reach = kBeltWidth / 2 + (back < 0 ? 1 : 0);
+            for (int t = 0; t < reach; ++t) AddBeltBlock(Add(pt, axis, back * t), axis, cap);
         } else {
             AddBlock(pt, axis, run.size, cap);
         }
@@ -876,6 +879,12 @@ TEST(Conduit, BeltPlace) {
     // ending past the centreline crosses the far half: blocked
     r = check(Belt(2, { {10, 0, 20}, {10, 0, 2} }));
     EXPECT_FALSE(r.ok);
+    // (#2057) from the other side (-z) too: belt 1 spans z 2..5, so this end overlaps 3 slots of it
+    r = check(Belt(2, { {10, 0, -12}, {10, 0, 4} }));
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.joinsRuns, std::vector<int>({ 1 }));
+    r = check(Belt(2, { {10, 0, -12}, {10, 0, 6} }));
+    EXPECT_FALSE(r.ok) << "past the centreline from -z";
     // crossing through belt 1
     r = check(Belt(2, { {10, 0, 20}, {10, 0, -10} }));
     EXPECT_FALSE(r.ok);

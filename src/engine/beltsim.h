@@ -65,8 +65,9 @@ void Belt_Wake(BeltLine& line);
 // up to the end, every other item by speed but no closer than kBeltGap behind the one ahead. An item at the end leaves
 // into the line's sink or merge target when it has room. A line where nothing moved and the front stayed sleeps; a line
 // whose items moved or left wakes the lines feeding it (their merge may have room now). Sinks wake their lines themselves
-// (Belt_Wake) when they free room.
-void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink);
+// (Belt_Wake) when they free room. taken (#1735 PR 4, optional): the indices of the lines whose front went into its sink,
+// appended in line order (with the loads, what a client needs to replay the step).
+void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink, std::vector<int>* taken = nullptr);
 
 // FNV-1a over the id, the count and every item (id, gap): the MP sync compares these per belt.
 uint32_t Belt_Checksum(const BeltLine& line);

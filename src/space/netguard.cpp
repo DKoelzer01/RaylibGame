@@ -27,6 +27,7 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::DropItems: return { 6, 12 };     // (#865: Q drops one per press, a click outside the window a stack)
         case NetMsg::CreativeGive: return { 8, 20 };  // (#866: Catalog clicks and middle-clicks, a drag across the Catalog)
         case NetMsg::SkillSpend: return { 2, 6 };    // (#920: Learn clicks on the Skills tab)
+        case NetMsg::BeltResync: return { 2, 8 };    // (#1735: a client asks at most once a second per plot; a few plots at once)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }
