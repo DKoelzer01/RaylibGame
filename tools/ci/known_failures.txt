@@ -23,3 +23,4 @@ caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadl
 creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | the sim outruns the wall clock and the 15 s step deadline passes (19/20 recent runs pass)
 saves/roundtrip -> FAIL                 | #2045 | 2 of 7 checks fail intermittently (18/20 recent runs pass)
 space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; drop this line when the open fix PR lands
+world/spawn-by-water -> FAIL            | #2002 | the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
