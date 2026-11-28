@@ -624,44 +624,72 @@ void WillowV2(VariantMesh& m, unsigned int seed, int cls) {
     }
 }
 
-// Bushes (#1995): three kinds - a round shrub, a low spreading mat and an upright clump.
-void BushV2(VariantMesh& m, unsigned int seed, int kind) {
+// Bushes (#1995): three kinds - a round shrub, a low spreading mat and an upright clump - in four size classes (phase 3)
+// that differ in form, not only in scale: a seedling of one or two lobes; the bush as before; a large bush with more,
+// bigger lobes over a few woody stems; a thicket, a wide domed tangle of many lobes on several stems, taller than a man.
+struct BushClass { int lobes, lobesRand; float size, spread, lift; int stems; };
+constexpr BushClass kBushClass[kSmallFloraClasses] = {
+    { 1, 2, 0.5f, 0.45f, 0.6f, 0 },  // small: knee-high, ~0.5 m across
+    { 2, 3, 1.0f, 0.9f, 1.0f, 0 },   // medium: as before phase 3 (~1-1.5 m)
+    { 4, 3, 1.3f, 1.5f, 1.35f, 2 },  // large: ~2 m across, chest-high
+    { 7, 4, 1.55f, 2.6f, 1.7f, 4 },  // extra large: a thicket ~3.5 m across, ~2.5 m tall
+};
+void BushV2(VariantMesh& m, unsigned int seed, int kind, int cls) {
     std::mt19937 r(seed);
-    const int n = (kind == 1 ? 3 : 2) + (int)(U(r) * 3.0f);
+    const BushClass& b = kBushClass[std::clamp(cls, 0, kSmallFloraClasses - 1)];
+    const int n = b.lobes + (kind == 1 ? 1 : 0) + (int)(U(r) * b.lobesRand);
+    std::vector<Vector3> tops; // lobe centres, for the woody stems
     for (int k = 0; k < n; ++k) {
-        float c = 0.7f + 0.6f * U(r), h = c;
-        Vector3 o = { (U(r) - 0.5f) * 0.9f, 0.15f + 0.4f * U(r), (U(r) - 0.5f) * 0.9f };
-        if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = 0.1f + 0.15f * U(r); }
-        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = 0.25f + 0.3f * k; } // upright, not a pillar
+        float c = (0.7f + 0.6f * U(r)) * b.size, h = c;
+        Vector3 o = { (U(r) - 0.5f) * b.spread, (0.15f + 0.4f * U(r)) * b.lift, (U(r) - 0.5f) * b.spread };
+        // A dome: the lobes near the middle sit higher (a thicket's crown), the rim ones low.
+        o.y += 0.35f * (b.size - 0.5f) * std::max(0.0f, 1.0f - 2.0f * sqrtf(o.x * o.x + o.z * o.z) / std::max(b.spread, 0.1f));
+        if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = (0.1f + 0.15f * U(r)) * b.lift; }
+        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = (0.25f + 0.3f * (k % 3)) * std::min(b.lift, 1.15f); } // upright, not a pillar (big ones grow wider, not taller)
         Prism(m, Vector3Subtract(o, { 0, h * 0.45f, 0 }), Vector3Add(o, { 0, h * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
+        tops.push_back(o);
     }
-    if (kind == 2) Prism(m, { 0, -0.1f, 0 }, { 0, 0.4f, 0 }, 0.12f, 0.08f, 0.0f, false, Shade(r)); // a woody stem under the clump
-    m.trunkRadius = 0.0f;
-    m.trunkHeight = 0.0f;
-}
-
-void Bush(VariantMesh& m, unsigned int seed) {
-    std::mt19937 r(seed);
-    const int n = 2 + (int)(U(r) * 3.0f);
-    for (int k = 0; k < n; ++k) {
-        const float c = 0.7f + 0.6f * U(r);
-        const Vector3 o = { (U(r) - 0.5f) * 0.9f, 0.15f + 0.4f * U(r), (U(r) - 0.5f) * 0.9f };
-        Prism(m, Vector3Subtract(o, { 0, c * 0.45f, 0 }), Vector3Add(o, { 0, c * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
+    const int stems = b.stems + (kind == 2 ? 1 : 0);
+    for (int k = 0; k < stems && k < (int)tops.size(); ++k) { // woody stems from the ground into the lobes
+        const Vector3 o = tops[k], foot = { o.x * 0.35f, -0.1f, o.z * 0.35f };
+        const float w = 0.05f + 0.05f * b.size;
+        Prism(m, foot, { o.x, std::max(0.4f, o.y), o.z }, w, w * 0.6f, U(r), false, Shade(r));
     }
     m.trunkRadius = 0.0f;
     m.trunkHeight = 0.0f;
 }
 
-// Loose stones: two to four low, tilted lumps a hand or two across, lying on the ground.
-void Stones(VariantMesh& m, unsigned int seed) {
+// Loose stones (#1995 phase 3) in four size classes: a scatter of pebbles; two to four lumps a hand or two across (as
+// before); a knee-high rock with chips beside it; a boulder taller than a man, a second block leaning on it.
+void Stones(VariantMesh& m, unsigned int seed, int cls) {
     std::mt19937 r(seed);
     gStoneFlag = 255;
-    const int n = 2 + (int)(U(r) * 3.0f);
-    for (int k = 0; k < n; ++k) {
-        const float c = 0.22f + 0.28f * U(r);
-        const Vector3 o = { (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f };
-        const Vector3 tilt = { (U(r) - 0.5f) * 0.3f, 0.0f, (U(r) - 0.5f) * 0.3f };
-        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, tilt), { 0, c * 0.45f, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    auto lump = [&](Vector3 o, float c, float tall, float tilt) {
+        const Vector3 lean = { (U(r) - 0.5f) * tilt * c, 0.0f, (U(r) - 0.5f) * tilt * c };
+        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, lean), { 0, c * tall, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    };
+    if (cls <= 0) {
+        const int n = 3 + (int)(U(r) * 4.0f);
+        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.6f, 0.0f, (U(r) - 0.5f) * 0.6f }, 0.1f + 0.1f * U(r), 0.4f, 0.6f);
+    } else if (cls == 1) {
+        const int n = 2 + (int)(U(r) * 3.0f);
+        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f }, 0.22f + 0.28f * U(r), 0.45f, 1.2f);
+    } else if (cls == 2) {
+        const float c = 0.7f + 0.3f * U(r);
+        lump({ 0.0f, 0.0f, 0.0f }, c, 0.55f, 0.4f);
+        Prism(m, { 0.0f, c * 0.2f, 0.0f }, { 0.05f * c, c * 0.68f, 0.0f }, c * 0.8f, c * 0.45f, U(r) * 1.5f, false, Shade(r)); // a rounded top
+        const int chips = 1 + (int)(U(r) * 2.0f);
+        for (int k = 0; k < chips; ++k) { const float a = U(r) * 6.283f; lump({ cosf(a) * 0.65f * c, 0.0f, sinf(a) * 0.65f * c }, 0.2f + 0.12f * U(r), 0.45f, 1.0f); }
+    } else {
+        // A boulder: three stacked blocks (wider in the middle: a rounded mass), turned against each other.
+        const float c = 1.6f + 0.5f * U(r);
+        Prism(m, { 0.0f, -0.3f, 0.0f }, { 0.0f, c * 0.35f, 0.0f }, c * 0.85f, c, U(r) * 1.5f, false, Shade(r));
+        Prism(m, { 0.0f, c * 0.35f, 0.0f }, { 0.08f * c, c * 0.7f, 0.0f }, c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+        Prism(m, { 0.08f * c, c * 0.7f, 0.0f }, { 0.1f * c, c * 0.88f, 0.05f * c }, c * 0.7f, c * 0.35f, U(r) * 1.5f, false, Shade(r));
+        const float a = U(r) * 6.283f, c2 = c * (0.5f + 0.15f * U(r)); // the second block, leaning on the first
+        lump({ cosf(a) * 0.6f * c, 0.0f, sinf(a) * 0.6f * c }, c2, 0.7f, 0.8f);
+        const int chips = 2 + (int)(U(r) * 3.0f);
+        for (int k = 0; k < chips; ++k) { const float b = U(r) * 6.283f, d = (0.75f + 0.3f * U(r)) * c; lump({ cosf(b) * d, 0.0f, sinf(b) * d }, 0.15f + 0.2f * U(r), 0.45f, 1.0f); }
     }
     gStoneFlag = 0;
     m.trunkRadius = 0.0f;
@@ -702,10 +730,21 @@ void BuildVariants() {
         VariantMesh& m = gVariants[0][mesh];
         // The phase-2 species have no pre-#1995 shape: with forms off their form 0 is still their own.
         const bool newSpecies = v < kFirstBush && SpeciesOfVariant(v) >= WoodSpecies::Acacia;
-        if ((forms || (newSpecies && form == 0)) && v != kStoneVariant) {
+        if (v >= kFirstBush) {
+            // The small flora (#1995 phase 3): each kind in its size classes; stones have one form (their scatter varies them).
+            const int cls = SmallFloraClassOfVariant(v);
+            if (IsStoneVariant(v)) {
+                if (form == 0) Stones(m, 4000u + v * 7919u, cls);
+                else { m = gVariants[0][TreeMeshOf(v, 0)]; m.vboPos = m.vboNrm = m.vboCol = 0; }
+            } else if (forms || form == 0) {
+                BushV2(m, 3000u + v * 7919u + (unsigned)form * 104729u, BushKindOfVariant(v), cls);
+            } else {
+                m = gVariants[0][TreeMeshOf(v, 0)]; m.vboPos = m.vboNrm = m.vboCol = 0;
+            }
+        } else if (forms || (newSpecies && form == 0)) {
             // #1995: form 0 keeps the variant's old seed; the others are their own trees.
             const unsigned int fs = (unsigned)form * 104729u;
-            if (v < kFirstBush) {
+            {
                 const int sp = (int)SpeciesOfVariant(v), cls = SizeClassOfVariant(v);
                 const unsigned int s2 = 5000u + v * 7919u + fs;
                 switch ((WoodSpecies)sp) {
@@ -722,13 +761,11 @@ void BuildVariants() {
                     case WoodSpecies::Willow: WillowV2(m, s2, cls); break;
                     case WoodSpecies::Count: break;
                 }
-            } else {
-                BushV2(m, 3000u + v * 7919u + fs, v - kFirstBush);
             }
         } else if (form > 0) {
-            m = gVariants[0][TreeMeshOf(v, 0)]; // without forms (and for stones, already varied by their scatter) form 0 stands in
+            m = gVariants[0][TreeMeshOf(v, 0)]; // without forms form 0 stands in
             m.vboPos = m.vboNrm = m.vboCol = 0;
-        } else if (v < kFirstBush) {
+        } else {
             // The species' shape (oak broad and heavy, birch tall and slender, maple round and full; pine tall and
             // sparse, spruce dense and broad), then the size class's rules (#274): small = young and thin with few
             // branches; medium = the species as it was; large = taller, thicker, more and longer branches; extra
@@ -751,14 +788,12 @@ void BuildVariants() {
                 Broadleaf(m, 1000u + v * 7919u, b);
             }
         }
-        else if (v == kStoneVariant) Stones(m, 4000u + v * 7919u);
-        else Bush(m, 3000u + v * 7919u);
         m.vertexCount = (int)(m.pos.size() / 3);
-        if (v == kStoneVariant) gVariants[1][mesh] = m; // already a few prisms (and no crown for FarFrom to fit)
+        if (IsStoneVariant(v)) gVariants[1][mesh] = m; // already a few prisms (and no crown for FarFrom to fit)
         else FarFrom(m, v, gVariants[1][mesh]);
         gVariants[1][mesh].vertexCount = (int)(gVariants[1][mesh].pos.size() / 3);
-        BakeFoliageAo(gVariants[0][mesh], v == kStoneVariant);
-        BakeFoliageAo(gVariants[1][mesh], v == kStoneVariant);
+        BakeFoliageAo(gVariants[0][mesh], IsStoneVariant(v));
+        BakeFoliageAo(gVariants[1][mesh], IsStoneVariant(v));
     }
 }
 // By mesh id (TreeMeshOf, #1995).
@@ -1043,12 +1078,31 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 v = (int)sp * kTreeClasses + cls;
                 scale = (0.8f + 0.35f * sz + 0.15f * forest) * flora.size; // the class carries the size; a little spread within it
                 scale *= WoodSpeciesInfo(sp).size; // (trees.txt: birch slender, kapok emergent)
-            } else if (stone) {
-                v = kStoneVariant;
-                scale = 0.8f + 0.6f * sz;
             } else {
-                v = kFirstBush + (int)(h * 3.0f) % 3;
-                scale = 0.7f + 0.7f * sz;
+                // (#1995 phase 3) The size class: the biome's and variant's shift, a ~40 m patch (stands of big bushes,
+                // a boulder field) and the plant's own draw (its own hash: the cell's draws stay as they were). The class
+                // carries the size in its mesh; the scale spreads it a little.
+                const SmallFloraSizes sizes = SmallFloraSizesOf(plantVariant, biome);
+                const float patch = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 40.0f), seed ^ (stone ? 0x57013eu : 0xb05e5u));
+                uint32_t sc = Hash(s ^ 0x1995c3u);
+                const int cls = SmallFloraSizeClass(stone ? sizes.stone : sizes.bush, patch, Unit(sc));
+                if (stone) {
+                    v = kFirstStone + cls;
+                    scale = 0.8f + 0.5f * sz;
+                } else {
+                    // The kind: the variant's shrub weights (biomes.txt), else the three alike, by the plant's hash h.
+                    int kind = (int)(h * 3.0f) % 3;
+                    if (vdef) {
+                        float total = 0.0f;
+                        for (float w : vdef->shrubs) total += w;
+                        if (total > 0.0f) {
+                            float at = h * total;
+                            for (int i = 0; i < kBushKinds; ++i) if (vdef->shrubs[i] > 0.0f) { kind = i; if ((at -= vdef->shrubs[i]) < 0.0f) break; }
+                        }
+                    }
+                    v = BushVariant(kind, cls);
+                    scale = 0.8f + 0.4f * sz;
+                }
             }
             bool cleared = false;
             for (const Vector4& c : clearings) if (Vector3Distance(ground, { c.x, c.y, c.z }) < c.w) { cleared = true; break; }
@@ -1063,12 +1117,15 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (growth < 1.0f) out.regrowing = true;
                 scale *= growth;
             }
-            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
+            // Sink the base a little; (#1995 phase 3) stones by their size: 0.15 m buried pebbles whole, a boulder sits deeper.
+            static const float kStoneSink[kSmallFloraClasses] = { 0.02f, 0.08f, 0.15f, 0.25f };
+            const float sink = stone ? kStoneSink[SmallFloraClassOfVariant(v)] : 0.15f;
+            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, sink));
             // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
             const PlanetField::Climate cl = f.climateAt(dir, e);
             const float code = BiomeClimateCode(cl.temp, cl.moist, plantVariant); // from 2: below 1.5 means no climate (#254); the variant for its tint (#2032)
             // #1995: one of the variant's forms, by its own hash (the cell's draws stay as they were); stones have one.
-            const int form = TreeFormsOn() && v != kStoneVariant ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
+            const int form = TreeFormsOn() && !IsStoneVariant(v) ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
             const int mesh = TreeMeshOf(v, form);
             out.inst[mesh].insert(out.inst[mesh].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
             out.ids[mesh].push_back(id);
@@ -1077,7 +1134,11 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
                 out.plants.push_back({ id, p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale, scale, v });
             } else {
-                out.plants.push_back({ id, p, dir, (stone ? 0.5f : 1.2f) * scale, 0.7f * scale, scale, v });
+                // Bushes and stones: height and radius from the class's mesh (#1995 phase 3: a pebble to a 3 m thicket).
+                const VariantBounds& vb = BoundsOf(v);
+                out.plants.push_back({ id, p, dir, vb.maxY * scale, 0.8f * vb.reach * scale, scale, v });
+                // A boulder blocks the way: a trunk to collide with, a little inside its blocks.
+                if (stone && SmallFloraClassOfVariant(v) >= kBoulderClass) out.trunks.push_back({ p, dir, vb.maxY * scale, 0.6f * vb.reach * scale });
             }
         }
 }
@@ -1405,7 +1466,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
                 offLoc = glGetUniformLocation(prog, "foliageTexOff");
             }
             static const float texOff = getenv("RAYLIBGAME_FOLIAGE_TEX") && !EnvFlag("RAYLIBGAME_FOLIAGE_TEX") ? 1.0f : 0.0f;
-            const float kind = v < kFirstBush ? (float)(int)WoodSpeciesInfo(SpeciesOfVariant(v)).texture : v == kStoneVariant ? 6.0f : 5.0f; // BarkTexture 0-4
+            const float kind = v < kFirstBush ? (float)(int)WoodSpeciesInfo(SpeciesOfVariant(v)).texture : IsStoneVariant(v) ? 6.0f : 5.0f; // BarkTexture 0-4
             if (kindLoc >= 0) glUniform1f(kindLoc, kind);
             if (offLoc >= 0) glUniform1f(offLoc, texOff);
         }
@@ -1674,7 +1735,7 @@ TEST(Trees, FormsAndSizeClasses) {
         EXPECT_GT(Variant(mesh, 1).vertexCount, 0) << mesh;
     }
     for (int v = 0; v < kTreeVariants; ++v) {
-        if (v == kStoneVariant) continue;
+        if (IsStoneVariant(v)) continue;
         const VariantMesh &a = Variant(TreeMeshOf(v, 0)), &b = Variant(TreeMeshOf(v, 1)), &c = Variant(TreeMeshOf(v, 2));
         EXPECT_TRUE(a.pos != b.pos && b.pos != c.pos && a.pos != c.pos) << "variant " << v << ": forms are clones";
         if (v < kFirstBush) { EXPECT_GT(a.trunkRadius, 0.0f) << v; EXPECT_GT(a.trunkHeight, 0.5f) << v; }
@@ -1689,6 +1750,54 @@ TEST(Trees, FormsAndSizeClasses) {
             prev = h;
         }
     }
+}
+
+// (#1995 phase 3) The small flora's size classes grow (height and reach, over the forms) for every bush kind and the
+// stones; a boulder stands taller than a man; a positive shift moves the mix to the big classes; biomes.txt's keys parse.
+TEST(Trees, SmallFloraSizeClasses) {
+    auto extent = [](int v, float& top, float& reach) {
+        top = reach = 0.0f;
+        for (int form = 0; form < kTreeForms; ++form) {
+            const VariantMesh& m = Variant(TreeMeshOf(v, form));
+            for (size_t i = 0; i + 2 < m.pos.size(); i += 3) {
+                top = std::max(top, m.pos[i + 1]);
+                reach = std::max(reach, sqrtf(m.pos[i] * m.pos[i] + m.pos[i + 2] * m.pos[i + 2]));
+            }
+        }
+    };
+    for (int kind = 0; kind <= kBushKinds; ++kind) { // kBushKinds: the stones
+        float prevTop = 0.0f, prevReach = 0.0f;
+        for (int cls = 0; cls < kSmallFloraClasses; ++cls) {
+            const int v = kind < kBushKinds ? BushVariant(kind, cls) : kFirstStone + cls;
+            EXPECT_EQ(kind < kBushKinds ? !IsStoneVariant(v) : IsStoneVariant(v), true) << v;
+            EXPECT_EQ(SmallFloraClassOfVariant(v), cls) << v;
+            float top, reach;
+            extent(v, top, reach);
+            EXPECT_GT(top, prevTop) << "kind " << kind << " class " << cls;
+            EXPECT_GT(reach, prevReach) << "kind " << kind << " class " << cls;
+            prevTop = top; prevReach = reach;
+        }
+        if (kind == kBushKinds) EXPECT_GT(prevTop, 1.9f) << "a boulder is taller than a man";
+    }
+    auto share = [](float shift, int cls) {
+        int n = 0;
+        for (int i = 0; i < 1000; ++i) n += SmallFloraSizeClass(shift, 0.5f, (i + 0.5f) / 1000.0f) == cls;
+        return n / 1000.0f;
+    };
+    EXPECT_NEAR(share(0.0f, 1), 0.42f, 0.03f);
+    EXPECT_GT(share(1.0f, 3), 2.0f * share(0.0f, 3));
+    EXPECT_GT(share(-1.0f, 0), share(0.0f, 0));
+    BiomeVariantTable t;
+    std::string err;
+    std::string all;
+    for (int b = 0; b < (int)Biome::Count; ++b) { std::string n = BiomeName((Biome)b); for (char& ch : n) ch = (char)tolower((unsigned char)ch); all += "variant " + n + ".base\n"; }
+    ASSERT_TRUE(BiomeVariants_Parse(all + "variant forest.thicket\n  sizes 0.8 - -0.5\n  shrubs 1 0 2\n", t, &err)) << err;
+    const BiomeVariantDef& d = t.defs[t.find("forest.thicket")];
+    EXPECT_FLOAT_EQ(d.bushSize, 0.8f); EXPECT_FLOAT_EQ(d.stoneSize, 0.0f); EXPECT_FLOAT_EQ(d.grassSize, -0.5f);
+    EXPECT_FLOAT_EQ(d.shrubs[2], 2.0f);
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  sizes 1 2\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  shrubs 0 0 0\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  sizes 3 0 0\n", t, &err));
 }
 
 // (#1995 phase 2) trees.txt parses and names every species; bad lines are errors; each species' log is a real item name.
