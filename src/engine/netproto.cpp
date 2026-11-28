@@ -967,7 +967,7 @@ void NetWrite(NetWriter& w, const MsgMachineAction& m) {
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 10 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103 - widen with each new action, #1365)
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > kNetMachineActionMax || m.which > 2) r.ok = false; // (#1365, #2150: machineact.h asserts the actions fit)
     m.part = (int32_t)part;
     return Done(r);
 }
