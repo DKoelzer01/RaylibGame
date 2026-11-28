@@ -14,3 +14,4 @@ part post 0 2 0 0 oak_log
 part post 19 2 13 0 oak_log
 part campfire 15 0 9 0 stone
 loot 4 0 9 ruin_common
+cache small 8 0 10

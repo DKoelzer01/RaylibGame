@@ -17,7 +17,7 @@ namespace {
 // A placeable part's item stacks as a block (256). Not shapes, the lever, or the parts only the world places (#812): a
 // meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must stay a resource.
 bool PartItemIsBlock(PartType t) {
-    return !IsShape(t) && t != PartType::Meteorite && t != PartType::PressurePlate && t != PartType::GasVent && t != PartType::Lever;
+    return !IsShape(t) && t != PartType::Meteorite && t != PartType::PressurePlate && t != PartType::GasVent && t != PartType::Lever && t != PartType::RuinCache;
 }
 } // namespace
 
