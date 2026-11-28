@@ -40,7 +40,7 @@ Caches (actions/cache, 10 GB per repo, least recently used goes first): ccache p
 branch's, which the push runs keep warm), the toolchain downloads, the raylib / googletest sources
 (`tools/ci/fetch_deps.sh`, keyed on the tags in CMakeLists.txt) and the GameNetworkingSockets install (keyed on
 `tools/build_gns.sh`). A cold run builds GNS (protobuf) once per OS; later runs only compile what changed.
-`concurrency` cancels a PR's older run when it is pushed again.
+`concurrency` cancels a PR's older run when it is pushed again (and a pushed branch's older run on the next push).
 
 Timings (PR #1024, 2026-11-20): cold (nothing cached) Windows ~11.5 min (GNS 3.3 min + build 7.4 min), Linux ~5.5 min
 (GNS 1.5 min + build 2.8 min); warm (all cached, nothing to recompile) Windows 35 s, Linux 51 s. A PR touching a few
@@ -112,6 +112,15 @@ tier first; its summary line says which and why.
   that (user, 2026-11-26: no outside trigger). A by-hand batch: `gh workflow run selfhosted.yml -r staging`
   (`-f tier=scheduled` skips it when staging hasn't moved).
 - `vars.INTEGRATION_BRANCH` names the integration branch (default `staging`).
+- **Superseded runs are cancelled (#2117, user 2026-11-28).** `concurrency` groups runs by the branch they build and
+  by class: `full` (the nightly, a push to `develop`, `tier=full`), `timed` (the 4-h batch, `tier=scheduled`) and `run`
+  (everything else, e.g. a PR's evidence). In `full` and `run` the newer run cancels the older one, queued or running:
+  dispatching a PR branch again for a new head drops the old head's run, and the merge bot reads the new head's run.
+  Two dispatches on one branch in the same class also cancel each other, so don't start a second run on a branch
+  whose run you still need (e.g. an `extra_scenarios` run beside a PR's evidence run). `timed` runs never cancel:
+  a duplicate queues and its plan step skips a commit already covered (`ci_plan.sh` marks the commit for the next
+  timed batch after the nightly, a manual batch or a full run too). The 4-h cron leaves out 04:30, beside the
+  05:00 nightly. Hosted PR checks cancel per PR (or per pushed branch) the same way.
 
 ## The regression, split (#1028)
 

@@ -43,11 +43,19 @@ class Planetoid;
 struct RenderContext;
 
 // Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules), in
-// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then 3 bushes and the loose stones.
+// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then the small flora (#1995 phase 3): 3 bush
+// kinds x 4 size classes, then the loose stones x 4 size classes (pebbles, stones, a rock, a boulder).
 constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
 constexpr int kFirstBush = kWoodSpecies * kTreeClasses;
-constexpr int kStoneVariant = kFirstBush + 3; // loose stones on the ground: picked up for stone (the first stone tools)
-constexpr int kTreeVariants = kStoneVariant + 1;
+constexpr int kBushKinds = 3;                // a round shrub, a low spreading mat, an upright clump
+constexpr int kSmallFloraClasses = 4;        // small, medium, large, extra large (a thicket; a boulder)
+constexpr int kFirstStone = kFirstBush + kBushKinds * kSmallFloraClasses; // loose stones: picked up for stone (the first stone tools)
+constexpr int kTreeVariants = kFirstStone + kSmallFloraClasses;
+inline bool IsStoneVariant(int v) { return v >= kFirstStone && v < kTreeVariants; }
+inline int BushVariant(int kind, int cls) { return kFirstBush + kind * kSmallFloraClasses + cls; }
+inline int BushKindOfVariant(int v) { return (v - kFirstBush) / kSmallFloraClasses; }   // bushes only
+inline int SmallFloraClassOfVariant(int v) { return (v - kFirstBush) % kSmallFloraClasses; } // bushes and stones: 0 small .. 3 extra large
+constexpr int kBoulderClass = 3;             // a stone of this class blocks the way (a trunk to collide with) and takes hits to break
 // (#1995) Each variant comes as kTreeForms seeded meshes (its own branching), so a stand of one species and size is not
 // made of clones. Tiles and draws key on the mesh (TreeMeshOf); plants, logs and picking keep the variant.
 // RAYLIBGAME_TREE_FORMS=0: form 0 only, with the shapes as before #1995 (A/B).
@@ -77,7 +85,9 @@ constexpr float kTreeTileSize = 64.0f;      // m
 constexpr float kTreeInterestRange = 192.0f; // m: tiles kept around other interest centres (other players, #318)
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
-constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
+// Full meshes inside this, simple ones beyond. #1995 phase 4: 400 m (was 200): the swap to the few-prism far mesh shows
+// less out there, for +0.01-0.07 ms a frame at -O3 (perf/forest-view, perf/planet-view; bushes now stay full to 300 m).
+constexpr float kTreeNearDistance = 400.0f;
 // Shadow casters (#204 perf): trees within these of the camera go into the far / near cascade passes (boxes +-200 m and
 // +-32 m, plus long low-sun shadows and the 40 m the camera may move between batch rebuilds).
 constexpr float kTreeShadowFarReach = 355.0f, kTreeShadowNearReach = 115.0f; // from the sun axis through the camera: box half-diagonal + 40 m drift + 30 m tree
@@ -102,7 +112,8 @@ struct Plant {
     float scale;
     int variant;
     bool tree() const { return variant < kFirstBush; }
-    bool stone() const { return variant == kStoneVariant; }
+    bool stone() const { return IsStoneVariant(variant); }
+    int smallClass() const { return tree() ? -1 : SmallFloraClassOfVariant(variant); } // bushes and stones (#1995): 0..3
     // A tree trunk's volume relative to a medium broadleaf at scale 1 (0.3 m radius, ~5.2 m): chop hits and logs (#274).
     float trunkVolume() const { return tree() ? radius * radius * height / (0.09f * 5.2f) : 0.0f; }
     // Chop work and yield grow a little slower than the volume (volume^0.7): a medium oak ~14 hits / 5 logs, a giant ~55 / 26.
@@ -121,14 +132,20 @@ struct Trunk {
     float height, radius;
 };
 
+// A tile's instances by mesh. Immutable once built and shared (#2133): the batch sort reads it on a job while the main
+// thread goes on; a change (a plant removed) makes a new copy.
+struct TreeTileInstances {
+    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
+    std::vector<uint16_t> meshes;              // the meshes with any instances (the sort skips the empty ~200 of 216)
+};
 struct TreeTile {
     bool ready = false;
     uint32_t version = 0;
     Vector3 centre{};                          // body-local, on the surface
-    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::shared_ptr<const TreeTileInstances> draw = std::make_shared<TreeTileInstances>();
     std::vector<Trunk> trunks;
     std::vector<Plant> plants;                 // every tree and bush (picking)
-    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
     bool regrowing = false;                    // has saplings: rebuild now and then as they grow
     double builtAt = 0.0;                      // world time the build used
     bool pending = false;                      // a rebuild is queued
@@ -177,8 +194,13 @@ public:
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
+    // Instances the main view's GPU cull kept in the last frame (frustum + Hi-Z, #2141): reads the indirect commands
+    // back, a stall; tests only. -1 without the GPU cull.
+    int visibleInstances() const;
     // Tests: trees per species in loaded tiles within `range` of a body-local point.
     void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes = nullptr) const; // classes: kTreeClasses counts (#274)
+
+    struct BatchWork;                          // (#2133) a batch sort in flight on a job (trees.cpp)
 
 private:
     struct Shared;                             // results queue shared with worker jobs
@@ -198,15 +220,26 @@ private:
     // Two detail levels: [0..kTreeMeshes) full meshes near the camera, then simple far meshes.
     unsigned int vao[kTreeSets][2 * kTreeMeshes] = {}, vbo[kTreeSets][2 * kTreeMeshes] = {};
     int count[kTreeSets][2 * kTreeMeshes] = {};
+    int capacity[kTreeSets][2 * kTreeMeshes] = {}; // (#2133) instances each vbo has room for (kept between rebuilds)
     Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeMeshes] = {}, culledVbo[2 * kTreeMeshes] = {}, cmdBuf = 0;
+    int culledCapacity[2 * kTreeMeshes] = {};
+    // (#2141) The main view's placement in the frame it was drawn (the Hi-Z pyramid's frame, next frame): model and anchor.
+    Matrix hizModel{};
+    DVec3 hizAnchor{};
+    long long hizFrame = -1;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;
 
+    // (#2133) The batch rebuild: startBatch snapshots the tiles and sorts them on a job; finishBatch uploads the result.
+    std::shared_ptr<BatchWork> batchWork;
+    bool batchInFlight = false;
+
     void request(const TreeTileKey& key, TreeTile& tile, float priority);
-    void rebuildBatches(Vector3 camLocal);
+    void startBatch(Vector3 camLocal);
+    void finishBatch();
 };
 
 // Tile helpers (exposed for tests).

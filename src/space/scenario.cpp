@@ -524,13 +524,15 @@ void Scenario_Loading() {
     if (!R.active || R.finished || R.simStart < 0.0) return;
     const double now = Wall();
     gLastTouch = now;
+    // A legacy scenario (a bench drives it) has no steps: don't index past the list.
+    const std::string stepName = R.step >= 0 && R.step < (int)R.def.steps.size() ? R.def.steps[R.step].name : std::string("(legacy bench)");
     if (now - R.lastBeat >= 5.0) {
         R.lastBeat = now;
         printf("scenario: %s heartbeat: a loading screen during step %d/%zu '%s' (wall %.0f s)\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
-               R.def.steps[R.step].name.c_str(), now - R.wallStart);
+               stepName.c_str(), now - R.wallStart);
     }
     if (now - R.wallStart > R.def.timeout * WallFactor()) {
-        Finish("TIMEOUT", "a loading screen held step '" + R.def.steps[R.step].name + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
+        Finish("TIMEOUT", "a loading screen held step '" + stepName + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
         fflush(stdout);
         std::_Exit(3);
     }

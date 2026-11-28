@@ -317,6 +317,7 @@ struct PlanetField::ErosionState {
 };
 
 bool PlanetField::caveBaked() const { return erosion() != nullptr; }
+uint64_t PlanetField::erosionHash() const { const PlanetErosion* e = erosion(); return e ? e->hash() : 0; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -1977,8 +1978,12 @@ void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out
 
 // (#1223) The cave graph's segments and entrances near a box, for creature spawning (creatures.cpp / animals.cpp): from the
 // cells within kCaveCellReach of the box's corners projected onto the sea-level sphere, as shaftsNear looks them up.
+// (#2153) No box half the radius down or deeper: no caves reach there, and a box round the centre projects its corners
+// onto opposite sides of the sphere, so the loops would run over the whole planet's cells (~1e8 CaveCell builds: a hang).
 static void CaveCellsAround(const PlanetField& f, Vector3 lo, Vector3 hi, int clo[3], int chi[3], bool& ok) {
-    ok = true;
+    const Vector3 mid = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+    ok = Vector3Length(mid) - 0.5f * Vector3Distance(lo, hi) > 0.5f * f.radius;
+    if (!ok) return;
     for (int a = 0; a < 3; ++a) { clo[a] = INT32_MAX; chi[a] = INT32_MIN; }
     for (int k = 0; k < 8; ++k) {
         const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
@@ -4184,6 +4189,20 @@ TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
     printf("terrain probe hash %016llx\n", (unsigned long long)h);
     constexpr uint64_t kGolden = 16656868793744975483ull; // e72915ea8175667b, Linux GCC (sandbox)
     EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
+}
+
+// (#2153) A cave query round the planet's centre (a player whose body-local place was never set, from a stale save):
+// nothing, at once. It used to run over the whole planet's cave cells (~1e8 builds), freezing the game on load.
+TEST(Voxel, CaveQueriesAtTheCentreReturnNothing) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    std::vector<PlanetField::CaveSpan> spans{ PlanetField::CaveSpan{} };
+    f.caveSpansNear({ -50.0f, -10.0f, -50.0f }, { 50.0f, 90.0f, 50.0f }, spans);
+    EXPECT_TRUE(spans.empty());
+    std::vector<PlanetField::CaveEntrance> entrances{ PlanetField::CaveEntrance{} };
+    f.caveEntrancesNear({ -50.0f, -10.0f, -50.0f }, { 50.0f, 90.0f, 50.0f }, entrances);
+    EXPECT_TRUE(entrances.empty());
+    PlanetField::tIgnoreBake = false;
 }
 
 // (#1905) The erosion bake's input heights give the same bits on every platform: a Linux server and a Windows client

@@ -18,6 +18,10 @@ bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local, Frame
 // Called by a load that found no player of ours (a world from a dedicated server, say): put a new player at the world's
 // start with the starting kit. The world's own state (quests, difficulty) is the save's.
 void GameSave_SetNewPlayerHook(std::function<void()> hook);
+// (#2157) Called at the end of a load in a game with no player of its own (a dedicated server): its unused player object
+// still centres streaming, cave gas and the render origin, so it goes to the world's start (no kit), with the bodies
+// already in their saved rotation.
+void GameSave_SetServerSpawnHook(std::function<void()> hook);
 class Scene;
 bool GameSave_TestSplit(Scene& world); // --test-save-split (#346)
 
