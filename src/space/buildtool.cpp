@@ -713,6 +713,7 @@ bool BuildTool_AimingUsable() {
     if (machineAim.part < 0) return false;
     const PartType t = machineAim.type;
     if (t == PartType::Campfire || t == PartType::RuinCache || t == PartType::Lever) return true;
+    if (!TeamAltsFor(t).empty()) return true; // (#2072) E picks its next alternate recipe
     if (t != PartType::Gate) return false; // E acts on a gate only while it is a locked vault door (a fence gate: the inventory)
     Planetoid* gb = Planetoid::find(machineAim.body);
     Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
