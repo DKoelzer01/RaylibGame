@@ -1063,7 +1063,8 @@ void Machine_DrawHUD() {
     std::string altLine;
     if (!v.alt.empty() || !TeamAltsFor(machineAim.type).empty()) {
         const CacheAlt* a = v.alt.empty() ? nullptr : Caches_FindAlt(v.alt);
-        altLine = TextFormat("recipe: %s  (E: next alternate)", a ? a->name.c_str() : v.alt.empty() ? "base" : v.alt.c_str());
+        const std::string name = a ? a->name.substr(0, a->name.find(" (")) : v.alt.empty() ? "base" : v.alt; // (the short name: the panel's width; the toast says the rest)
+        altLine = TextFormat("recipe: %s  (E: next alternate)", name.c_str());
     }
     const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1) + (altLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
