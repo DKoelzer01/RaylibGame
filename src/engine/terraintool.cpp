@@ -874,7 +874,8 @@ void TerrainTool_DrawHUD() {
             what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
         } else { // (#1995 phase 3) the small flora's size class
             static const char* kStone[] = { "pebbles", "stones", "rock", "boulder" }, *kBush[] = { "small bush", "bush", "large bush", "thicket" };
-            what = (p.stone() ? kStone : kBush)[std::clamp(p.smallClass(), 0, 3)];
+            const int cls = std::max(0, std::min(p.smallClass(), 3));
+            what = (p.stone() ? kStone : kBush)[cls];
         }
         const bool breaks = p.stone() && p.smallClass() >= kBoulderClass;
         DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : breaks ? "break" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
