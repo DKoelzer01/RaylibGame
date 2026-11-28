@@ -129,7 +129,7 @@ void Survival_FeelTemperature(SurvivalState& s, float air, float dt) {
     else if (T > kHotAbove + kBandHysteresis) s.tempBand = 1;
 }
 
-// (#1472) Heat with depth: the bands and rates are the user's (2026-11-27); hot air above 50 C as level 2 is a GUESS.
+// (#1472) Heat with depth: the bands, rates, damage and hot-air levels are the user's (2026-11-27).
 constexpr float kHeatBand1Depth = 250.0f, kHeatBand2Depth = 500.0f; // m under the generated surface
 constexpr float kHotAirLevel2 = 50.0f;                               // C
 constexpr float kHeatFillOneShort = 100.0f / 180.0f, kHeatFillTwoShort = 100.0f / 30.0f, kHeatCool = 100.0f / 90.0f; // per s

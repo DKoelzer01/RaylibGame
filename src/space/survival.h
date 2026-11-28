@@ -138,7 +138,7 @@ int Survival_HeatLevel(float depth, float airC);
 // The heat bar after dt s at `level` in a suit of heat `rating` (SuitStats::heat): one short fills it in 180 s, two in 30 s;
 // a suit that stands the heat cools it in 90 s from full.
 float Survival_HeatStep(float heat, int level, int rating, float dt);
-constexpr float kHeatDamagePerSec = 0.5f; // (#1472, GUESS) health a second while the bar is full (200 s from full health)
+constexpr float kHeatDamagePerSec = 0.5f; // (#1472, the user's 2026-11-27) health a second while the bar is full (200 s from full health)
 
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);
