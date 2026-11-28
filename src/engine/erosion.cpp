@@ -1238,8 +1238,7 @@ void PlanetErosion::routeFinal(int threads) {
                     int p = c, steps = 0;
                     // need counts the cut earlier breaches already made (#2069): measured on the lowered heights alone,
                     // a smooth basin passed step by step and its rim was cut to the basin's full depth.
-                    static const bool dbgOld = getenv("DBG2069") != nullptr; // DEBUG #2069
-                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, (dbgOld ? 0.0f : breachCut[p]) + h[p] - t);
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, breachCut[p] + h[p] - t);
                     if (need <= kBreach && steps < 400) {
                         t = h[o];
                         for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
@@ -1887,7 +1886,9 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     const float R = 3000.0f;
     const ErosionParams p;
     PlanetErosion b;
-    // A crater 60 m deep and ~450 m across (option B breaches basins up to 8 m deep): the lake the wetness test needs.
+    // A sea in the south (with no outlet the routing floods nothing and no cell is filled) and a crater on a plateau in
+    // the north: closed basins for the wetness check. The coarse pass wears an outlet through the crater's rim; the filled
+    // cells are the basins the noise leaves elsewhere.
     auto height = [](Vector3 d, float) {
         const float dc = Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f });
         const float crater = 120.0f * std::max(0.0f, 1.0f - dc / 0.3f) - 250.0f * std::clamp((0.6f - dc) / 0.2f, 0.0f, 1.0f); // (on a plateau)
@@ -1913,21 +1914,13 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     }
     EXPECT_GT(maxErosion, 1.0f) << "the bake cut nowhere";
     EXPECT_GT(maxSlope, 1.0f);
-    for (float r : { 0.0f, 0.025f, 0.05f, 0.075f, 0.1f }) { // DEBUG #2069
-        const Vector3 d = Vector3Normalize(Vector3{ r, 0.6f, 0.8f });
-        printf("DBG r %.3f input %.1f baked %.1f flow %.1f\n", r, height(d, 0.0f), b.heightAt(d, 0.0f), b.flowHeight(b.flowCellOf(d)));
-    }
-    for (int g = b.flowCellOf(Vector3Normalize(Vector3{ 0.0f, 0.6f, 0.8f })), s = 0; g >= 0 && s < 40; g = b.flowReceiver(g), ++s) {
-        const Vector3 d = b.flowDir(g);
-        printf("DBG path %d (%.3f %.3f %.3f) flow %.1f baked %.1f input %.1f\n", g, d.x, d.y, d.z, b.flowHeight(g), b.heightAt(d, 0.0f), height(d, 0.0f));
-    }
-    printf("DBG cells %d flowCells %d ponds %d filled %d\n", b.cells(), b.flowCells(), (int)b.ponds().size(), (int)b.filledCells().size());
-    ASSERT_FALSE(b.filledCells().empty()) << "no lakes or ponds on the test planet";
+    // 5 filled cells; 1 while the breach limit ignored earlier cuts and drained deep basins step by step (#2069).
+    ASSERT_GE(b.filledCells().size(), 3u) << "the breach drained the test planet's basins (#2069)";
     int wet = 0;
-    for (const auto& fc : b.filledCells()) { wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f; printf("DBG fill %d level %.1f h %.1f wet %.2f\n", fc.first, fc.second, b.flowHeight(fc.first), b.fieldsAt(b.flowDir(fc.first)).wetness); }
+    for (const auto& fc : b.filledCells()) wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f;
     EXPECT_EQ(wet, (int)b.filledCells().size()) << "a filled cell's wetness fell under 0.6";
 
-    const std::string path = "build/test-1989.erosion";
+    const std::string path = ::testing::TempDir() + "test-1989.erosion";
     ASSERT_TRUE(b.save(path));
     PlanetErosion c;
     ASSERT_TRUE(c.load(path, R, 5u, ErosionParamsKey(p)));
