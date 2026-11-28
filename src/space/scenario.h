@@ -46,7 +46,9 @@ struct ScenarioCtx {
     double t = 0.0;                       // sim seconds since the current step began
     double T = 0.0;                       // sim seconds since the scenario began
     double wall = 0.0;                    // wall seconds since the current step began
-    double clock = 0.0;                   // what the step's deadline counts: t, or the lesser of t and wall (realTime, #1972)
+    double clock = 0.0;                   // what the step's deadline counts: t, or the lesser of t and wall (realTime, #1972),
+                                          // minus the sim time held by world work (#2119: the step waits while the world
+                                          // streams or builds, or a loading screen ran)
     long frame = 0;                       // frames since the scenario began
     int stepIndex = 0;
 
@@ -61,7 +63,7 @@ struct ScenarioCtx {
     void metric(const std::string& name, double v, const std::string& unit = "", bool lowerIsBetter = true); // reported only
     void note(const std::string& text);       // printed and kept in results.json
     void fail(const std::string& reason);     // ends the scenario now: FAIL
-    void waitingFor(const std::string& what); // the heartbeat says so
+    void waitingFor(const std::string& what); // the heartbeat says so; while the world isn't idle, the deadline pauses (#2119)
     void keepCapture(const std::string& reason); // keep the recording whatever the verdict (a look change for the user)
     void cue();                               // the recording's first frame from now (--record-on-cue)
     // Visual checks (#870 visual tier): grab the screen now as NAME.png (in the run's shots/ folder) and compare it with the
@@ -84,7 +86,8 @@ struct ScenarioCtx {
 
 struct ScenarioStep {
     std::string name;
-    double deadline = 60.0;                   // sim seconds after the step began (ScenarioCtx::clock in a realTime scenario)
+    double deadline = 60.0;                   // on ScenarioCtx::clock: sim seconds after the step began, less any held by
+                                              // world work while the step waits (#2119)
     std::function<bool(ScenarioCtx&)> run;    // true: done
 };
 
