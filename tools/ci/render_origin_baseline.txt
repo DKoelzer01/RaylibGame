@@ -20,6 +20,7 @@
 2 src/space/animals.cpp
 2 src/space/avatar.cpp
 1 src/space/beltmodels.cpp
+1 src/space/belttool.cpp
 4 src/space/blueprint.cpp
 2 src/space/blueprint.h
 1 src/space/bugreport.cpp

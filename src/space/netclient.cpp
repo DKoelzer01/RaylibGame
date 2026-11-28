@@ -321,6 +321,18 @@ namespace {
                 if (Planetoid* b = Planetoid::findNet(s.body)) Factory::SetRemoteWorking(b->id, s.plot, std::vector<int>(s.working.begin(), s.working.end()));
                 return;
             }
+            case NetMsg::BeltSnapshot: { // (#1735) a near plot's belts to replay from
+                MsgBeltSnapshot s;
+                if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
+                c.belts.onSnapshot({ s.body, s.plot }, s.snap, s.names, GetTime());
+                return;
+            }
+            case NetMsg::BeltSteps: { // (#1735) the next belt steps of a plot (NetClient_Update plays them)
+                MsgBeltSteps s;
+                if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
+                c.belts.onSteps({ s.body, s.plot }, s.epoch, s.first, s.steps, s.checksum, s.names, GetTime());
+                return;
+            }
             case NetMsg::Plants: { // (#335) plants the server removed (felled, picked up): gone here too, regrowing on the shared clock
                 MsgPlants p;
                 if (c.state != NetClient::State::Joined || !NetRead(r, p)) return;
@@ -516,6 +528,8 @@ void NetClient_Update(NetClient& c) {
         return;
     }
     if (c.state == NetClient::State::Joined && now - c.lastPing >= 1.0) { SendMsg(c, MsgPing{ ++c.pingSeq, now }); c.lastPing = now; }
+    if (c.state == NetClient::State::Joined) // (#1735) the belts play on; a drifted replica asks for a snapshot
+        for (const BeltClient::Key& k : c.belts.advance(GetFrameTime(), now)) SendMsg(c, MsgBeltResync{ k.first, k.second });
     if (now - c.lastHeard > kClientSilentTimeout || !Net_IsConnected(c.conn)) { c.bye = NetBye::TimedOut; End(c, NetClient::State::Closed); }
 }
 

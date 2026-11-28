@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 61; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c); 48: SetGem, a gem set in a composed copy (#1219); 49: heavy and from-behind flags in AnimalHit (#1509); 50: the lathe and wiremill part types in NetPart (#1614); 51: the multiblock part types (controller, casing, hatch) in NetPart (#1429); 52: multiblock forming (NetPartOp Form, the formed flag) (#1429); 53: a creative flyer's pose in each input step (#1922); 54: the trip hammer and mixer part types in NetPart (#1734); 55: the rotary sieve part type (#1734); 56: the rotary pump part type (#1734); 57: TeamStore, the team's progression store to its members (#1886); 58, 59 are open PRs' (#1886, #1735); 60 is an open PR's (#2072, ruin cache); 61: staging and ladder merged (sync, #2097)
+constexpr uint32_t kNetProtocol = 61; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c); 48: SetGem, a gem set in a composed copy (#1219); 49: heavy and from-behind flags in AnimalHit (#1509); 50: the lathe and wiremill part types in NetPart (#1614); 51: the multiblock part types (controller, casing, hatch) in NetPart (#1429); 52: multiblock forming (NetPartOp Form, the formed flag) (#1429); 53: a creative flyer's pose in each input step (#1922); 54: the trip hammer and mixer part types in NetPart (#1734); 55: the rotary sieve part type (#1734); 56: the rotary pump part type (#1734); 57: TeamStore, the team's progression store to its members (#1886); 58 is an open PR's (#1886); 59: belt sync, BeltSnapshot, BeltSteps, BeltResync (#1735); 60 is an open PR's (#2072, ruin cache); 61: staging and ladder merged (sync, #2097)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -71,6 +71,10 @@ enum class NetMsg : uint8_t {
     SetGem = 47,        // client -> server (#1219): set a gem from the inventory in a free socket of one composed copy (item + record)
     TeamStore = 48,     // server -> client (#1886): the player's team's progression store (research, explored map, blueprint
                         // library) as TeamStore_Text, on join, on a team change and when it changes (47 is the ladder's SetGem)
+    // 48 .. 50 are #1886's on staging (TeamStore, MapPin, ResearchQueue)
+    BeltSnapshot = 51,  // server -> client (#1735): one near plot's belts (lines, ends, items) at a belt step, to replay from
+    BeltSteps = 52,     // server -> client (#1735): the next belt steps of a plot (wakes, loads, takes) and the checksum after them
+    BeltResync = 53,    // client -> server (#1735): its replica of a plot's belts drifted: send a snapshot
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -235,6 +239,11 @@ struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count 
 struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; std::string data; }; // data (#1446 2b): insert that one item (actions 1, 8)
 struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
 struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
+// (#1735) Belts replayed on clients (beltsync.h). Item ids are the server's (the checksums cover them); names: each id's
+// item name, for the ids in the message the client hasn't been told yet (drawing).
+struct MsgBeltSnapshot { uint64_t body = 0; uint32_t plot = 0; BeltSyncSnapshot snap; std::vector<std::pair<int32_t, std::string>> names; };
+struct MsgBeltSteps { uint64_t body = 0; uint32_t plot = 0; uint32_t epoch = 0; int64_t first = 0; std::vector<BeltSyncStep> steps; uint32_t checksum = 0; std::vector<std::pair<int32_t, std::string>> names; };
+struct MsgBeltResync { uint64_t body = 0; uint32_t plot = 0; };
 struct MsgTeamState { // #604: at most 16 members
     struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f;
                     uint32_t session = 0;  // (#828) online: theirs (where they are: the avatars); 0 offline
@@ -429,6 +438,12 @@ void NetWrite(NetWriter& w, const MsgMachineView& m);
 bool NetRead(NetReader& r, MsgMachineView& m);
 void NetWrite(NetWriter& w, const MsgMachineStates& m);
 bool NetRead(NetReader& r, MsgMachineStates& m);
+void NetWrite(NetWriter& w, const MsgBeltSnapshot& m);
+bool NetRead(NetReader& r, MsgBeltSnapshot& m);
+void NetWrite(NetWriter& w, const MsgBeltSteps& m);
+bool NetRead(NetReader& r, MsgBeltSteps& m);
+void NetWrite(NetWriter& w, const MsgBeltResync& m);
+bool NetRead(NetReader& r, MsgBeltResync& m);
 void NetWrite(NetWriter& w, const MsgTeamState& m);
 bool NetRead(NetReader& r, MsgTeamState& m);
 void NetWrite(NetWriter& w, const MsgPlantAction& m);

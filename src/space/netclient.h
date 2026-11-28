@@ -75,6 +75,7 @@ struct NetClient {
     int teamStores = 0, teamStoreTeam = 0;      // (#1886) team progression stores heard, and the team of the last one
     std::string teamStoreText;                  // ...and its text
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
+    BeltClient belts;                           // (#1735) the near plots' belts, replayed from the server's (beltsync.h)
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)

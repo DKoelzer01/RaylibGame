@@ -6,6 +6,7 @@
 // its first metres (terrain edits relight). Views from a corner and the middle are kept for a person to judge.
 #include "scenario.h"
 #include "animals.h"
+#include "creatures.h"
 #include "lightlevel.h"
 #include "player.h"
 #include "plots.h"
@@ -118,6 +119,19 @@ SCENARIO("light/torch-room") {
             c.check("a cave spawn site in the room is not dark", !Animals_CaveSiteDark(*c.body, S.pt(2.0f, 2.0f, kFloor + 0.1f), up));
             c.check("a site at the tunnel's far end is dark", Animals_CaveSiteDark(*c.body, S.pt(32.0f, 2.0f, kFloor + 0.1f), up),
                     TextFormat("level %d", Level(S.pt(32.0f, 2.0f, kFloor + 1.1f))));
+            // (#1740) the site's light (SpawnSite::light, what Spawn_Fits compares with dark=) is the grid's, not a guess:
+            // the lost miner (dark=0.1) fits the dark end, not the lit room.
+            const float litRoom = Animals_CaveSiteLight(*c.body, S.pt(2.0f, 2.0f, kFloor + 0.1f), up, false, 10.0f, false);
+            const float darkEnd = Animals_CaveSiteLight(*c.body, S.pt(32.0f, 2.0f, kFloor + 0.1f), up, false, 10.0f, false);
+            c.metric("spawn site light in the lit room", litRoom, "", false);
+            c.check("a spawn site in the lit room reads the grid (light > 0.2)", litRoom > 0.2f, TextFormat("%.3f", litRoom));
+            c.check("a spawn site at the dark far end reads dark (light <= 0.07)", darkEnd <= 0.07f, TextFormat("%.3f", darkEnd));
+            const CreatureSpec* m = Creature_Spec("lost_miner");
+            if (c.check("the lost miner's row is loaded", m != nullptr)) {
+                SpawnSite s; s.kind = 0; s.depth = 50.0f; // the miner's depth range; only the light differs
+                s.light = litRoom; c.check("the lost miner does not fit the lit site", !Spawn_Fits(*m, s));
+                s.light = darkEnd; c.check("the lost miner fits the dark site", Spawn_Fits(*m, s));
+            }
         }
         c.camera(S.pt(6.0f, 2.0f, kFloor + 1.7f), S.pt(20.0f, 2.0f, kFloor + 1.0f), S.home);
         return c.t > 2.0;

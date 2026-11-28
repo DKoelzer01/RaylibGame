@@ -12,6 +12,8 @@
 #   defence:   resist=type:share,...  armour=
 #   spawning:  habitat=surface|night|cave|mouth|dungeon  depth=min-max (m)  dark= (most light it spawns in, 0..1)
 #              cap= (per 64 m chunk)  respawn= (s)  nests=1
+#              region=karst,flooded (#1740: the underground regions it spawns in, underground.h names: none karst volcanic
+#              frozen crystal flooded fungal; absent: any region)
 #   loot=item:n,...  (on top of animals.txt's drops)
 #   sound_idle= sound_alert= sound_telegraph= sound_hurt= sound_death=  (names the audio side maps, #1246; a telegraph named
 #   creature_telegraph_<x> gets a subtitle caption with a direction arrow, #1346)
@@ -27,7 +29,8 @@ dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 si
 # Tunnel lurker (#1224): blind (sight 0), hunts by sound: sprinting (22 m), digging (26 m) and combat draw it; walking only within
 # ~9 m; sneaking (crouched, prone) is silent. Clings to ceilings and drops on prey passing under (x1.5, a heavy hit), fast in
 # short bursts, avoids light. Karst caves and chambers, 8 m+ down, dark; nests in large chambers.
-tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death say_windup=rattles_overhead say_hit=drops_on_you
+# region=none,karst,crystal,fungal (#1740, user 2026-11-27): dry rock caves; not the frozen, volcanic or flooded ones.
+tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave region=none,karst,crystal,fungal depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death say_windup=rattles_overhead say_hit=drops_on_you
 # Cave scavenger (#1225): humanoid groups of up to 3 by cave mouths, with torches. The first of a group throws stones from
 # 5-14 m (a 0.6 s wind-up you can see, then a stone on an arc for 6: block it with a shield or dodge) while the others close
 # in with blades; they retreat under 40% health; a dropped pile within 12 m is taken whole and run off with (it comes back
@@ -41,7 +44,8 @@ lost_miner | undead | aggro=territorial firesafe=0 range=12 chase=24 angry=30 si
 # Mineral ooze (#1226): slow, in wet karst by cave water and sumps, 10 m+ down. Its touch corrodes a held tool (15 strokes;
 # a tool that strikes it, 5). Cut (slash, pierce) it splits in two, twice at most; blunt hits and fire don't split it. It takes
 # on the colour of the ore where it lives and drops that ore (3; a split-off one, 1).
-mineral_ooze | ooze | aggro=territorial range=6 chase=12 angry=15 sight=0 darksight=0 hearing=10 damage=4 reach=1.3 windup=0.8 cooldown=1.6 knock=1 type=blunt split=1 corrode=15 wet=1 habitat=cave depth=10-400 dark=0.2 cap=2 respawn=900 sound_idle=ooze_burble sound_alert=ooze_squelch sound_telegraph=creature_telegraph_ooze_gather sound_hurt=ooze_splat sound_death=ooze_collapse say_windup=gathers_itself say_hit=seeps_over_you
+# region=karst,flooded (#1740, GUESS): the wet caves only.
+mineral_ooze | ooze | aggro=territorial range=6 chase=12 angry=15 sight=0 darksight=0 hearing=10 damage=4 reach=1.3 windup=0.8 cooldown=1.6 knock=1 type=blunt split=1 corrode=15 wet=1 habitat=cave region=karst,flooded depth=10-400 dark=0.2 cap=2 respawn=900 sound_idle=ooze_burble sound_alert=ooze_squelch sound_telegraph=creature_telegraph_ooze_gather sound_hurt=ooze_splat sound_death=ooze_collapse say_windup=gathers_itself say_hit=seeps_over_you
 # Ruin sentinel (#1228): a construct, near-stationary, guarding dungeons and ruins (#719; it spawns there when they come).
 # Every sentinel shoots: a 1.2 s charge-up (its eye glows red to white, lighting the room), then a dart at 28 m/s for 7,
 # out to 22 m: dodge it, or take it on a shield. Weak to blunt (x1.5), hard to cut (slash 40%, pierce 50% resisted, armour

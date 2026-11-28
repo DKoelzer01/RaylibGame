@@ -14,6 +14,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
         case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem"; case NetMsg::TeamStore: return "team store";
+        case NetMsg::BeltSnapshot: return "belt snapshot"; case NetMsg::BeltSteps: return "belt steps"; case NetMsg::BeltResync: return "belt resync"; // (#1735)
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -573,6 +574,9 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Claims: { MsgClaims m; return NetRead(r, m); }
         case NetMsg::SkillState: { MsgSkillState m; return NetRead(r, m); }
         case NetMsg::SkillSpend: { MsgSkillSpend m; return NetRead(r, m); }
+        case NetMsg::BeltSnapshot: { MsgBeltSnapshot m; return NetRead(r, m); }
+        case NetMsg::BeltSteps: { MsgBeltSteps m; return NetRead(r, m); }
+        case NetMsg::BeltResync: { MsgBeltResync m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -804,6 +808,24 @@ bool NetProto_Test() {
         }
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
+        { // (#1735) belts
+            MsgBeltSnapshot ba, bb; ba.body = 9; ba.plot = 2; ba.snap.epoch = 7; ba.snap.step = 12345;
+            ConduitRun run; run.id = 4; run.kind = ConduitKind::Belt; run.material = "basic"; run.size = kBeltWidth; run.points = { { 0, 8, 2 }, { 40, 8, 2 }, { 40, 8, -6 } };
+            BeltLine l = Belt_MakeLine(run, 6);
+            Belt_TryInsert(l, 3, 0); Belt_TryInsert(l, 5, 100); l.end = BeltEnd::Belt; l.outLine = 0; l.outPos = 16; l.asleep = true;
+            ba.snap.runs = { run }; ba.snap.lines = { l }; ba.names = { { 3, "stone" }, { 5, "iron_ore" } };
+            std::vector<uint8_t> sb1;
+            check(RoundTrip(ba, bb, &sb1) && bb.snap.epoch == 7 && bb.snap.step == 12345 && bb.snap.runs.size() == 1 && bb.snap.runs[0].points.size() == 3 && bb.snap.runs[0].points[2].z == -6
+                  && bb.snap.lines.size() == 1 && Belt_Checksum(bb.snap.lines[0]) == Belt_Checksum(l) && bb.snap.lines[0].asleep && bb.snap.lines[0].outPos == 16 && bb.snap.lines[0].end == BeltEnd::Belt
+                  && bb.names.size() == 2 && bb.names[1].second == "iron_ore", "belt snapshot"); samples.push_back(sb1);
+            MsgBeltSteps ta, tb; ta.body = 9; ta.plot = 2; ta.epoch = 7; ta.first = 12346; ta.checksum = 0xDEADBEEFu;
+            BeltSyncStep e1; e1.wakes = { 0, 3 }; e1.loads = { { 1, 5 } }; e1.takes = { 2 };
+            ta.steps = { e1, BeltSyncStep{} }; ta.names = { { 5, "iron_ore" } };
+            std::vector<uint8_t> sb2;
+            check(RoundTrip(ta, tb, &sb2) && tb.epoch == 7 && tb.first == 12346 && tb.steps.size() == 2 && tb.steps[0] == e1 && tb.steps[1] == BeltSyncStep{} && tb.checksum == 0xDEADBEEFu && tb.names.size() == 1, "belt steps"); samples.push_back(sb2);
+            MsgBeltResync ra{ 9, 2 }, rb; std::vector<uint8_t> sb3;
+            check(RoundTrip(ra, rb, &sb3) && rb.body == 9 && rb.plot == 2, "belt resync"); samples.push_back(sb3);
+        }
         MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 12.25f, 60001.5f, -3.75f, "grain_seeds" }, pb; std::vector<uint8_t> s13;
         check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.x == 12.25f && pb.y == 60001.5f && pb.z == -3.75f && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
         MsgPlants la{ 5, 3, { { 0xFFEEDDCCBBAA9988ull, 12345.25 }, { 7, 0.5 } } }, lb; std::vector<uint8_t> s14;
@@ -1075,6 +1097,127 @@ bool NetRead(NetReader& r, MsgMachineStates& m) {
     for (uint64_t i = 0; i < n && r.ok; ++i) { const int64_t p = r.vari(); if (p < 0 || p > 1000000) r.ok = false; m.working.push_back((int32_t)p); }
     return Done(r);
 }
+// (#1735) Belts replayed on clients. Caps: lines per plot, points per run, items per line, steps per message, events per
+// step, item names. A line's sink, tail position and packed cache aren't sent: the replica derives them (BeltReplica::reset).
+namespace {
+constexpr uint64_t kMaxBeltLines = 4096, kMaxBeltPoints = 256, kMaxBeltItems = 65536, kMaxBeltSteps = 256, kMaxBeltEvents = 4096, kMaxBeltNames = 4096;
+constexpr int64_t kMaxBeltLength = int64_t(1) << 40, kMaxBeltItemId = 1000000;
+void WriteBeltNames(NetWriter& w, const std::vector<std::pair<int32_t, std::string>>& names) {
+    const size_t n = std::min<size_t>(names.size(), kMaxBeltNames);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) { w.vari(names[i].first); w.str(names[i].second); }
+}
+void ReadBeltNames(NetReader& r, std::vector<std::pair<int32_t, std::string>>& names) {
+    names.clear();
+    const uint64_t n = r.varu();
+    if (n > kMaxBeltNames) { r.ok = false; return; }
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        const int64_t id = r.vari();
+        std::string s = r.str(64);
+        if (id < 0 || id > kMaxBeltItemId) { r.ok = false; return; }
+        names.push_back({ (int32_t)id, std::move(s) });
+    }
+}
+int ReadBeltIndex(NetReader& r, uint64_t lines) { const uint64_t i = r.varu(); if (i >= lines) { r.ok = false; return 0; } return (int)i; }
+} // namespace
+void NetWrite(NetWriter& w, const MsgBeltSnapshot& m) {
+    Id(w, NetMsg::BeltSnapshot); w.varu(m.body); w.u32(m.plot);
+    const BeltSyncSnapshot& s = m.snap;
+    w.u32(s.epoch); w.vari(s.step);
+    const size_t n = std::min<size_t>({ s.lines.size(), s.runs.size(), (size_t)kMaxBeltLines });
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) {
+        const ConduitRun& run = s.runs[i];
+        const BeltLine& l = s.lines[i];
+        w.vari(run.id); w.u8((uint8_t)run.kind); w.str(run.material); w.varu((uint64_t)std::max(1, run.size));
+        const size_t np = std::min<size_t>(run.points.size(), kMaxBeltPoints);
+        w.varu(np);
+        for (size_t p = 0; p < np; ++p) { w.vari(run.points[p].x); w.vari(run.points[p].y); w.vari(run.points[p].z); }
+        w.vari(l.id); w.vari(l.length); w.vari(l.speed); w.u8((uint8_t)l.end);
+        w.vari(l.outLine); w.vari(l.outPos); w.boolean(l.asleep);
+        const size_t ni = std::min<size_t>(l.items.size(), kMaxBeltItems);
+        w.varu(ni);
+        for (size_t k = 0; k < ni; ++k) { w.vari(l.items[k].item); w.vari(l.items[k].gap); }
+    }
+    WriteBeltNames(w, m.names);
+}
+bool NetRead(NetReader& r, MsgBeltSnapshot& m) {
+    m.body = r.varu(); m.plot = r.u32();
+    BeltSyncSnapshot& s = m.snap;
+    s.epoch = r.u32(); s.step = r.vari();
+    s.runs.clear(); s.lines.clear();
+    const uint64_t n = r.varu();
+    if (n > kMaxBeltLines || s.step < 0) { r.ok = false; return false; }
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        ConduitRun run;
+        run.id = (int)r.vari(); const uint8_t kind = r.u8(); run.material = r.str(64); run.size = (int)r.varu();
+        if (kind > (uint8_t)ConduitKind::Belt || run.size < 1 || run.size > 4) { r.ok = false; break; }
+        run.kind = (ConduitKind)kind;
+        const uint64_t np = r.varu();
+        if (np > kMaxBeltPoints) { r.ok = false; break; }
+        for (uint64_t p = 0; p < np && r.ok; ++p) { CInt3 c; c.x = (int)r.vari(); c.y = (int)r.vari(); c.z = (int)r.vari(); run.points.push_back(c); }
+        BeltLine l;
+        l.id = (int)r.vari(); l.length = r.vari(); l.speed = (int)r.vari(); const uint8_t end = r.u8();
+        l.outLine = (int)r.vari(); l.outPos = r.vari(); l.asleep = r.boolean();
+        if (l.length < 0 || l.length > kMaxBeltLength || l.speed < 0 || end > (uint8_t)BeltEnd::Belt) { r.ok = false; break; }
+        l.end = (BeltEnd)end;
+        if (l.end == BeltEnd::Belt && (l.outLine < 0 || (uint64_t)l.outLine >= n || l.outPos < 0)) { r.ok = false; break; }
+        const uint64_t ni = r.varu();
+        if (ni > kMaxBeltItems) { r.ok = false; break; }
+        int64_t total = 0;
+        for (uint64_t k = 0; k < ni && r.ok; ++k) {
+            BeltItem it; const int64_t id = r.vari(); it.gap = r.vari();
+            if (id < 0 || id > kMaxBeltItemId || it.gap < 0 || (k > 0 && it.gap < kBeltGap)) { r.ok = false; break; }
+            it.item = (int)id; total += it.gap;
+            if (total > l.length) { r.ok = false; break; } // every item on the belt
+            l.items.push_back(it);
+        }
+        s.runs.push_back(std::move(run)); s.lines.push_back(std::move(l));
+    }
+    if (r.ok) ReadBeltNames(r, m.names);
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgBeltSteps& m) {
+    Id(w, NetMsg::BeltSteps); w.varu(m.body); w.u32(m.plot);
+    w.u32(m.epoch); w.vari(m.first);
+    const size_t n = std::min<size_t>(m.steps.size(), kMaxBeltSteps);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) {
+        const BeltSyncStep& s = m.steps[i];
+        const size_t nw = std::min<size_t>(s.wakes.size(), kMaxBeltEvents), nl = std::min<size_t>(s.loads.size(), kMaxBeltEvents), nt = std::min<size_t>(s.takes.size(), kMaxBeltEvents);
+        w.varu(nw); for (size_t k = 0; k < nw; ++k) w.varu((uint64_t)std::max(0, s.wakes[k]));
+        w.varu(nl); for (size_t k = 0; k < nl; ++k) { w.varu((uint64_t)std::max(0, s.loads[k].first)); w.vari(s.loads[k].second); }
+        w.varu(nt); for (size_t k = 0; k < nt; ++k) w.varu((uint64_t)std::max(0, s.takes[k]));
+    }
+    w.u32(m.checksum);
+    WriteBeltNames(w, m.names);
+}
+bool NetRead(NetReader& r, MsgBeltSteps& m) {
+    m.body = r.varu(); m.plot = r.u32();
+    m.epoch = r.u32(); m.first = r.vari();
+    m.steps.clear();
+    const uint64_t n = r.varu();
+    if (n > kMaxBeltSteps || m.first < 1) { r.ok = false; return false; }
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        BeltSyncStep s;
+        uint64_t c = r.varu(); if (c > kMaxBeltEvents) { r.ok = false; break; }
+        for (uint64_t k = 0; k < c && r.ok; ++k) s.wakes.push_back(ReadBeltIndex(r, kMaxBeltLines));
+        c = r.varu(); if (c > kMaxBeltEvents) { r.ok = false; break; }
+        for (uint64_t k = 0; k < c && r.ok; ++k) {
+            const int li = ReadBeltIndex(r, kMaxBeltLines); const int64_t id = r.vari();
+            if (id < 0 || id > kMaxBeltItemId) { r.ok = false; break; }
+            s.loads.push_back({ li, (int)id });
+        }
+        c = r.varu(); if (c > kMaxBeltEvents) { r.ok = false; break; }
+        for (uint64_t k = 0; k < c && r.ok; ++k) s.takes.push_back(ReadBeltIndex(r, kMaxBeltLines));
+        m.steps.push_back(std::move(s));
+    }
+    m.checksum = r.u32();
+    if (r.ok) ReadBeltNames(r, m.names);
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgBeltResync& m) { Id(w, NetMsg::BeltResync); w.varu(m.body); w.u32(m.plot); }
+bool NetRead(NetReader& r, MsgBeltResync& m) { m.body = r.varu(); m.plot = r.u32(); return Done(r); }
 
 // ---- Plants and farming (#335) ----
 void NetWrite(NetWriter& w, const MsgPlantAction& m) {
