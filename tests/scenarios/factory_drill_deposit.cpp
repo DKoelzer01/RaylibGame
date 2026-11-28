@@ -128,12 +128,13 @@ SCENARIO("factory/borehole-rig") {
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         plot = c.body->plots->plotFor(ground, 0.0f, true);
         bodyId = c.body->id;
-        bool ok = Place(c, PartType::Generator, { 0, 0, 0 }) && Place(c, PartType::LvBoreholeRig, { 3, 0, 0 });
+        bool ok = Place(c, PartType::Generator, { 0, 0, 0 }) && Place(c, PartType::LvBoreholeRig, { 3, 0, 0 })
+               && Place(c, PartType::BoreholeRig, { 6, 0, 0 }); // the shaft rig beside it, for the look (unturned: it stays idle)
         for (int x = 0; x <= 4 && ok; ++x) ok = Place(c, PartType::Cable, { x, 0, -1 });
         gen = plot->partAt({ 0, 0, 0 }); rig = plot->partAt({ 3, 0, 0 });
         if (!c.check("a generator, an LV rig and a cable row placed", ok)) return true;
         Factory::Insert(bodyId, plot->id, gen, "coal", 64);
-        c.camera(plot->toBody({ 3.0f, 3.5f, 7.0f }), plot->toBody({ 3.5f, 1.0f, 0.0f }), plot->up);
+        c.camera(plot->toBody({ 4.5f, 3.0f, 7.0f }), plot->toBody({ 4.5f, 1.2f, 0.0f }), plot->up);
         Factory::Sync(c.world);
         return true;
     });
