@@ -259,6 +259,14 @@ Rulings 2026-11-24 to 2026-11-26 (user)
   develop -> main, each promotion only when the user says so.
 - CI (user, 2026-11-26, #1871): run fewer tests per change; the full suite before staging -> develop and always before
   develop -> main.
+- Test process review (user, 2026-11-28, #2107; findings https://claude.ai/artifact/D3nWzeGHwm4UHQTpEr2AND):
+  - A newer CI run cancels any run it supersedes (same workflow and branch/PR, queued or running), and scheduled runs
+    that duplicate another run on the same commit go too; self-hosted and hosted (#2117). The merge bot still needs a
+    passing run on the head SHA.
+  - "CI ok" gates on the null-GL scenario shards once #2110 and #2116 are in (#2123).
+  - Slow scenarios and the -cpu/-pose/-off twins run nightly only, plus when a PR's paths map to them (#2121).
+  - deweyserver: fixed cores per CI runner, everything else (sandbox, local model) niced (#2124).
+  - Each known-failure line has an owner and a 7-day expiry and drops off after 5 straight passes (#2122).
 - Sessions (user, 2026-11-26): the coordinator may stop and restart topic sessions itself near 250K tokens
   (`tools/coord/cycle_session.sh`, #1897; before it, the user cleared them by hand). A Tools and CI session owns CI and tooling
   (#1871, #1874). Local model plan: the coordinator drives the subject sessions; they design and decide, and implement

@@ -48,6 +48,13 @@ if [ -n "$kind" ]; then # a timed run: skipped when the branch hasn't moved sinc
         [ $dry = 1 ] || { mkdir -p "$(dirname "$marker")" && echo "$head" > "$marker"; }
     fi
 fi
+# (#2117) A batch or full run that isn't the timed batch (the nightly, a manual batch or full run) covers its commit too:
+# the next timed batch on the same commit skips instead of running it again.
+if [ "$tier" != affected ] && [ "$skip" = false ] && [ "$kind" != batch ] && [ $dry = 0 ]; then
+    head=$(git rev-parse "${HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+    batchMarker="${PERSIST:-/tmp}/ci-last-batch-${branch//\//_}.sha"
+    [ -n "$head" ] && mkdir -p "$(dirname "$batchMarker")" && echo "$head" > "$batchMarker"
+fi
 [ "${REGRESSION_INPUT:-none}" = headless ] && regression=true
 
 scenarios="" server=false
