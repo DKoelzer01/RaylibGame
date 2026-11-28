@@ -65,6 +65,11 @@ volume's device and inode, and its slot. (Before, concurrent jobs shared one `ou
 other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
 After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
 `tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
+**The GPU job is red only on NEW (#2120):** the scenario steps report (`continue-on-error`, shown amber) and that
+step decides: it fails when a failed scenario (the runner's `=== NAME FAIL` line, so crashes count) has no known line
+matching its result, or a scenario step broke (non-zero exit with no failed scenario listed, or ended by its own
+timeout). The build, GPU check, server and join steps still fail the job themselves. A green GPU job with amber steps
+means known failures only; read them in the summary.
 **The merge bot's runner gate** (`runner-evidence` PRs, deweyserver `mergebot`) passes a red run when every failure is
 known: in the run's own `known_failures.txt` or the base branch's current one. **Known-flaky** (user, 2026-11-27): in a
 PR that touches nothing under `src/` or `resources/`, a NEW *scenario* failure also passes when that scenario passed at
