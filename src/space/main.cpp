@@ -10467,6 +10467,7 @@ int main(int argc, char** argv)
                     static uint64_t loadBodyId = 0;
                     static DVec3 loadLocal{};
                     static Vector3 loadForward{}, loadUp{};
+                    static FramePos loadFrame{}; // (F7a) the record's frame state (frame.body 0: none)
                     static double heldFor = -1.0; // the loadStart this hold belongs to
                     // Before the step (it runs ahead of player.update) and once more on the frame the screen ends, so the first
                     // step starts from where the body has just carried the player (after it: a step late, 1.5 m off at the spin).
@@ -10483,7 +10484,8 @@ int main(int argc, char** argv)
                                     }
                             }
                             unsigned long long savedBody = 0; DVec3 savedLocal{};
-                            if (GameSave_TakeLoadedFrame(savedBody, savedLocal)) // a save just loaded: the record's spot exactly
+                            loadFrame.frame.body = 0;
+                            if (GameSave_TakeLoadedFrame(savedBody, savedLocal, &loadFrame)) // a save just loaded: the record's spot exactly
                                 if (Planetoid* sb = Planetoid::findNet((NetId)savedBody)) b = sb;
                             loadBodyId = b ? b->id : 0;
                             if (b) {
@@ -10491,11 +10493,14 @@ int main(int argc, char** argv)
                                 loadForward = b->dirToLocal(player.forward); loadUp = b->dirToLocal(player.up);
                             }
                         }
+                        // (Plan 11 F7a, #2074) A record with its frame state: held at it and released with its velocity (mid-jump,
+                        // mid-flight), not at rest against the ground.
+                        const bool framed = loadFrame.frame.body != 0 && player.restoreFrame(loadFrame);
                         if (Planetoid* b = loadBodyId ? Planetoid::find(loadBodyId) : nullptr) {
-                            player.position = b->toWorldD(loadLocal);
+                            if (!framed) player.position = b->toWorldD(loadLocal);
                             player.forward = b->dirToWorld(loadForward);
                             if (Vector3LengthSqr(loadUp) > 0.5f) player.up = b->dirToWorld(loadUp);
-                            player.velocity = b->surfaceVelocity((player.position - world.renderOrigin).toFloat()); // with the ground
+                            if (!framed) player.velocity = b->surfaceVelocity((player.position - world.renderOrigin).toFloat()); // with the ground
                         }
                         if (!loading) heldFor = -1.0; // released: this frame's step goes on from here
                     } else heldFor = -1.0;

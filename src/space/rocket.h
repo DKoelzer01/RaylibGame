@@ -104,7 +104,7 @@ bool Rocket_LoadLine(const char* tok, FILE* f);  // true if it consumed a rocket
 void Rocket_Reset();                           // a new world / load
 // Tests (Plan 11 F5, #1457): the flying rocket's global state (centre of mass, velocity) and its frame; setting the
 // state places it there (a teleport: on the frame path the frame state is re-seeded from it). False unless flying.
-bool Rocket_TestState(DVec3& com, Vector3& vel, FrameRef* frame = nullptr);
+bool Rocket_TestState(DVec3& com, Vector3& vel, FrameRef* frame = nullptr, FramePos* framePos = nullptr); // framePos: (F7a) the frame state itself
 bool Rocket_TestSetState(const DVec3& com, const Vector3& vel);
 double Rocket_TestStationGap(); // the nearest station part from the flying rocket's centre of mass (m; -1: none)
 
