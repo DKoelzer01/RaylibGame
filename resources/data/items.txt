@@ -144,7 +144,8 @@ rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxy
 thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
 flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
-thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
+thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold. With suit power it stands the deep band's heat.
+cooling_vest       | Cooling vest       |  tool | 150,200,220 | Suit module: a vest of coolant lines. Stands the heat of the middle band (250-500 m down).
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
 gas_sensor         | Gas sensor         |  tool | 170,220,120 | Suit module: warns of cave gas from 15 m, and where it is.
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
