@@ -1616,6 +1616,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             if (const Planetoid* b = Planetoid::find(c.body)) foci.push_back(b->toWorldD(DVec3(c.local)));
         for (auto& ring : Rings()) ring->update(world, foci);
     }
+    GpuTimer_CpuMark("w-rings");
 
     {
         std::lock_guard<std::mutex> lock(resultsMutex);
@@ -1677,12 +1678,13 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     // Back-pressure (#387): while the upload backlog is long, no new GPU density batches (finished ones are still
     // collected), so results can't pile up faster than frames take them.
     TerrainGpu_SetHold(pendingUploads.size() > kUploadBacklogCap);
+    GpuTimer_CpuMark("w-integrate");
 
     const auto w0 = std::chrono::steady_clock::now();
     UpdateWater(world); // simulated water: chunks redraw their water surface (#360)
     gUploadLoopMs += std::chrono::duration<double, std::milli>(w0 - t0).count();
     gWaterUpdMs = std::max(gWaterUpdMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count());
-    GpuTimer_CpuMark("w-uploads");
+    GpuTimer_CpuMark("w-water");
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     // Terrain detail (#297): the player's setting, at most fastFactor while the camera moves fast against the nearest
     // body (hysteresis between slowSpeed and fastSpeed). A change re-selects every body; a changed setting also
