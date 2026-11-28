@@ -67,6 +67,7 @@ stone_shovel 1     = any_stone 2, any_planks 2, fibre 2
 stone_axe 1        = any_stone 3, any_planks 2, fibre 2
 wooden_shield 1    = any_planks 4, fibre 3
 iron_pickaxe 1     = iron_ingot 3, any_planks 2
+crowbar 1          = iron_ingot 2
 iron_shovel 1      = iron_ingot 2, any_planks 2
 iron_axe 1         = iron_ingot 3, any_planks 2
 steel_pickaxe 1    = steel_ingot 3, any_planks 2
