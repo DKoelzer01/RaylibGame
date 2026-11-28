@@ -62,7 +62,7 @@ hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without powe
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
-miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit under it, forever.
+miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit below it (reach 128 m) until the deposit runs out.
 hv_generator    | HV generator    |  20 | 210, 60, 60 | Burns coke for HV power (512 V).
 arc_furnace     | Arc furnace     |  20 |  90, 90,110 | HV: titanium from ilmenite and coke; titanium alloy.
 refinery        | Refinery        |  20 | 140,110,160 | HV: rocket fuel from coal, hydrogen and oxygen.

@@ -34,7 +34,8 @@ enum class PartType : uint8_t;
 
 constexpr int kTicksPerSecond = 20;
 
-enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater };
+enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater,
+                                     NoDeposit, Depleted, TooClose }; // (#2071) a drill's
 const char* MachineStatusName(MachineStatus s);
 
 // A campfire's fire (#1103): by itself it lights when it has fuel and something to cook; a player can light it with nothing

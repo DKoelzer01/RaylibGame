@@ -58,12 +58,21 @@ macerator       | titanium_dust 1    | titanium_ingot 1          | 160 | 8
 electrolyzer    | hydrogen 2, oxygen 1 | water 2                 | 100 | 32
 electrolyzer    | aluminium_ingot 2  | bauxite_dust 4            | 400 | 64
 chemical_reactor | polyethylene 1    | coal 1, hydrogen 2        | 200 | 30
-miner           | iron_ore 1         | -                         | 200 | 32
-miner           | copper_ore 1       | -                         | 200 | 32
-miner           | tin_ore 1          | -                         | 200 | 32
-miner           | coal 1             | -                         | 200 | 32
-miner           | bauxite_ore 1      | -                         | 240 | 32
-miner           | ilmenite_ore 1     | -                         | 300 | 32
+# (#2071) The miner works the deposit below it (deposits.txt: reach 128 m, its finite pool): 1 unit a second at 64 EU/t
+# (user-confirmed), the main ore of every vein family (ore_families.txt)
+miner           | iron_ore 1         | -                         | 20 | 64
+miner           | copper_ore 1       | -                         | 20 | 64
+miner           | tin_ore 1          | -                         | 20 | 64
+miner           | coal 1             | -                         | 20 | 64
+miner           | bauxite_ore 1      | -                         | 20 | 64
+miner           | ilmenite_ore 1     | -                         | 20 | 64
+miner           | galena_ore 1       | -                         | 20 | 64
+miner           | pentlandite_ore 1  | -                         | 20 | 64
+miner           | magnetite_ore 1    | -                         | 20 | 64
+miner           | cinnabar_ore 1     | -                         | 20 | 64
+miner           | chromite_ore 1     | -                         | 20 | 64
+miner           | wolframite_ore 1   | -                         | 20 | 64
+miner           | gold_ore 1         | -                         | 20 | 64
 # HV (512 V).
 arc_furnace     | titanium_ingot 1   | ilmenite_dust 2, coke 1   | 600 | 120
 arc_furnace     | titanium_alloy_ingot 4 | titanium_ingot 3, aluminium_ingot 1 | 400 | 120
