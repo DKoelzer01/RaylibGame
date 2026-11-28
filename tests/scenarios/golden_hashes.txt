@@ -4,4 +4,4 @@
 # RAYLIBGAME_GOLDEN_UPDATE=1 (it writes the updated file into the run's folder: copy it here) and say why in the PR.
 determinism/state-hash cranked edits ef4394ca259e9bd3
 determinism/state-hash cranked factory ae4937702de85bf7
-determinism/state-hash flowing water aa7b57252cbfc4b4
+determinism/state-hash flowing water b042bc808bf22c7f
