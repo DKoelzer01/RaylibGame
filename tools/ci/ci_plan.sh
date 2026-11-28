@@ -13,8 +13,8 @@
 #
 # Env: EVENT, SCHEDULE (github.event.schedule), REF, TIER_INPUT (auto|affected|batch|full), REGRESSION_INPUT (none|headless),
 # INTEGRATION (the integration branch: vars.INTEGRATION_BRANCH, default staging),
-# PERSIST (ci-persist on the runners: the last batched commit per branch), HEAD_SHA (tests: another commit than HEAD).
-# --dry: print, don't write markers.
+# GH_TOKEN and GITHUB_REPOSITORY (the skip markers: commit statuses, #2144), HEAD_SHA (tests: another commit than HEAD).
+# --dry: print, don't post markers.
 set -u
 dry=0; [ "${1:-}" = --dry ] && dry=1
 out="${GITHUB_OUTPUT:-/dev/stdout}"
@@ -37,24 +37,42 @@ case "${EVENT:-workflow_dispatch}" in
             case "$branch" in "$integration"|develop|main) tier=batch; why="a dispatch on $branch" ;; *) tier=affected; why="a dispatch on $branch (a PR's evidence)" ;; esac
         else why="a dispatch asking for tier $tier"; fi ;;
 esac
+# (#2144) The skip marker is a commit status "self-hosted/<kind>" on the commit a run of that kind started on, so every
+# runner (and the hosted Plan job) sees the same one; files under each runner's ci-persist disagreed between runners.
+repo="${GITHUB_REPOSITORY:-DKoelzer01/RaylibGame}"
+head=$(git rev-parse "${HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
+mark() { # mark <kind>: the commit under test is covered by a run of that kind
+    [ $dry = 0 ] && [ -n "$head" ] || return 0
+    gh api -X POST "repos/$repo/statuses/$head" -f state=success -f context="self-hosted/$1" \
+        -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}" \
+        -f description="a run covering the $1 run started on this commit (the skip marker, tools/ci/ci_plan.sh)" > /dev/null \
+        || echo "::warning::could not post the self-hosted/$1 status on ${head:0:8}: the next $1 run won't skip"
+}
 if [ -n "$kind" ]; then # a timed run: skipped when the branch hasn't moved since the last one of its kind
-    head=$(git rev-parse "${HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
-    marker="${PERSIST:-/tmp}/ci-last-$kind-${branch//\//_}.sha"
-    if [ -n "$head" ] && [ -f "$marker" ] && [ "$(cat "$marker")" = "$head" ]; then
+    ctx="self-hosted/$kind"
+    marked() { # does commit $1 carry the status? (exit 2: the API can't be read)
+        local n; n=$(gh api "repos/$repo/commits/$1/statuses?per_page=100" --jq "[.[] | select(.context == \"$ctx\")] | length" 2>/dev/null) || return 2
+        [ "${n:-0}" -gt 0 ]
+    }
+    marked "$head"; rc=$?
+    if [ -n "$head" ] && [ $rc = 0 ]; then
         skip=true; why="$branch hasn't moved since the last $kind run (${head:0:8})"
     else
-        last=$(cut -c1-8 "$marker" 2>/dev/null || true)
-        why="the $kind run of $branch at ${head:0:8}$([ -n "$last" ] && echo ", covering $last..${head:0:8}: $(git rev-list --count "$last..$head" 2>/dev/null || echo '?') commits")"
-        [ $dry = 1 ] || { mkdir -p "$(dirname "$marker")" && echo "$head" > "$marker"; }
+        # the newest first-parent ancestor a run of this kind covered (20 at most: one API call each)
+        last="" covered=""
+        if [ $rc = 1 ]; then
+            for c in $(git rev-list --first-parent -n 20 "$head^" 2>/dev/null); do
+                if marked "$c"; then last=${c:0:8}; covered=$(git rev-list --count "$c..$head"); break; fi
+            done
+        fi
+        why="the $kind run of $branch at ${head:0:8}$([ -n "$last" ] && echo ", covering $last..${head:0:8}: $covered commits")"
+        [ $rc = 2 ] && why="$why (the commit statuses can't be read: not skipped)"
+        mark "$kind"
     fi
 fi
 # (#2117) A batch or full run that isn't the timed batch (the nightly, a manual batch or full run) covers its commit too:
 # the next timed batch on the same commit skips instead of running it again.
-if [ "$tier" != affected ] && [ "$skip" = false ] && [ "$kind" != batch ] && [ $dry = 0 ]; then
-    head=$(git rev-parse "${HEAD_SHA:-HEAD}" 2>/dev/null || echo "")
-    batchMarker="${PERSIST:-/tmp}/ci-last-batch-${branch//\//_}.sha"
-    [ -n "$head" ] && mkdir -p "$(dirname "$batchMarker")" && echo "$head" > "$batchMarker"
-fi
+if [ "$tier" != affected ] && [ "$skip" = false ] && [ "$kind" != batch ]; then mark batch; fi
 [ "${REGRESSION_INPUT:-none}" = headless ] && regression=true
 
 scenarios="" server=false

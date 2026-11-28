@@ -83,8 +83,13 @@ jobs:
   plan:
     name: Plan (tier, affected scenarios)
     if: ${{ vars.SELF_HOSTED_ENABLED == 'true' && github.repository == 'DKoelzer01/RaylibGame' }}
-    runs-on: [self-hosted, linux, raylibgame-linux, gpu]
+    # (#2144) A hosted runner: a checkout and a shell script need no GPU, and a run that plans "skip" or "no scenarios" no
+    # longer waits 30-80 min behind the GPU jobs. The repository is public, so hosted minutes are free.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write # the timed runs' skip markers: a commit status self-hosted/<kind> (tools/ci/ci_plan.sh)
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
       skip: ${{ steps.plan.outputs.skip }}
@@ -105,7 +110,7 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           TIER_INPUT: ${{ inputs.tier || 'auto' }}
           REGRESSION_INPUT: ${{ inputs.regression || 'none' }}
-          PERSIST: ${{ runner.workspace }}/ci-persist
+          GH_TOKEN: ${{ github.token }}
         run: bash tools/ci/ci_plan.sh
 
   # The server package on its own (#1028): its result is what tools/ci/deweyserver-update-server.sh looks at, so a failing
