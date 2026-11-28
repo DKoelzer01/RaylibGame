@@ -1405,7 +1405,7 @@ void RunJob() {
             for (const auto& [key, b] : all) {
                 if (key != std::make_tuple(cbi, cbj, cbk)) continue;
                 std::string cs;
-                for (int i = 0; i < B3; ++i) if (b->fill[i]) cs += TextFormat(" %d:%d/%d", i, b->fill[i], b->flags[i]);
+                for (int i = 0; i < B3; ++i) if (b->fill[i] || b->flags[i] || b->target[i] || b->shut[i]) cs += TextFormat(" %d:%d/%d/%d/%d", i, b->fill[i], b->flags[i], b->target[i], b->shut[i]); // SCRATCH #2116
                 printf("fluid trace cells %lld %d,%d,%d:%s\n", stepCount, cbi, cbj, cbk, cs.c_str());
             }
     }
