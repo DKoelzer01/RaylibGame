@@ -10,6 +10,7 @@
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "beltsim.h"
+#include "beltsync.h"
 #include "conduitnet.h"
 #include "multiblock.h"
 #include "utils/logger.h"
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <set>
 #include <thread>
@@ -439,6 +441,13 @@ struct PlotSim {
     std::vector<BeltLine> belts;
     std::vector<std::pair<int, int>> beltLoads;
     std::vector<std::vector<int>> beltsInto;
+    // (#1735 PR 4) MP: the belt steps done, the layout's epoch (new lines: clients need a snapshot), and, while a client
+    // watches the plot, each step's events (the wakes since the step before) for the sim thread to publish.
+    int64_t beltStep = 0;
+    uint32_t beltEpoch = 0;
+    bool beltRecord = false;
+    std::vector<int> beltWakes;
+    std::vector<std::tuple<int64_t, BeltSyncStep, uint32_t>> beltRec; // (step, events, checksum after it)
 };
 
 // (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
@@ -587,7 +596,13 @@ struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingStates; // from a load
-std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingBelts;  // (#1735 PR 3) from a load: by belt run id, "n item gap ..."
+std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingBelts;  // (#1735 PR 3) from a load: by belt run id, "item gap ..."
+// (#1735 PR 4) MP belt sync, under viewMutex: the plots clients watch (their steps recorded), each one's recent steps, and
+// snapshots asked for (empty until the sim thread fills one at a step boundary).
+std::set<std::pair<uint64_t, uint32_t>> beltWatch;
+std::map<std::pair<uint64_t, uint32_t>, BeltSyncRing> beltRings;
+std::map<std::pair<uint64_t, uint32_t>, std::optional<BeltSyncSnapshot>> beltSnaps;
+uint32_t beltEpochNext = 1; // sim thread: epochs unique across plots coming and going
 
 std::mutex queueMutex;                        // main thread -> sim
 std::vector<LayoutMsg> layoutQueue;
@@ -980,6 +995,7 @@ void BuildBelts(PlotSim& ps, const LayoutMsg& L) {
         for (const BeltItem& it : line.items) { ItemOut r; r.item = it.item; r.count = 1; r.to = L.refundTo; refunds.push_back(r); }
     };
     ps.belts.clear(); ps.beltRuns.clear(); ps.beltLoads.clear();
+    ps.beltEpoch = beltEpochNext++; ps.beltWakes.clear(); ps.beltRec.clear(); // (#1735 PR 4) new lines: clients need a snapshot
     std::vector<const ConduitRun*> runs;
     for (const ConduitRun& r : L.belts) if (r.kind == ConduitKind::Belt && r.points.size() >= 2) runs.push_back(&r);
     std::stable_sort(runs.begin(), runs.end(), [](const ConduitRun* a, const ConduitRun* b) { return a->id < b->id; });
@@ -1046,6 +1062,30 @@ void BuildBelts(PlotSim& ps, const LayoutMsg& L) {
             }
         }
         if (const int src = machineAt(pts[0], pts[1]); src >= 0) ps.beltLoads.push_back({ (int)li, src });
+    }
+}
+
+// (#1735 PR 4) Sim thread, under viewMutex, between ticks (a step boundary on every plot): the watched plots' recorded steps
+// into their rings, the snapshots asked for, and which plots record next tick. A plot starts recording with the step after
+// the publish that first sees it watched, the same boundary its first snapshot is taken at.
+void PublishBelts() {
+    for (PlotSim& ps : plots) {
+        const std::pair<uint64_t, uint32_t> key{ ps.body, ps.plot };
+        const bool watched = beltWatch.count(key) > 0;
+        if (watched && ps.beltRecord) for (auto& [step, events, sum] : ps.beltRec) beltRings[key].add(ps.beltEpoch, step, std::move(events), sum);
+        ps.beltRec.clear();
+        if (!watched) {
+            if (ps.beltRecord) beltRings.erase(key);
+            ps.beltRecord = false; ps.beltWakes.clear();
+            continue;
+        }
+        ps.beltRecord = true;
+        const auto snap = beltSnaps.find(key);
+        if (snap != beltSnaps.end() && !snap->second) {
+            BeltSyncSnapshot s;
+            s.epoch = ps.beltEpoch; s.step = ps.beltStep; s.runs = ps.beltRuns; s.lines = ps.belts;
+            snap->second = std::move(s);
+        }
     }
 }
 
@@ -1558,6 +1598,8 @@ bool FeedOne(Machine& dst, int item) {
 // into their sink machines. Deterministic: integer positions, fixed orders, no time.
 void StepBelts(PlotSim& ps, int dt) {
     for (int t = 0; t < dt; ++t) {
+        BeltSyncStep rec; // (#1735 PR 4) what a client replays: wakes, loads, takes
+        if (ps.beltRecord) { rec.wakes = std::move(ps.beltWakes); ps.beltWakes.clear(); }
         for (const auto& [li, mi] : ps.beltLoads) {
             BeltLine& line = ps.belts[li];
             if (!Belt_HasRoom(line, 0)) continue;
@@ -1568,11 +1610,17 @@ void StepBelts(PlotSim& ps, int dt) {
             for (int i = 0; i < fromN; ++i) {
                 if (from[i].count <= 0 || !Plain(from[i])) continue; // (#1446) an item with data stays (one lane of plain ids)
                 const int item = from[i].item;
-                if (Belt_TryInsert(line, item, 0)) { TakeItems(from, fromN, item, 1); src.dirty = true; }
+                if (Belt_TryInsert(line, item, 0)) {
+                    TakeItems(from, fromN, item, 1); src.dirty = true;
+                    if (ps.beltRecord) rec.loads.push_back({ li, item });
+                }
                 break;
             }
         }
-        Belt_Step(ps.belts, [&ps](int sink, int item) { return sink >= 0 && sink < (int)ps.machines.size() && FeedOne(ps.machines[sink], item); });
+        Belt_Step(ps.belts, [&ps](int sink, int item) { return sink >= 0 && sink < (int)ps.machines.size() && FeedOne(ps.machines[sink], item); },
+                  ps.beltRecord ? &rec.takes : nullptr);
+        ++ps.beltStep;
+        if (ps.beltRecord) ps.beltRec.push_back({ ps.beltStep, std::move(rec), Belt_PlotChecksum(ps.belts) });
     }
 }
 
@@ -1858,7 +1906,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         Machine& m = ps.machines[mi];
         if (!m.dirty) continue;
         if (m.itemNet >= 0 && m.itemNet < (int)ps.itemNets.size()) ps.itemNets[m.itemNet].asleep = false;
-        if (mi < ps.beltsInto.size()) for (int li : ps.beltsInto[mi]) Belt_Wake(ps.belts[li]);
+        if (mi < ps.beltsInto.size())
+            for (int li : ps.beltsInto[mi]) { Belt_Wake(ps.belts[li]); if (ps.beltRecord) ps.beltWakes.push_back(li); } // (#1735 PR 4) a client replays it
         m.dirty = false;
     }
     // Items: each conveyor network moves items from outputs (and chests) to machines that take them.
@@ -2546,6 +2595,7 @@ void SimLoop() {
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
                 for (const auto& k : watchMany) { const auto& [wb, wp, wpart] = k; if (PlotSim* p = FindPlot(wb, wp)) FillView(*p, wpart, watchManyViews[k]); else watchManyViews[k] = MachineView{}; } // (#332)
                 FillCableView();
+                PublishBelts();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
                 for (PlotSim& ps : plots) { // (#1728) finished recipes, in plot order (deterministic); a full queue drops the newest
@@ -3355,6 +3405,28 @@ bool Factory::Working(uint64_t body, uint32_t plot, int part) {
     if (remoteMode) return remoteWorking.count(WorkingKey(body, plot, part)) > 0; // (#332)
     return workingView.count(WorkingKey(body, plot, part)) > 0;
 }
+
+// ---- (#1735 PR 4) Belts in multiplayer, server side ----
+void Factory::WatchBelts(const std::vector<std::pair<uint64_t, uint32_t>>& keys) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    beltWatch = std::set<std::pair<uint64_t, uint32_t>>(keys.begin(), keys.end());
+    for (auto it = beltSnaps.begin(); it != beltSnaps.end();) it = beltWatch.count(it->first) ? std::next(it) : beltSnaps.erase(it);
+}
+bool Factory::BeltSnapshot(uint64_t body, uint32_t plot, BeltSyncSnapshot& out) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = beltSnaps.find({ body, plot });
+    if (it == beltSnaps.end() || !it->second) { beltSnaps[{ body, plot }]; return false; } // asked for: the next publish fills it
+    out = std::move(*it->second);
+    beltSnaps.erase(it);
+    return true;
+}
+bool Factory::BeltSteps(uint64_t body, uint32_t plot, uint32_t epoch, int64_t after, size_t max, std::vector<BeltSyncStep>& out, int64_t& first, uint32_t& sum) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = beltRings.find({ body, plot });
+    if (it == beltRings.end()) { out.clear(); first = after + 1; return beltWatch.count({ body, plot }) > 0; } // nothing stepped yet
+    return it->second.since(epoch, after, max, out, first, sum);
+}
+std::string Factory::ItemName(int id) { return id >= 0 ? tables.name(id) : std::string(); }
 
 // ---- Multiplayer (#332) ----
 void Factory::WatchMany(const std::vector<MachineKey>& keys) {
@@ -5057,6 +5129,60 @@ TEST(Factory, ASideBeltMergesIntoAnother) {
     EXPECT_EQ(CountItems(end.in.data(), kChestSlots, stone), 6);
     EXPECT_EQ(CountItems(end.in.data(), kChestSlots, dirt), 6);
     EXPECT_EQ(OnBelts(ps), 0);
+    MbReset();
+}
+
+// (#1735 PR 4) A client's replica, fed only what the server API gives (a snapshot when it starts watching a running plot,
+// then the recorded steps in bundles), matches the plot's belts after every bundle: loads from two chests, a side merge, a
+// macerator that backs its belt up and wakes it when it is emptied now and then. A re-layout asks for a new snapshot.
+TEST(Factory, AClientsBeltReplicaMatchesThePlotEveryStep) {
+    LoadRecipes();
+    MbReset();
+    auto clearSync = [] { beltWatch.clear(); beltRings.clear(); beltSnaps.clear(); };
+    clearSync();
+    const LayoutMsg L = BeltLayout({ PartType::Chest, PartType::Macerator, PartType::Chest }, { kBelt2, kBelt1 });
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(9, 7);
+    AddItems(ps->machines[ps->byPart.at(0)].in.data(), kChestSlots, tables.item("stone"), 300);
+    AddItems(ps->machines[ps->byPart.at(2)].in.data(), kChestSlots, tables.item("dirt"), 300);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 30; ++t) TickPlot(*ps, 1, made, active); // running before the client comes
+
+    Factory::WatchBelts({ { 9, 7 } });
+    BeltSyncSnapshot snap;
+    EXPECT_FALSE(Factory::BeltSnapshot(9, 7, snap)) << "asked for";
+    PublishBelts(); // the sim thread, between ticks
+    ASSERT_TRUE(Factory::BeltSnapshot(9, 7, snap));
+    EXPECT_EQ(snap.step, 30);
+    BeltReplica rep;
+    rep.reset(snap);
+    int64_t sent = snap.step;
+    int wakes = 0, takes = 0;
+    for (int t = 0; t < 900; ++t) {
+        if (t % 60 == 59) { Machine& mac = ps->machines[ps->byPart.at(1)]; for (Stack& s : mac.in) s = Stack{}; mac.dirty = true; } // it "used" its input
+        TickPlot(*ps, 1, made, active);
+        PublishBelts();
+        if (t % 3 != 2) continue;
+        std::vector<BeltSyncStep> steps; int64_t first = 0; uint32_t sum = 0;
+        ASSERT_TRUE(Factory::BeltSteps(9, 7, snap.epoch, sent, 64, steps, first, sum)) << "tick " << t;
+        ASSERT_EQ((int)steps.size(), 3);
+        for (const BeltSyncStep& s : steps) { wakes += (int)s.wakes.size(); takes += (int)s.takes.size(); }
+        rep.push(snap.epoch, first, steps, sum);
+        sent = first + (int64_t)steps.size() - 1;
+        ASSERT_TRUE(rep.playAll()) << "tick " << t;
+        ASSERT_EQ(Belt_PlotChecksum(rep.lines()), Belt_PlotChecksum(ps->belts)) << "tick " << t;
+    }
+    EXPECT_GT(wakes, 0) << "the macerator woke its belt";
+    EXPECT_GT(takes, kFeedMax) << "it took items more than once";
+
+    LayoutMsg again = L; again.version = 2;
+    ApplyLayout(again);
+    ps = FindPlot(9, 7);
+    TickPlot(*ps, 1, made, active);
+    PublishBelts();
+    std::vector<BeltSyncStep> steps; int64_t first = 0; uint32_t sum = 0;
+    EXPECT_FALSE(Factory::BeltSteps(9, 7, snap.epoch, sent, 64, steps, first, sum)) << "a new layout: a new snapshot";
+    clearSync();
     MbReset();
 }
 #endif

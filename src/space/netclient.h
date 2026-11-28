@@ -73,6 +73,7 @@ struct NetClient {
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
+    BeltClient belts;                           // (#1735) the near plots' belts, replayed from the server's (beltsync.h)
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
