@@ -25,6 +25,7 @@
 #include "navigation.h"
 #include "farming.h"
 #include "animals.h"
+#include "flares.h"
 #include "particles.h"
 #include "ambience.h"
 #include "suit.h"
@@ -432,6 +433,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Flares_Clear(); // (#2062) flares are not saved: none survive into the loaded world
         Fishing_Reset(); // (#902) a line cast in the old world held its body
         Particles_Clear();
         Ambience_Reset();
