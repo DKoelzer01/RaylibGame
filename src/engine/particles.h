@@ -6,8 +6,8 @@
 // (a planet or moon), so it stays put on the spinning ground and across floating-origin shifts;
 // gravity pulls toward that body's centre (scaled per kind; smoke rises). One pooled array (oldest
 // replaced when full), updated on the main thread; drawn in two batches (alpha-blended, sorted far to
-// near, lit by the day/night light; then additive glow for fire, sparks and fireflies), depth-tested
-// without depth writes.
+// near, lit by the day/night light times the sky they see, plus the headlamp, torches and lamps (particles.fs, #2087);
+// then additive glow for fire, sparks and fireflies), depth-tested without depth writes.
 
 #include <raylib.h>
 #include "dvec3.h"
