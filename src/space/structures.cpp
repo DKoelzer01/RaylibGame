@@ -1,5 +1,6 @@
 #include "structures.h"
 #include "ruincache.h" // (#2072) cache lines
+#include "cacheopeners.h"
 #include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
 #include "factory.h"
@@ -160,11 +161,17 @@ bool LoadSet(const std::string& path, Set& s) {
                 std::string kw, table; // an optional trailing "loot <table>": the part breaks open for it (#1641 slice 2c)
                 if (ss >> kw >> table && kw == "loot") s.breakLoot.push_back({ { x, y, z }, table });
             }
-        } else if (cmd == "cache") { // (#2072) "cache small|vault|deep_vault x y z": a sealed ruin cache (never decayed)
+        } else if (cmd == "cache") { // (#2072) "cache small|vault|deep_vault x y z [opener <id>]": a sealed ruin cache (never decayed)
             std::string k; int x, y, z;
             if (!(ss >> k >> x >> y >> z)) continue;
             const int kind = k == "vault" ? (int)CacheKind::Vault : k == "deep_vault" ? (int)CacheKind::DeepVault : (int)CacheKind::Small;
-            add(PartType::RuinCache, { x, y, z }, 0, kind);
+            int opener = 0; // the kind's default (cache_openers.txt)
+            std::string kw, id;
+            if (ss >> kw >> id && kw == "opener") {
+                if (const CacheOpener* o = CacheOpener_Find(id)) opener = o->index;
+                else fprintf(stderr, "structures: %s: no cache opener %s (cache_openers.txt): the kind's default\n", path.c_str(), id.c_str());
+            }
+            add(PartType::RuinCache, { x, y, z }, 0, kind | CacheOpenerBits(opener));
         } else if (cmd == "fill" || cmd == "walls") {
             std::string t, m; int x0, y0, z0, x1, y1, z1;
             if (!(ss >> t >> x0 >> y0 >> z0 >> x1 >> y1 >> z1 >> m) || TypeNamed(t) == PartType::Count) continue;

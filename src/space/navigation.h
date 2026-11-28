@@ -67,6 +67,7 @@ void Nav_RemoveWaypoint(const std::string& body, const std::string& name);
 int Nav_WaypointCount();
 bool Nav_MinimapReady();
 bool Nav_MinimapShown(); // (#932) the minimap is on screen (it drew within the last 0.25 s)
+Rectangle Nav_MinimapRect(); // (#2072) the minimap's box on screen, rim included; zero size when it isn't shown
 bool Nav_MapImageReady();
 
 #endif
