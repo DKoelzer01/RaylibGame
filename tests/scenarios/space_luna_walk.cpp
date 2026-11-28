@@ -44,8 +44,9 @@ bool Respawned(ScenarioCtx& c) {
 }
 // (#2000) Once a frame while landing: the radius and the speed against Luna's turning, orbiting ground.
 void TrackLanding(ScenarioCtx& c) {
-    const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-    const double rel = Vector3Length(Vector3Subtract(player.velocity, S.luna->surfaceVelocity(feet)));
+    // (F8b-3) The player's own reading: on the frame path its velocity is against the ground already (subtracting the
+    // ground's motion again reported Luna's ~1 km/s orbit as the landing speed).
+    const double rel = Vector3Length(player.groundVelocity(c.world));
     S.minR = std::min(S.minR, FeetRadius());
     S.maxRel = std::max(S.maxRel, rel);
     if (player.grounded && !S.wasGrounded && S.touchAt < 0.0) { S.touchAt = c.t; S.touchRel = rel; }

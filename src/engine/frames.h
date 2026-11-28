@@ -39,6 +39,9 @@ struct BodyPose {
     double R[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
 };
 BodyPose Frames_Pose(const Planetoid& body);
+// (Plan 11 F8b-3, #2113) The global velocity of a point fixed on the body at global position `pg`: its centre's motion plus
+// w x r, in double from the pose (Planetoid::surfaceVelocity takes a float render-space point).
+DVec3 Frames_SurfaceVelocity(const Planetoid& body, const DVec3& pg);
 // (Plan 11 F6, #1698) A frame body's pose by NetId: a loaded body's, or a ring rock's while it is an instance (demoted): its
 // orbit and spin from the clock, as when promoted, so a frame on a rock never dangles. False: no such body.
 bool Frames_PoseOf(uint64_t netId, BodyPose& out);

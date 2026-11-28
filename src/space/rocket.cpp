@@ -319,7 +319,7 @@ namespace {
         Factory::MovePlot(body->id, fromPlot, veh->id, veh->plots->adopt(std::move(plot))->id); // its machines fly along
         vehicleId = veh->id;
         com = originW + DVec3(Vector3RotateByQuaternion(comLocal, rot));
-        vel = body->surfaceVelocity((com - world.renderOrigin).toFloat());
+        vel = Frames_SurfaceVelocity(*body, com).toFloat();
         angVel = { 0, 0, 0 };
         flightTime = 0.0;
         world.objects.push_back(std::move(veh));
@@ -365,7 +365,7 @@ namespace {
         switch (autopilot) {
         case RocketAutopilot::Ascent: {
             // Gravity turn toward the direction the surface moves (east), then along the velocity.
-            Vector3 east = Vector3Subtract(b->surfaceVelocity((com - world.renderOrigin).toFloat()), b->linearVelocity);
+            Vector3 east = Vector3Subtract(Frames_SurfaceVelocity(*b, com).toFloat(), b->linearVelocity);
             east = Vector3Subtract(east, Vector3Scale(up, Vector3DotProduct(east, up)));
             if (Vector3Length(east) < 1e-3f) east = Vector3CrossProduct({ 0, 1, 0 }, up);
             east = Vector3Normalize(east);
@@ -395,7 +395,7 @@ namespace {
             break;
         }
         case RocketAutopilot::Land: {
-            const Vector3 vrel = Vector3Subtract(vel, b->surfaceVelocity((com - world.renderOrigin).toFloat()));
+            const Vector3 vrel = Vector3Subtract(vel, Frames_SurfaceVelocity(*b, com).toFloat());
             const float vv = Vector3DotProduct(vrel, up);
             const Vector3 vh = Vector3Subtract(vrel, Vector3Scale(up, vv));
             double ground = alt;
@@ -480,7 +480,7 @@ namespace {
         const double alt = (com - ground->worldPos).length() - ground->radius * ground->scale;
         const bool air = pf && !pf->moon && alt < kAirTop;
         const Vector3 down = Vector3Negate(Up());
-        const Vector3 groundVel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
+        const Vector3 groundVel = Vector3Subtract(vel, Frames_SurfaceVelocity(*ground, com).toFloat());
         for (size_t i = 0; i < plot.parts.size(); ++i) {
             const Part& part = plot.parts[i];
             if (part.type != PartType::RocketEngine) continue;
@@ -589,7 +589,7 @@ namespace {
             const double alt = (com - air->worldPos).length() - air->radius * air->scale;
             if (pf && !pf->moon && alt < kAirTop) {
                 const double rho = kAirDensity * exp(-std::max(0.0, alt) / kAirScaleHeight);
-                const Vector3 vrel = Vector3Subtract(vel, air->surfaceVelocity((com - world.renderOrigin).toFloat()));
+                const Vector3 vrel = Vector3Subtract(vel, Frames_SurfaceVelocity(*air, com).toFloat());
                 const float area = std::max(1.0f, (float)plot->cells.size() * kCellSize * kCellSize * 0.25f);
                 force = Vector3Add(force, Vector3Scale(vrel, -(float)(0.5 * rho * Vector3Length(vrel) * 0.8 * area)));
                 // Heating (Sutton-Graves: flux ~ sqrt(density) v^3), scaled for this world's slow orbits so a
@@ -630,7 +630,7 @@ namespace {
             if (ground->densityAt(lp) >= ISO_LEVEL || (sea > 0.0f && Vector3Length(lp) < sea)) { touching = true; break; }
         }
         if (!touching) return;
-        const Vector3 vrel = Vector3Subtract(vel, ground->surfaceVelocity((com - world.renderOrigin).toFloat()));
+        const Vector3 vrel = Vector3Subtract(vel, Frames_SurfaceVelocity(*ground, com).toFloat());
         const float speed = Vector3Length(vrel);
         const Vector3 gup = Vector3Normalize((com - ground->worldPos).toFloat());
         if (Vector3DotProduct(vrel, gup) > 0.3f) return; // still climbing off the ground (a slow lift-off): not a landing
@@ -944,7 +944,7 @@ RocketTelemetry Rocket_Telemetry(Scene& world) {
         Planetoid* body = PadBody();
         if (!body) return t;
         CockpitCentre(*body, *plot, p);
-        v = body->surfaceVelocity((p - world.renderOrigin).toFloat());
+        v = Frames_SurfaceVelocity(*body, p).toFloat();
     }
     Planetoid* b = Dominant(world, p);
     if (!b) return t;
@@ -957,7 +957,7 @@ RocketTelemetry Rocket_Telemetry(Scene& world) {
     if (auto* pf = dynamic_cast<const PlanetField*>(b->field.get())) ground = t.altitude - pf->elevation(Vector3Normalize(b->dirToLocal(r.toFloat())));
     t.groundAltitude = ground;
     const Vector3 up = Vector3Normalize(r.toFloat());
-    const Vector3 vrel = Vector3Subtract(v, b->surfaceVelocity((p - world.renderOrigin).toFloat()));
+    const Vector3 vrel = Vector3Subtract(v, Frames_SurfaceVelocity(*b, p).toFloat());
     t.verticalSpeed = Vector3DotProduct(vrel, up);
     t.surfaceSpeed = Vector3Length(vrel);
     t.orbitalSpeed = Vector3Length(Vector3Subtract(v, b->linearVelocity));
@@ -979,7 +979,7 @@ static void DrawOrbitMap(Scene& world) {
         Plot* plot = PadPlot();
         if (!body || !plot) return;
         CockpitCentre(*body, *plot, p);
-        v = body->surfaceVelocity((p - world.renderOrigin).toFloat());
+        v = Frames_SurfaceVelocity(*body, p).toFloat();
     }
     Planetoid* b = Dominant(world, p);
     if (!b) return;

@@ -65,6 +65,11 @@ BodyPose Frames_Pose(const Planetoid& b) {
     return p;
 }
 
+DVec3 Frames_SurfaceVelocity(const Planetoid& b, const DVec3& pg) {
+    const BodyPose p = Frames_Pose(b);
+    return p.vel + Cross(p.omega, pg - p.centre);
+}
+
 bool Frames_RingRockPose(uint64_t netId, BodyPose& p) {
     if (NetId_Kind(netId) != NetKind::RingRock) return false;
     const uint64_t v = NetId_Value(netId);
@@ -214,6 +219,21 @@ std::unique_ptr<Planetoid> Body(const char* name, uint64_t netId, DVec3 pos, flo
     return b;
 }
 double Dist(const DVec3& a, const DVec3& b) { return (a - b).length(); }
+}
+
+// (F8b-3) The double surface velocity is the float one's, and a frame-converted point at rest on the ground's.
+TEST(FramesCore, SurfaceVelocityMatchesTheBodysOwn) {
+    auto terra = Body("terra", 0x9001, { 0.0, 0.0, 0.0 }, 60000.0f, { 10.0f, 237.25f, -4.0f }, { 0.0f, 0.1f, 0.0f }, BodyKind::Planet);
+    terra->linearVelocity = { 12.0f, -3.0f, 40.0f };
+    const DVec3 local{ 1234.5, 59000.25, -812.75 };
+    const DVec3 pg = terra->toWorldD(local);
+    const DVec3 v = Frames_SurfaceVelocity(*terra, pg);
+    const Vector3 f = terra->surfaceVelocity(pg.toFloat()); // render origin = world origin here
+    EXPECT_LT(Dist(v, DVec3(f.x, f.y, f.z)), 1e-3) << "against Planetoid::surfaceVelocity";
+    FramePos rest{ FrameRef{ 0x9001, FrameKind::Fixed }, local, { 0, 0, 0 } };
+    DVec3 p2, v2;
+    ASSERT_TRUE(Frames_ToGlobal(rest, p2, v2));
+    EXPECT_LT(Dist(v, v2), 1e-9) << "against a point at rest in the Fixed frame";
 }
 
 // Round trips through every frame keep position and velocity to sub-micrometre / nano-m/s at planet scale.

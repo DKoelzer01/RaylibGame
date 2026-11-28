@@ -33,10 +33,10 @@ void Trace(ScenarioCtx& c) { // once a second of each step: where the climb stan
     static int lastStep = -1, lastSecond = -1;
     if (c.stepIndex == lastStep && (int)c.t == lastSecond) return;
     lastStep = c.stepIndex; lastSecond = (int)c.t;
-    const Vector3 surface = c.body->surfaceVelocity(c.body->toWorld(c.body->toLocalD(player.position).toFloat()));
+    const Vector3 rel = player.groundVelocity(c.world); // (F8b-3) against the ground on every path (the frame path's already is)
     c.note(TextFormat("step %d t=%d s: height %.2f m, on ladder %d, grounded %d, climb input %.0f, off the wall %.2f m, vertical speed %.2f m/s",
                       c.stepIndex, lastSecond, Height(c), (int)player.onLadder, (int)player.grounded, player.climbInput, Off(c),
-                      Vector3DotProduct(Vector3Subtract(player.velocity, surface), player.up)));
+                      Vector3DotProduct(rel, player.up)));
 }
 void FaceWall(ScenarioCtx& c) { // the player looks at the wall (horizontally) whatever turned them
     Vector3 d = Vector3Subtract(wallAt, c.body->toLocalD(player.position).toFloat());
