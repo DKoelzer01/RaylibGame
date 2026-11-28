@@ -12,6 +12,8 @@
 #include "world.h"
 #include "profiler.h"
 #include "gputimer.h"
+#include "envflag.h"
+#include "headless.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -100,6 +102,7 @@ std::string Quote(const std::string& s) { return s.find_first_of(" \t\"") == std
 // The active run (one scenario per process).
 struct Run {
     bool active = false, finished = false, keep = false, record = true;
+    bool noRender = false; // (#2130) this run draws nothing (RAYLIBGAME_SCENARIO_NO_RENDER and a scenario without pictures)
     ScenarioDef def;
     std::string outDir, runDir, scratch, capture, verdict = "RUNNING", reason, keepReason, waiting, args;
     std::vector<ScenarioCheck> checks;
@@ -343,6 +346,13 @@ ScenarioRegistrar::ScenarioRegistrar(const char* name, const char* file, Scenari
 
 bool Scenario_Active() { return R.active; }
 
+// (#2130) A scenario that looks at the screen: it must draw even in a no-render tier.
+static bool NeedsPictures(const ScenarioDef& d) {
+    if (d.needsRender || d.legacyDrives || d.hasTag("visual")) return true;
+    for (const char* area : { "visual/", "light/", "perf/" }) if (d.name.rfind(area, 0) == 0) return true;
+    return false;
+}
+
 void Scenario_PrepareArgs(int& argc, char**& argv) {
     std::string sel, outDir;
     bool list = false, parity = false;
@@ -408,6 +418,11 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     SetEnv("RAYLIBGAME_FLUID_LOCKSTEP", "1");
     SetEnv("RAYLIBGAME_BENCH_WARMUP", "0");
     for (const auto& kv : R.def.env) SetEnv(kv.first, kv.second);
+    // (#2130) RAYLIBGAME_SCENARIO_NO_RENDER=1 (the PR tiers): a scenario that takes no picture and keeps no recording skips
+    // the drawing (headless.h: NoRender), about a quarter of its frame time. Pictures: the visual/, light/ and perf/ areas,
+    // a legacy bench's shots, or s.needsRender.
+    R.noRender = EnvFlag("RAYLIBGAME_SCENARIO_NO_RENDER") && !R.record && !NeedsPictures(R.def);
+    SetEnv("RAYLIBGAME_NO_RENDER", R.noRender ? "1" : "0");
 
     // RAYLIBGAME_SCENARIO_SEED: another world (a place a playtest saw, its save's seed); results then aren't comparable.
     const char* seedEnv = getenv("RAYLIBGAME_SCENARIO_SEED");
@@ -431,7 +446,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     argc = (int)gArgStore.size();
     argv = gArgPtrs.data();
     printf("scenario: %s (%s) -> %s\n", R.def.name.c_str(), R.def.file.c_str(), R.runDir.c_str());
-    printf("scenario: args %s\n", R.args.c_str());
+    printf("scenario: args %s%s\n", R.args.c_str(), R.noRender ? " (no-render, #2130)" : "");
     // (#871) The profiler records every scenario (RAYLIBGAME_PROFILE=0: off, the A/B overhead check's other side).
     if (const char* e = getenv("RAYLIBGAME_PROFILE"); !(e && e[0] == '0')) Profiler_Enable(true);
     WriteResults(); // RUNNING: a crash leaves this behind
@@ -685,6 +700,7 @@ void CompareLegacyShots() {
 }
 }
 bool ScenarioCtx::shot(const std::string& name, double tolerancePct) {
+    if (NoRender()) { fail("c.shot('" + name + "') in a no-render run (#2130): set s.needsRender = true"); return false; }
     std::error_code ec;
     fs::create_directories(R.runDir + "/shots", ec);
     const std::string file = name.size() > 4 && name.substr(name.size() - 4) == ".png" ? name : name + ".png";
@@ -696,7 +712,7 @@ bool ScenarioCtx::shot(const std::string& name, double tolerancePct) {
 }
 void ScenarioCtx::grab(const std::string& name) {
     const char* dir = getenv("RAYLIBGAME_SLIDE_SHOTS");
-    if (!dir || !*dir) return;
+    if (!dir || !*dir || NoRender()) return; // (#2130: nothing drawn, nothing to grab)
     static std::set<std::string> taken; // once per name: steps call it every frame
     if (!taken.insert(name).second) return;
     std::string base = R.def.name;
