@@ -259,7 +259,6 @@ void CaveGas_Update(Scene& world) {
                 ++shown; ++stats.puffs;
                 ParticleBurst s;
                 s.count = 1; s.spread = 1.0f;
-                s.selfLit = true; // in a cave the sun's shading turns it black: seen by the player's lamp or torch
                 // CO2 olive, darker than lamp-lit rock (GUESS)
                 if (p.kind == CaveGasKind::CO2) { s.kind = ParticleKind::Dust; s.color = { 96, 128, 48, 235 }; s.size = 1.8f; s.life = 5.0f; s.speed = 0.06f; s.dir = Vector3Negate(p.up); }
                 else { s.kind = ParticleKind::Smoke; s.color = { 222, 206, 128, 70 }; s.size = 1.1f; s.life = 4.0f; s.speed = 0.10f; s.dir = p.up; }

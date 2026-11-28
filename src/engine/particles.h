@@ -36,8 +36,6 @@ struct ParticleBurst {
     float spread = 0.6f;           // 0 = straight along dir, 1 = any direction
     Vector3 dir = { 0, 0, 0 };     // body-local; zero (the default, #1859 L8) = away from the body centre ("up")
     Vector3 baseVel = { 0, 0, 0 }; // body-local velocity added to every particle (a moving emitter)
-    bool selfLit = false;          // (#1472) its colour as given, not shaded by the sun's angle: haze in caves, where that
-                                   // shading is wrong (it reads the sun through the rock) and only lamps light it
 };
 
 void Particles_Emit(const Planetoid& body, Vector3 local, const ParticleBurst& b);
@@ -51,5 +49,9 @@ void Particles_Unload();
 // (#1126) A billboard of `size` m whose centre is `dist` m from the eye: 1 shown, falling to 0 as it nears the eye, so a
 // puff drifting into the camera fades instead of filling the screen. RAYLIBGAME_PARTICLE_NEAR_FADE=0: always 1 (A/B).
 float Particles_NearFade(float dist, float size);
+// (#2087, tests) The sky a burst emitted there sees (1 open .. 0 buried); whether the last draw lit its smoke and dust
+// through particles.fs (false: RAYLIBGAME_PARTICLE_LIGHT=0, the shader failed, or none drawn).
+float Particles_SkyAt(const Planetoid& body, Vector3 local);
+bool Particles_LastDrawLit();
 
 #endif

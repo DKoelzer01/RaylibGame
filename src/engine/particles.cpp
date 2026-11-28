@@ -22,7 +22,6 @@ struct Particle {
     Color color = WHITE;
     ParticleKind kind = ParticleKind::Dust;
     bool bounced = false;
-    bool selfLit = false; // (ParticleBurst::selfLit)
     bool alive() const { return age < life; }
 };
 
@@ -107,7 +106,6 @@ void Particles_Emit(const Planetoid& body, Vector3 local, const ParticleBurst& b
         p.seed = Rand01();
         p.sky = sky;
         p.bounced = false;
-        p.selfLit = b.selfLit;
         // A little variation in colour, as real smoke and dust have.
         const float k = RandRange(0.88f, 1.08f);
         p.color = { (unsigned char)std::min(255.0f, b.color.r * k), (unsigned char)std::min(255.0f, b.color.g * k), (unsigned char)std::min(255.0f, b.color.b * k), b.color.a };
@@ -158,7 +156,12 @@ void Particles_Update(Scene&, float dt) {
     }
 }
 
+namespace { bool lastDrawLit = false; }
+float Particles_SkyAt(const Planetoid& body, Vector3 local) { return SkyAt(body, local); }
+bool Particles_LastDrawLit() { return lastDrawLit; }
+
 void Particles_Draw(Scene& world) {
+    lastDrawLit = false;
     if (pool.empty()) return;
     if (sprite.id == 0) {
         Image img = GenImageGradientRadial(32, 32, 0.0f, WHITE, BLANK);
@@ -234,7 +237,7 @@ void Particles_Draw(Scene& world) {
             }
             a *= Particles_NearFade(sqrtf(it.d2), it.size); // (#1126) dust drifting into the eye fades out
             if (a <= 0.0f) continue;
-            float k = kInfo[(int)p.kind].additive || p.selfLit ? 1.0f : it.light;
+            float k = kInfo[(int)p.kind].additive ? 1.0f : it.light;
             if (!kInfo[(int)p.kind].additive && p.kind != ParticleKind::Debris) k = std::max(k, 0.2f);
             k *= p.sky; // under rock the sun's angle says nothing: caves stay dark but for their lights
             if (lit) {
@@ -269,7 +272,7 @@ void Particles_Draw(Scene& world) {
             rlActiveTextureSlot(0);
         }
         quads(alpha);
-        if (lit) { rlDrawRenderBatchActive(); EndShaderMode(); lit = false; }
+        if (lit) { rlDrawRenderBatchActive(); EndShaderMode(); lastDrawLit = true; lit = false; }
     }
     if (!glow.empty()) { rlDrawRenderBatchActive(); BeginBlendMode(BLEND_ADDITIVE); quads(glow); rlDrawRenderBatchActive(); EndBlendMode(); }
     rlDrawRenderBatchActive();
