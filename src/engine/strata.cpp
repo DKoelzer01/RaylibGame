@@ -25,7 +25,10 @@ namespace {
     Vector3 Scaled(Vector3 s, float inv) { return { s.x * inv, s.y * inv, s.z * inv }; }
 }
 
-namespace { float FaultField(Vector3 s, unsigned int seed, float& region); }
+namespace {
+    float FaultField(Vector3 s, unsigned int seed, float& region);
+    float FaultStep(Vector3 s, float f, float region, unsigned int seed);
+}
 
 StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
     StrataColumn c;
@@ -63,25 +66,65 @@ StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
     const float f = FaultField(s, seed, region);
     if (region > 0.0f && f > -0.006f && f < 0.05f && c.province == 0)
         c.hardShare = (uint8_t)std::max<float>(c.hardShare, 255.0f * (0.6f + 0.25f * region));
+    if (gStrataBeds) {
+        // #2064: the raised block carries its beds up with it, so they step across the fault by its throw (before, the
+        // land stepped and the layers ran on level through the scarp).
+        if (region > 0.0f) c.offset -= FaultStep(s, f, region, seed);
+        c.pinch = ValueNoise(Scaled(s, 1.0f / 3500.0f), seed ^ 0xB3D5u);
+    }
     return c;
+}
+
+StrataBed Strata_BedAt(const StrataColumn& c, float h, unsigned int seed) {
+    // Basalt flows with softer ash beds between them (flows ~0.6 of a layer).
+    const bool basalt = c.province == 2;
+    const float thick = (basalt ? 0.6f : 1.0f) * c.thick;
+    const float share = basalt ? std::max(c.hardShare / 255.0f, 0.65f) : c.hardShare / 255.0f;
+    const float t = (h + c.offset) / thick;
+    if (!gStrataBeds) { // #587's even layers
+        const int32_t i = (int32_t)floorf(t);
+        return { i, t - floorf(t), thick, Rand01(i, 0, basalt ? 11 : 0, seed) < share };
+    }
+    // #2064: sets of four nominal layers. In each the beds' shares are skewed (0.2 + 2.4 r^3: most beds thin, now and then
+    // one three or four times the mean), every bed a quarter likely lenticular (it thins to nothing where the column's
+    // lateral value is under its threshold: a pinch-out, which shifts the beds above it down), resistant beds thickened by
+    // the caprock weight; the set keeps its total, so the beds can be walked in one pass. Equal layers read as built
+    // terraces (#543). One hash per bed: this runs per bake cell and step.
+    constexpr int kSet = 4;
+    const int32_t j = (int32_t)floorf(t / kSet);
+    const float u = t - (float)j * kSet;
+    float w[kSet], sum = 0.0f;
+    bool hard[kSet];
+    for (int k = 0; k < kSet; ++k) {
+        const uint32_t hb = Hash(j, k, basalt ? 0x2064B : 0x2064, seed);
+        const float r = (hb & 0x3FFu) / 1024.0f, hr = ((hb >> 10) & 0x3FFu) / 1024.0f;
+        const float lens = ((hb >> 20) & 0x3Fu) / 64.0f, th = ((hb >> 26) & 0x3Fu) / 64.0f;
+        hard[k] = hr < share;
+        float wk = 0.2f + 2.4f * r * r * r;
+        if (lens < 0.25f) wk *= std::clamp((c.pinch - th) / 0.15f + 0.5f, 0.0f, 1.0f);
+        if (hard[k]) wk *= 1.0f + 3.0f * c.caprock; // (GUESS)
+        w[k] = wk; sum += wk;
+    }
+    const float scale = kSet / std::max(sum, 1e-3f);
+    float acc = 0.0f;
+    for (int k = 0; k < kSet; ++k) {
+        const float wk = w[k] * scale;
+        if (u < acc + wk || k == kSet - 1)
+            return { j * kSet + k, std::clamp((u - acc) / std::max(wk, 1e-4f), 0.0f, 1.0f), wk * thick, hard[k] };
+        acc += wk;
+    }
+    return { j * kSet, 0.0f, thick, false }; // (unreached)
 }
 
 RockType Strata_RockAt(const StrataColumn& c, float h, unsigned int seed) {
     if (c.province == 1) return RockType::Granite;
     if (c.province == 3) return RockType::Limestone; // karst: massive limestone (#592)
-    const float share = c.hardShare / 255.0f;
-    if (c.province == 2) {
-        // Basalt flows with softer ash beds between them (flows ~0.6 of a layer).
-        const float t = (h + c.offset) / (0.6f * c.thick);
-        const int32_t i = (int32_t)floorf(t);
-        return Rand01(i, 0, 11, seed) < std::max(share, 0.65f) ? RockType::Basalt : RockType::Soft;
-    }
-    const float t = (h + c.offset) / c.thick;
-    const int32_t i = (int32_t)floorf(t);
-    if (Rand01(i, 0, 0, seed) >= share) return RockType::Soft;
-    const float kind = Rand01(i, 0, 1, seed);
+    const StrataBed b = Strata_BedAt(c, h, seed);
+    if (c.province == 2) return b.hard ? RockType::Basalt : RockType::Soft;
+    if (!b.hard) return RockType::Soft;
+    const float kind = Rand01(b.index, 0, 1, seed);
     // Marble: a rare thin band at the foot of a resistant layer.
-    if (kind < 0.08f) return t - floorf(t) < 0.35f ? RockType::Marble : RockType::Limestone;
+    if (kind < 0.08f) return b.frac < 0.35f ? RockType::Marble : RockType::Limestone;
     return kind < 0.55f ? RockType::Sandstone : RockType::Limestone;
 }
 
@@ -108,12 +151,18 @@ float Strata_FaultUplift(Vector3 s, unsigned int seed) {
     float region = 0.0f;
     const float f = FaultField(s, seed, region);
     if (region <= 0.0f) return 0.0f;
+    return FaultStep(s, f, region, seed);
+}
+
+namespace {
+float FaultStep(Vector3 s, float f, float region, unsigned int seed) {
     // A step ~150 m wide (the field changes ~4e-5 per metre): three cells of the bake's 50 m grid, which wears it; steep
     // enough (~0.8-2) that the cliff profile (#588) gives the hard raised side a face.
     float t = std::clamp((f + 0.003f) / 0.006f, 0.0f, 1.0f);
     t = t * t * (3.0f - 2.0f * t);
     const float offset = 50.0f + 250.0f * ValueNoise(Scaled(s, 1.0f / 30000.0f), seed ^ 0xFA173u);
     return region * offset * t;
+}
 }
 
 float Strata_Hardness(RockType r) {
@@ -147,9 +196,9 @@ float Strata_FoldWeight(Vector3 s, unsigned int seed) {
 }
 
 float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed) {
-    if (c.province != 0 || Strata_RockAt(c, h, seed) == RockType::Soft) return 0.0f;
-    const float t = (h + c.offset) / c.thick;
-    return det::Sinf(3.14159265f * (t - floorf(t)));
+    if (c.province != 0) return 0.0f;
+    const StrataBed b = Strata_BedAt(c, h, seed);
+    return b.hard ? det::Sinf(3.14159265f * b.frac) : 0.0f;
 }
 
 float Strata_KarstWeight(Vector3 s, unsigned int seed) {
@@ -254,3 +303,66 @@ float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* we
     if (weight) *weight = bestW;
     return best;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+
+// #2064: the beds tile the column without gaps, their thicknesses are skewed (not #543's even treads), lenticular beds
+// pinch out with the lateral value, the caprock weight thickens the resistant beds, and the even layers come back with
+// RAYLIBGAME_STRATA_BEDS=0.
+TEST(Strata, BedsSkewedLenticularAndTiled) {
+    StrataColumn c; c.thick = 80.0f; c.hardShare = 115;
+    struct Stats { int beds = 0; double sum = 0, sum2 = 0, maxT = 0, hard = 0, soft = 0; int nHard = 0, nSoft = 0; std::vector<float> t; };
+    auto walk = [&](const StrataColumn& col) {
+        Stats s;
+        int32_t last = INT32_MIN; float lastFrac = 1.0f;
+        for (float h = -4000.0f; h < 4000.0f; h += 0.25f) {
+            const StrataBed b = Strata_BedAt(col, h, 42u);
+            EXPECT_GE(b.frac, 0.0f); EXPECT_LE(b.frac, 1.0f);
+            if (b.index == last) { EXPECT_GE(b.frac, lastFrac - 1e-4f) << "a bed's height runs backwards"; lastFrac = b.frac; continue; }
+            if (last != INT32_MIN) { EXPECT_GT(b.index, last); EXPECT_LT(b.frac * b.thick, 0.3f) << "a gap under bed " << b.index; }
+            last = b.index; lastFrac = b.frac;
+            ++s.beds; s.sum += b.thick; s.sum2 += (double)b.thick * b.thick; s.maxT = std::max<double>(s.maxT, b.thick); s.t.push_back(b.thick);
+            if (b.hard) { s.hard += b.thick; ++s.nHard; } else { s.soft += b.thick; ++s.nSoft; }
+        }
+        return s;
+    };
+    const Stats a = walk(c);
+    ASSERT_GT(a.beds, 50);
+    const double mean = a.sum / a.beds, cv = std::sqrt(std::max(0.0, a.sum2 / a.beds - mean * mean)) / mean;
+    EXPECT_GT(cv, 0.5) << "the beds are too even (#543's terraces)";
+    EXPECT_GT(a.maxT / mean, 2.5) << "no thick bed";
+
+    StrataColumn p0 = c, p1 = c; p0.pinch = 0.0f; p1.pinch = 1.0f;
+    int pinched = 0;
+    for (float h = -4000.0f; h < 4000.0f; h += 40.0f) pinched += Strata_BedAt(p0, h, 42u).index != Strata_BedAt(p1, h, 42u).index;
+    EXPECT_GT(pinched, 10) << "no bed pinches out across the lateral value";
+
+    StrataColumn cap = c; cap.caprock = 1.0f;
+    const Stats k = walk(cap);
+    EXPECT_GT((k.hard / k.nHard) / (k.soft / k.nSoft), 1.8 * (a.hard / a.nHard) / (a.soft / a.nSoft)) << "the caprock weight didn't thicken the resistant beds";
+
+    gStrataBeds = false;
+    const Stats e = walk(c);
+    gStrataBeds = true;
+    EXPECT_NEAR(e.maxT, 80.0, 1e-3); EXPECT_NEAR(e.sum / e.beds, 80.0, 1e-3);
+}
+
+// #2064: across a fault the beds step by its throw: the raised side's offset is lowered by the uplift.
+TEST(Strata, BedsStepAcrossAFault) {
+    int found = 0;
+    for (int i = 0; i < 20000 && found < 20; ++i) {
+        const float y = 1.0f - 2.0f * (i + 0.5f) / 20000.0f, r = std::sqrt(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * i;
+        const Vector3 s = { 60000.0f * r * std::cos(a), 60000.0f * y, 60000.0f * r * std::sin(a) };
+        const float up = Strata_FaultUplift(s, 42u);
+        if (up < 20.0f) continue;
+        gStrataBeds = false;
+        const StrataColumn even = Strata_Column(s, 0.1f, 42u);
+        gStrataBeds = true;
+        const StrataColumn beds = Strata_Column(s, 0.1f, 42u);
+        EXPECT_NEAR(even.offset - beds.offset, up, 1e-3f);
+        ++found;
+    }
+    EXPECT_GT(found, 0) << "no fault on the test sphere";
+}
+#endif

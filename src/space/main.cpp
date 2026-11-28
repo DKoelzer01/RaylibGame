@@ -858,6 +858,8 @@ int main(int argc, char** argv)
     if (const char* g = getenv("RAYLIBGAME_GULLIES")) gGullies = g[0] == '1';
     if (const char* g = getenv("RAYLIBGAME_CLIFF_FACES")) gCliffFaces = g[0] == '1'; // #588 A/B
     if (const char* g = getenv("RAYLIBGAME_FOLDS")) gStrataFolds = g[0] == '1'; // #591 A/B
+    if (const char* g = getenv("RAYLIBGAME_STRATA_BEDS")) gStrataBeds = g[0] == '1'; // #2064 A/B
+    if (const char* g = getenv("RAYLIBGAME_STRATA_CLIMATE")) gStrataClimate = g[0] == '1'; // #1990 step 4 A/B
     if (const char* c = getenv("RAYLIBGAME_SKY_PROBES")) gSkyProbes = c[0] == '1'; // #369 A/B
     if (const char* c = getenv("RAYLIBGAME_AO")) gTerrainAO = c[0] != '0'; // #132 A/B
     for (int i = 1; i < argc; ++i) {

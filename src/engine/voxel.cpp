@@ -4050,8 +4050,24 @@ StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float c = continents.fractalLimited(4, 2000.0f, sx, sy, sz) - 0.15f * gen.ocean;
     StrataColumn col = Strata_Column({ sx, sy, sz }, c, fieldSeed);
+    // #1990 step 4 (user 2026-11-27, option B): the climate shapes the rock, height-free (at sea level: the bake, land()
+    // and the mesher all ask for a column from the direction alone, and land() calls this). Where it is dry and warm
+    // (badlands, desert) resistant beds are more common and thicker over the soft ones: mesas and buttes; where humid and
+    // warm, karst reaches further. Weights and amounts are GUESSES (the user tunes the look).
+    float karstAt = 0.3f;
+    if (gStrataClimate && !moon) {
+        const Climate cl = climateAt(dir, 0.0f);
+        const float dry = Smoothstep(0.40f, 0.24f, cl.moist) * Smoothstep(15.0f, 21.0f, cl.temp);
+        const float humid = Smoothstep(0.50f, 0.65f, cl.moist) * Smoothstep(10.0f, 16.0f, cl.temp);
+        if (col.province == 0) {
+            col.hardShare = (uint8_t)std::min(255.0f, col.hardShare + 50.0f * dry);
+            col.thick *= 1.0f + 0.5f * dry;
+            col.caprock = dry;
+        }
+        karstAt -= 0.15f * humid;
+    }
     col.hardShare = (uint8_t)std::clamp(col.hardShare * gen.cliffs, 0.0f, 255.0f); // New World "Cliffs and canyons" (#589)
-    if (gen.karst && col.province == 0 && Strata_KarstWeight({ sx, sy, sz }, fieldSeed) > 0.3f) col.province = 3; // karst limestone (#592)
+    if (gen.karst && col.province == 0 && Strata_KarstWeight({ sx, sy, sz }, fieldSeed) > karstAt) col.province = 3; // karst limestone (#592)
     if (canyonFault(sx, sy, sz) > 0.3f) { col.province = 0; col.hardShare = 0; } // canyon lines are shattered, soft rock (#544)
     if (gen.volcanoes) { float vw = 0.0f; if (Strata_Volcano({ sx, sy, sz }, radius, fieldSeed, &vw) > 0.0f) col.province = 2; } // lava over ash (#593)
     return col;
@@ -4107,10 +4123,9 @@ float PlanetField::cliffFace(Vector3 s, float h, Vector3 grad, float fp) const {
     const float scale = eroded && eroded->heightScale > 0.0f ? eroded->heightScale : 1.0f;
     const float hs = h / scale;
     if (Strata_RockAt(c, hs, fieldSeed) == RockType::Soft) return 0.0f;
-    const float thick = (c.province == 2 ? 0.6f : 1.0f) * c.thick;
-    const float t = (hs + c.offset) / thick, f = t - floorf(t);
-    const float face = Smoothstep(0.25f, 0.75f, f);
-    return (face - f) * thick * scale * steep * std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f);
+    const StrataBed b = Strata_BedAt(c, hs, fieldSeed); // (#2064: the bed's own thickness, not one per column)
+    const float face = Smoothstep(0.25f, 0.75f, b.frac);
+    return (face - b.frac) * b.thick * scale * steep * std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f);
 }
 
 // The rock item at a point: its stratum's (#587: one data source with the bake and the surface material).
@@ -4213,7 +4228,7 @@ TEST(Voxel, BakeInputMatchesOneGoldenOnEveryPlatform) {
     }
     PlanetField::tIgnoreBake = false;
     for (int t = 0; t < kTerms; ++t) printf("bake input probe %-8s %016llx\n", kNames[t], (unsigned long long)h[t]);
-    constexpr uint64_t kGolden = 0x0bd1fdfcbb454251ull; // the land hash, Linux GCC (sandbox)
+    constexpr uint64_t kGolden = 0xe837bf22e557764dull; // the land hash, Linux GCC (sandbox)
     EXPECT_EQ(h[kLand], kGolden) << std::hex << "(#1905) one CI leg only: the platforms' bake input differs (compare the legs' probe lines); both: a deliberate terrain change, update the constant. got 0x" << h[kLand];
 }
 
