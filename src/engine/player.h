@@ -185,7 +185,16 @@ private:
     // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
     // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
     bool fxActive = false;
+    // Plan 11 F8b-2 (#2113): airborne in the nearest body's Centred frame (above its altitude line: orbits, the jetpack in
+    // space). The velocity is against the body's centre in world axes (Centred axes are the world's) and the position is
+    // carried with the centre only; the frame state (`frame`) holds the offset between updates.
+    bool fcActive = false;
+    uint64_t fcBody = 0;              // its runtime id
+    int updateSpawns = -1;            // `spawns` at the end of the last update (a spawn or placeAt anchors, so the position alone can't tell)
     bool movedOutside = false; // (F2d) moved from outside since the last update (spawn, placeAt, respawn, load)
+    // The ground's motion under `feet` in the terms of the velocity (airborne): 0 in a Fixed frame (the velocity is against
+    // it), w x r in a Centred frame, the surface's world motion off the frame path.
+    Vector3 groundMotion(const Scene& world, Vector3 feet) const;
     double viewR[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }; // F2c: the frame body's rotation at the end of the last update
     uint64_t viewBody = 0;                                            // its runtime id (0: no view carry yet)
     Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
