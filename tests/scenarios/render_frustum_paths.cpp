@@ -42,7 +42,7 @@ void Puffs(ScenarioCtx& c) { // still smoke, long-lived: one puff each, 15 m out
 }
 
 SCENARIO("render/frustum-paths") {
-    s.tags = { "render", "culling" };
+    s.tags = { "visual", "culling" }; // it reads draw counters: the PC (the runner's headless parts draw nothing)
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };
     s.timeout = 60.0;
