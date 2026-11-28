@@ -78,7 +78,7 @@ env:
   REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.INTEGRATION_BRANCH || vars.NIGHTLY_BRANCH || 'staging') || github.ref) }}
   # (#2130) Scenarios that check no picture skip the drawing (src/engine/headless.h NoRender; the harness picks them).
   # The nightly still draws them all, so the draw path keeps a daily run under every scenario.
-  RAYLIBGAME_SCENARIO_NO_RENDER: ${{ github.event_name == 'schedule' && '0' || '1' }}
+  RAYLIBGAME_SCENARIO_NO_RENDER: ${{ github.event.schedule == '0 5 * * *' && '0' || '1' }}
 
 jobs:
   # (#1871) What this run does: its tier, whether a timed run can be skipped (the branch hasn't moved), and for a PR's run
