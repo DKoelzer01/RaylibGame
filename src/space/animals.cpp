@@ -33,6 +33,7 @@
 #include "survival.h"
 #include "terraintool.h"
 #include "tools.h"
+#include "underground.h" // (#1740) cave spawns by region
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -1206,7 +1207,8 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             for (float h = 2.0f; h <= 80.0f; h += 2.0f)
                 if (body.densityAt(Vector3Add(floor, Vector3Scale(up, h))) >= ISO_LEVEL) { s.openSky = false; break; }
             if (s.openSky) ++nSky;
-            s.light = s.nearMouth ? 0.5f : s.depth < 4.0f || s.openSky ? 0.6f : 0.0f;
+            s.light = Animals_CaveSiteLight(body, floor, up, s.nearMouth, s.depth, s.openSky); // (#1740) the light grid's level there
+            s.region = (uint8_t)Underground_RegionAt(f, floor); // (#1740) creatures.txt region=
             s.wet = f.caveWetColumn(dir, f.elevation(dir)) > 0.3f; // (#1226) wet karst: by the cave water, the sumps
             sites.push_back(s);
         }
@@ -1288,6 +1290,9 @@ bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up) {
     Vector3 lit{};
     if (NearFire(floor, SpawnTune::kDarkFromLight, lit)) return false;
     return LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level <= SpawnTune::kDarkLevel;
+}
+float Animals_CaveSiteLight(const Planetoid& body, Vector3 floor, Vector3 up, bool nearMouth, float depth, bool openSky) {
+    return SpawnSite_Light(nearMouth, depth, openSky, LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level);
 }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
 void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }
