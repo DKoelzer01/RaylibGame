@@ -227,7 +227,16 @@ private:
     // measured again (each measurement is 7 density samples). Any edit (a new snapshot) or another body clears it.
     struct CollideCache { Vector3 centre[8]{}; float dist[8]{}; bool valid[8]{}; const void* body = nullptr; const void* edits = nullptr; } collideCache;
     // One body's terrain and parts against the capsule (resolveCollisions: the nearest, then any other in reach, #1698).
-    bool collideBody(Planetoid& p, const float* offsets, int kSamples, Vector3& feet, Vector3 frameVel, float& pushBudget, CollideCache* cache, const DVec3& renderOrigin);
+    bool collideBody(Planetoid& p, const float* offsets, int kSamples, Vector3& feet, Vector3 frameVel, float& pushBudget, CollideCache* cache);
+    // (Plan 11 F8b-4b, #2113) The physics' own float space: its points (feet, probes) are offsets from spaceOrigin, a world
+    // point in double (the feet where the update starts), and every body query goes through doubles (toLocalD, the ...D
+    // queries), never through the scene's render origin or the bodies' render-space copies. So a player is stepped the
+    // same wherever the render origin is, and a server's remote players need no RenderOriginScope.
+    DVec3 spaceOrigin{};
+    Vector3 toSpace(const DVec3& w) const { return (w - spaceOrigin).toFloat(); }
+    DVec3 fromSpace(Vector3 s) const { return spaceOrigin + DVec3(s); }
+    Vector3 localOf(const Planetoid& p, Vector3 s) const;    // the body-local (voxel) point, through toLocalD
+    Vector3 surfaceVel(const Planetoid& p, Vector3 s) const; // the ground's world motion there (Frames_SurfaceVelocity)
     void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).
