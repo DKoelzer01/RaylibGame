@@ -1,9 +1,10 @@
 // net/ruin-cache (#2072): a ruin cache opened by a joined client goes through the host. The game hosts (--host; needs a
-// GameNetworkingSockets build, else one SKIP check passes); bob and carol join. The host puts a small cache at bob's feet.
-// bob asks to open it with no power cell: refused, still sealed. With one (the host gives it): the host opens it, spends
-// the cell and gives the stub pool's 4 stone; bob hears the result lines, and his game's result panel takes them (fed
+// GameNetworkingSockets build, else one SKIP check passes); bob and carol join. The host puts a vault at bob's feet,
+// opened by a crowbar (a tool: the opener a client's inventory decides; a power lock is charged by the host's factory).
+// bob asks to open it with no crowbar: refused, still sealed. With one (the host gives it): the host opens it, bob keeps
+// the crowbar and gets the stub pool's 4 stone; bob hears the result lines, and his game's result panel takes them (fed
 // here as main.cpp's chat loop does); carol hears the part edit that marks it opened, and no result. carol then stands at
-// the cache with a power cell of her own: the host refuses her (opened already) and she keeps the cell.
+// the vault with a crowbar of her own: the host refuses her (opened already).
 // The clients run in this process, so they don't apply the world (the host's is the real one): the checks read the host's
 // plot and inventories, and what each client received.
 #include "scenario.h"
@@ -94,33 +95,33 @@ SCENARIO("net/ruin-cache") {
         S.cell = plot->cellAt(plot->toPlot(feet));
         const int i = plot->partAt(S.cell);
         if (i >= 0) plot->remove(i);
-        c.check("the cache placed on the host", plot->place({ PartType::RuinCache, S.cell, 0, (uint8_t)CacheKind::Small }) >= 0);
-        for (const char* item : { "power_cell", "stone" }) {
+        c.check("the vault placed on the host", plot->place({ PartType::RuinCache, S.cell, 0, (uint8_t)CacheKind::Vault }) >= 0);
+        for (const char* item : { "crowbar", "stone" }) {
             const int have = Host_ItemCount(S.bob.welcome.session, item);
             if (have > 0) Host_TestGive(S.bob.welcome.session, item, -have);
             const int carolHas = Host_ItemCount(S.carol.welcome.session, item);
             if (carolHas > 0) Host_TestGive(S.carol.welcome.session, item, -carolHas);
         }
         S.bob.chat.clear(); S.carol.chat.clear();
-        Ask(c, S.bob); // no power cell yet
+        Ask(c, S.bob); // no crowbar yet
         S.t0 = c.t;
         return true;
     });
-    s.step("no power cell: refused, still sealed", 10.0, [](ScenarioCtx& c) {
+    s.step("no crowbar: refused, still sealed", 10.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
         UpdateAll();
         c.waitingFor("the host's answer to bob");
-        if (!Heard(S.bob, "Sealed: its lock needs a power cell")) {
-            if (c.t - S.t0 > 5.0) c.fail("bob heard no refusal 5 s after asking without a power cell; heard: " + Said(S.bob));
+        if (!HeardStart(S.bob, "Sealed: ")) { // (the wording names the opener: cache_openers.txt)
+            if (c.t - S.t0 > 5.0) c.fail("bob heard no refusal 5 s after asking without a crowbar; heard: " + Said(S.bob));
             return false;
         }
         c.check("still sealed on the host", !Opened());
         c.check("no result lines", !HeardStart(S.bob, "Opened the "));
-        c.check("bob gets a power cell", Host_TestGive(S.bob.welcome.session, "power_cell", 1));
+        c.check("bob gets a crowbar", Host_TestGive(S.bob.welcome.session, "crowbar", 1));
         S.asked = false; S.t0 = c.t;
         return true;
     });
-    s.step("with a power cell: the host opens it; bob gets the result, carol sees it opened", 15.0, [](ScenarioCtx& c) {
+    s.step("with a crowbar: the host opens it; bob gets the result, carol sees it opened", 15.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
         UpdateAll();
         if (!S.asked && c.t - S.t0 > 0.5) { Ask(c, S.bob); S.asked = true; S.t0 = c.t; } // (after the give reached the host's copy)
@@ -130,9 +131,9 @@ SCENARIO("net/ruin-cache") {
             return false;
         }
         c.check("opened on the host", Opened());
-        c.eq("bob's power cell spent (the host's copy)", Host_ItemCount(S.bob.welcome.session, "power_cell"), 0);
+        c.eq("bob's crowbar kept (the host's copy)", Host_ItemCount(S.bob.welcome.session, "crowbar"), 1);
         c.eq("bob's 4 stone (the host's copy)", Host_ItemCount(S.bob.welcome.session, "stone"), 4);
-        c.check("bob heard the result's title", Heard(S.bob, "Opened the sealed cache:"));
+        c.check("bob heard the result's title", Heard(S.bob, "Opened the sealed vault:"));
         c.check("bob saw it opened too", SawOpened(S.bob));
         c.check("carol heard no result", !HeardStart(S.carol, "Opened the ") && !Heard(S.carol, "  4 stone"));
         // bob's game: its chat loop gives each line from the server to the result panel (main.cpp)
@@ -140,14 +141,14 @@ SCENARIO("net/ruin-cache") {
         for (const MsgChat& m : S.bob.chat) if (m.from == 0 && RuinCache_TakeHostLine(m.text)) ++taken;
         c.eq("bob's result lines the panel took (title + 1)", taken, 2);
         c.check("bob's result panel shows the reward", RuinCache_LastResult() == std::vector<std::string>{ "4 stone" });
-        c.check("a refusal line isn't taken", !RuinCache_TakeHostLine("Sealed: its lock needs a power cell"));
-        // carol comes to the cache (Ask puts her at bob's spot) with a power cell of her own
-        c.check("carol gets a power cell", Host_TestGive(S.carol.welcome.session, "power_cell", 1));
+        c.check("a refusal line isn't taken", !RuinCache_TakeHostLine("Sealed: it needs a crowbar to pry it open"));
+        // carol comes to the vault (Ask puts her at bob's spot) with a crowbar of her own
+        c.check("carol gets a crowbar", Host_TestGive(S.carol.welcome.session, "crowbar", 1));
         S.carol.chat.clear();
         S.asked = false; S.t0 = c.t;
         return true;
     });
-    s.step("carol can't open it again: refused, her cell kept", 15.0, [](ScenarioCtx& c) {
+    s.step("carol can't open it again: refused", 15.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
         UpdateAll();
         if (!S.asked && c.t - S.t0 > 0.5) { Ask(c, S.carol); S.asked = true; S.t0 = c.t; }
@@ -157,7 +158,7 @@ SCENARIO("net/ruin-cache") {
             return false;
         }
         c.check("still opened", Opened());
-        c.eq("carol's power cell kept", Host_ItemCount(S.carol.welcome.session, "power_cell"), 1);
+        c.eq("carol's crowbar kept", Host_ItemCount(S.carol.welcome.session, "crowbar"), 1);
         c.eq("no stone for carol", Host_ItemCount(S.carol.welcome.session, "stone"), 0);
         c.check("no result for carol", !HeardStart(S.carol, "Opened the "));
         c.eq("sends the transport refused", Net_SendFailures(), 0);
