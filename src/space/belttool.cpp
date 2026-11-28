@@ -442,6 +442,34 @@ void DrawRun(const ConduitRun& run, Color fill, Color edge, bool cross) {
         }
     }
 }
+
+// (#2061) Where belts can meet a plot's machines: a plate on each outer machine face at the belt's height, so the player
+// sees where to drag to. Faces a belt already ends at are left bare. Belt-tool only (build mode); in play, nothing.
+void DrawPorts(const Plot& plot) {
+    const Int3 out[4] = { { 0, 0, -1 }, { 1, 0, 0 }, { 0, 0, 1 }, { -1, 0, 0 } }; // BeltTool_Ports' faces: N E S W
+    auto used = [&](CInt3 slot, int face) {
+        const int axis = face % 2 ? 0 : 2;
+        for (const ConduitRun& r : plot.belts)
+            for (const CInt3& e : { r.points.front(), r.points.back() })
+                if (FloorDiv8(e.x) == FloorDiv8(slot.x) && FloorDiv8(e.z) == FloorDiv8(slot.z) && FloorDiv8(e.y) == FloorDiv8(slot.y)
+                    && (Get(e, axis) & 7) / 4 == (Get(slot, axis) & 7) / 4) return true; // the same cell, the same side of it
+        return false;
+    };
+    constexpr float kOff = 0.02f, kDepth = 0.03f; // m: off the face (no z-fight), the plate's thickness
+    for (const ConduitPortAt& p : BeltTool_Ports(plot)) {
+        if (p.face < 0 || p.face > 3 || used(p.slot, p.face)) continue;
+        const Int3 n = out[p.face];
+        const CInt3 cell{ FloorDiv8(p.slot.x), FloorDiv8(p.slot.y), FloorDiv8(p.slot.z) };
+        // The face plane, the face centre across (a belt's 4-slot width), the belt's 2-slot height from the cell floor.
+        const float fx = n.x > 0 ? (cell.x + 1) * kCellSize : cell.x * kCellSize, fz = n.z > 0 ? (cell.z + 1) * kCellSize : cell.z * kCellSize;
+        const float cx = (cell.x + 0.5f) * kCellSize, cz = (cell.z + 0.5f) * kCellSize, half = kBeltWidth / 2 * kSlotM;
+        const float y0 = cell.y * kCellSize + 0.01f, y1 = y0 + kBeltHeight * kSlotM;
+        Vector3 lo, hi;
+        if (n.x != 0) { const float a = fx + n.x * kOff, b = a + n.x * kDepth; lo = { std::min(a, b), y0, cz - half }; hi = { std::max(a, b), y1, cz + half }; }
+        else { const float a = fz + n.z * kOff, b = a + n.z * kDepth; lo = { cx - half, y0, std::min(a, b) }; hi = { cx + half, y1, std::max(a, b) }; }
+        Box(lo, hi, Fade(Ui().info, 0.45f), Ui().info, false);
+    }
+}
 } // namespace
 
 void BeltTool_Draw3D(Scene& world) {
@@ -461,6 +489,8 @@ void BeltTool_Draw3D(Scene& world) {
         rlPopMatrix();
     };
     const Plot* hovered = hover.on ? hover.plot : nullptr;
+    if (const Plot* portsOf = drag.on && planPlot ? planPlot : hovered) under(*portsOf, [&] { DrawPorts(*portsOf); });
+    else if (benchShow) for (const auto& pl : benchShow->plots->plots) under(*pl, [&] { DrawPorts(*pl); }); // a bench: no aim
     // Laid belts draw themselves (#2053); only the one under the crosshair gets a box: LMB takes it up.
     if (hovered && hover.belt && !drag.on) {
         for (const ConduitRun& r : hovered->belts)
