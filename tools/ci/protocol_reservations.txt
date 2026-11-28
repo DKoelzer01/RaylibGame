@@ -29,3 +29,4 @@ save 14 | staging         | #1881 | a part_palette line: part types saved by nam
 erosion 31 | staging         | #1967 | the bake as on staging 2026-11-27 (the baseline)
 erosion 32 | staging         | #2018 | creep spares only 0.4 m+ hollows, shallow slope pits drain again (PR #2019)
 erosion 33 | staging         | #1988 | Terrain v2 option B default (PR #2007)
+erosion 34 | staging         | #1990 | the biome shapes the bake: per-variant erodibility, talus, creep, glacial (biomes.txt bake)

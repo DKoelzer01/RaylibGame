@@ -259,6 +259,9 @@ public:
     // Rock strata (#587): the column here (from region-scale fields, as the erosion bake sees it) and the rock at a
     // body-local point (its layer at the point's height, in the bake's simulation heights).
     StrataColumn strataColumn(Vector3 dir) const;
+    // #1990: the erosion bake's column: strataColumn + the biome's bake multipliers (biomes.txt `bake`), from a bake-free
+    // estimate at the input land height h0 (m): biomeOf/variantAt on climateAt(dir, h0), never elevation() or the bake.
+    StrataColumn bakeStrataColumn(Vector3 dir, float h0) const;
     RockType rockTypeAt(Vector3 p) const;
     // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
     // give the noise terrain the GPU point kernel ports (it has no bake).
