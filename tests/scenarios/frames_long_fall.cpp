@@ -25,6 +25,7 @@ struct DropState {
     // (#2038) What a drop that "barely fell" did: placements since placeAt (a respawn, a clip rescue), the hold's length,
     // the fastest airborne speed, and the lowest radius above the ground seen in the air.
     int spawns0 = 0; double placedT = 0.0, peakSpeed = 0.0, lowAir = 1e9; bool deadSeen = false;
+    std::string earlyDeath; // (#2112) a death before the touchdown (in the air, or before half the drop): its cause
 };
 DropState st;
 
@@ -97,11 +98,15 @@ static void BuildLongFall(ScenarioDef& s) {
                 st.peakSpeed = std::max(st.peakSpeed, (double)Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet))));
                 st.lowAir = std::min(st.lowAir, b.toLocalD(player.position).length() - st.groundR);
             }
-            // (#2038) Every landing here is fatal (100 m: ~33 m/s into the floor), and the step revived the player only once it
-            // saw the touchdown. On the runner a death came before it (cause unknown; the player is not updated while dead) and
-            // the respawn 3 s later carried them to the start, 29 km away. Revived on the tick any death is seen, and noted.
+            // (#2038, #2112) Every landing here is fatal (100 m: ~33 m/s into the floor), and the step revived the player only
+            // once it saw the touchdown. On the runner a death came before it (cause unknown; the player is not updated while
+            // dead) and the respawn 3 s later carried them to the start, 29 km away. Revived on the tick any death is seen and
+            // noted; one before the touchdown fails a check below (a possible product bug, not to be hidden by the revive).
             if (survival.dead) {
                 if (!st.deadSeen) {
+                    const double fromDrop = (b.toLocalD(player.position) - st.startLocal).length();
+                    if (!player.grounded || fromDrop < 0.5 * d.height)
+                        st.earlyDeath = TextFormat("%s, %.1f m from the drop point, grounded %d", survival.lastHarm, fromDrop, (int)player.grounded);
                     const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
                     // (grounded, or on the frame path, the velocity is against the ground already)
                     const float vGround = Vector3Length(Frames_On() || player.grounded ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
@@ -149,6 +154,7 @@ static void BuildLongFall(ScenarioDef& s) {
                                   st.t0 - st.placedT, t, tFree, st.peakSpeed, st.lowAir, land.length() - st.groundR,
                                   player.spawns - st.spawns0, st.deadSeen ? "yes" : "no"));
             c.eq(n + " placements during the drop (spawnOn, placeAt: a respawn)", (double)(player.spawns - st.spawns0), 0.0);
+            c.check(n + " no death before the touchdown (#2112)" + (st.earlyDeath.empty() ? std::string() : ": " + st.earlyDeath), st.earlyDeath.empty());
             c.metric(n + " landing speed into the floor", st.maxLanding, "m/s", false);
             c.metric(n + " fall speed", st.fallSpeed, "m/s", false);
             c.metric(n + " fall speed / free fall", st.fallSpeed / vAnalytic, "", false);
