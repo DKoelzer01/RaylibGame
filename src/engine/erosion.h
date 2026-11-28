@@ -24,13 +24,13 @@
 #include <vector>
 #include "strata.h"
 
-using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column at a direction (PlanetField::strataColumn)
+using StrataFn = std::function<StrataColumn(Vector3, float)>; // #587: the rock column at a direction and its input height (m; #1990: the biome bake multipliers read it)
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 26; // 26: varied talus limits, lateral erosion on the fine grid (#633); 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 34; // 34: the biome shapes the bake (biomes.txt `bake`: erodibility, talus, creep, glacial per variant, #1990); 33: terrain v2 option B by default: 100 m coarse cells, 50 m routing, coarse dt 4, B on every face (#1988, #1957; user 2026-11-27); 32: creep spares only hollows 0.4 m+ deep, shallow pits drain (#2018); 31: 30 with the deterministic libm of 28-29 (#1905, #1967); 30: creep never fills the fine pass's hollows (ponds, #1965); 28-29: deterministic libm (#1967); 27: hillslope diffusion, random receivers (#1884); 26: varied talus limits, lateral erosion on the fine grid (#633); 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
-    float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
+    float cell = 100.0f;      // m (#1988: 200 -> 100, option B), coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
     int floodEvery = 10;      // steps between drainage recomputes
     float k = 0.01f;          // stream-power coefficient (per step, area in m^2, m = 0.5)
@@ -38,7 +38,7 @@ struct ErosionParams {
     float uplift = 2.0f;      // m per step at the highest input (6 with start 0.1 flattened narrow coastal ranges)
     float talusSoft = 0.7f;   // max slope (rise / run) in soft rock (~35 deg)
     float talusHard = 1.7f;   // in hard rock (~60 deg): rock faces
-    int refine = 4;           // fine cells per coarse cell (0: no refinement)
+    int refine = 2;           // (#1988: 4 -> 2: the 50 m routing grid) fine cells per coarse cell (0: no refinement)
     int refineSteps = 100;
     int margin = 64;          // fine cells past each face edge
     float glacial = 2.0f;     // (#548: 1.5 -> 2, slightly stronger carving) glacial erosion rate (x the fluvial rate at 1 km^2 of drainage); 0: none (#358)
@@ -46,8 +46,17 @@ struct ErosionParams {
     float wind = 1.0f;        // aeolian erosion strength on dry land (#370; 0: none, e.g. airless bodies). Scales the
                               // per-step deflation on windward faces and the sand carried downwind.
     uint64_t landKey = 0;     // the input land's generation parameters (WorldGenParams::key, #504; 0: the defaults)
+    uint64_t biomeKey = 0;    // #1990: a hash of biomes.txt's bake multipliers (0: the uncoupled bake, RAYLIBGAME_BAKE_BIOME=0)
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
+    float hillslope = 15.0f;  // #1884: hillslope diffusion (soil creep), m^2 per step: softens crests and the shoulders of
+                              // V-notches (user 2026-11-26: 15, not 40, to keep the gullies and sharper crests; 0: off)
+    bool randomReceivers = true; // #1884: each flood gives a cell a receiver among its lower neighbours, odds by slope,
+                              // instead of the steepest one: channels stop following the 8 grid directions (false: steepest)
+    int bFace = 6;            // #1988 terrain v2 option B on this cube face (0-5), every face (6, the default) or none (-1: A). A B face skips the 50 m refinement; its fine
+                              // grid is the coarse surface resampled, and its detail comes at chunk time (-1: none)
+    float coarseDt = 4.0f;    // #1957: the coarse pass runs steps / coarseDt steps, each coarseDt times larger (implicit stream power:
+                              // stable; dt 4: 21 s -> 6 s at the same landforms; user 2026-11-27). 1: the 400 small steps
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
 bool BakeRiversOld(); // #547 A/B: RAYLIBGAME_RIVERS_OLD=1 = the 200 m river network and its carving (no final drainage in the bake)
@@ -72,12 +81,20 @@ public:
     std::string profile;      // #605: seconds per pass of the last build()
     float heightScale = 1.0f; // #587: the bake's result = its simulation heights x this (strata are laid in simulation heights)
     int cells() const { return 6 * n * n; }
+    int bFace = -1;           // #1988: the option B face (ErosionParams::bFace; set by build and after a load)
+    float bWeight(Vector3 dir) const; // 1 on the B face (TerrainBDetail at chunk time), 0 off it, blended across its edge
+    // #1988 (option B): a river node's direction moved along a smooth noise field (the meander; dir unchanged off B), and
+    // the m to lower the ground at dist m from a river whose water is at level (its valley; 0 off B and past the rim).
+    Vector3 meanderShift(Vector3 dir, float area) const;
+    float valleyCut(Vector3 dir, float h, float dist, float level, float halfWidth) const;
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }
     // Ponds (#360): the small closed depressions the 50 m refinement left (at most 12 cells): centre, a radius, the
     // spill level (m above sea level) and depth. Water levels come from these; PlanetField places its ponds here.
     struct Pond { Vector3 dir; float r, level, depth; };
     const std::vector<Pond>& ponds() const { return pondList; }
+    // #1990: drop the bake's ponds `keep` refuses (the biome's pond share), before the cache is written.
+    template <class F> void keepPonds(F keep) { std::vector<Pond> k; for (const Pond& q : pondList) if (keep(q)) k.push_back(q); pondList.swap(k); }
 
     // Drainage on the final terrain (#547, bake-native rivers): after the faces, one priority flood over every face's own
     // 50 m cells (a single grid across the face edges) gives each cell its receiver (steepest descent on the filled
@@ -92,6 +109,7 @@ public:
     float flowHeight(int g) const;                    // the stored (incised) height, m
     int flowReceiver(int g) const;                    // the cell it drains to, or -1 (the sea, an outlet)
     float flowArea(int g) const;                      // m^2 drained through it (its class's middle), 0 under kFlowArea0
+    float drainageAt(Vector3 dir) const;              // log10 of flowArea, bilinear over the flow cells (4.7 off the network)
     static float IncisionDepth(float area);           // m the bake wore a channel cell down by
     // Filled cells (lakes and ponds of the flood): cell -> the water level there (m).
     const std::vector<std::pair<int, float>>& filledCells() const { return filled; }
@@ -124,7 +142,14 @@ private:
 // the baked drainage; each octave's slope bends the next one's direction (small gullies branch into larger ones).
 // Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
 // p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
-float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
+// firstOctave: skip the longer octaves (option B starts at 190 m: the coarse bake carries the 420/900 m relief, and those
+// ribs stood as spires on small islands and lake shores, #1988).
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength, int firstOctave = 0);
+// Terrain v2 option B (#1988): the detail the 50 m refinement gave, made at chunk time on the B face. The gullies above,
+// stronger (no eroded 50 m relief under them), plus derivative fBm (octaves damped where the earlier ones are steep:
+// rounded swells with smooth hollows, not uniform bumps) on gentle ground. Both fade out over large drainage, so valley
+// floors and the routed rivers stay smooth. drainage = log10 of the flow area (m^2) at dir, 4.7 off the network (drainageAt).
+float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage);
 float ErosionBakeProgress(); // 0..1 while a bake runs (the loading screen, #362)
 bool ErosionBaking();        // a bake is running (not a cache read: #505)
 int ErosionBakeCount();      // bakes run so far (tests: a load must read the cache, #505)

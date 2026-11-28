@@ -76,11 +76,23 @@ SCENARIO("perf/sandbox-view") {
 }
 
 SCENARIO("perf/planet-view") {
-    s.tags = { "perf", "planet" };
+    s.tags = { "perf", "planet", "budget" };
     s.world = ScenarioWorld::Planet;
     s.args = { "--day" };
     s.timeout = 120.0;
     s.legacyFlag = "--seed 42 --bench 10";
     s.record = false;
     PerfView(s, 20.0, 40.0f, 300.0f); // as a plain planet --bench: 40 m over the start, looking along the ground
+}
+
+// (#1995 phase 3) Dense flora at eye height: the start's bushes, stones, grass and trees filling the view (the small
+// flora's size classes and their instancing budget, before/after).
+SCENARIO("perf/flora-view") {
+    s.tags = { "perf", "planet", "foliage" };
+    s.world = ScenarioWorld::Planet;
+    s.args = { "--day" };
+    s.env = { { "RAYLIBGAME_WEATHER_FORCE", "0" } };
+    s.timeout = 120.0;
+    s.record = false;
+    PerfView(s, 20.0, 1.8f, 60.0f);
 }

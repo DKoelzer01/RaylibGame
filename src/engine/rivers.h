@@ -31,8 +31,10 @@ public:
         std::function<float(Vector3)> fineHeight; // optional: the full ground height (m), sampled along the links
         std::function<float(Vector3)> bankHeight; // optional (bake-native, #640): the ground beside a river (m), levels are held under it
         float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
+        std::function<Vector3(Vector3, float)> meanderShift; // #1988: a node's direction and drainage (m^2) -> its moved direction (empty: none)
         float lakeDepth = 6.0f;         // m: a filled depression deeper than this holds water (a lake, or with the bake a pond)
         std::function<float(Vector3)> runoff; // optional (#637): water per km^2 drained at a place, x the default (moisture x the water cycle)
+        float valleyFill = 1.0f;        // (#637) 0..1: how much of its worn valley floor a river fills (0: the discharge width alone; the water cycle sets it)
         // optional (bake-native, #903): how far the runtime moves the bake's ground at a place of bake height h (m: biomes'
         // regional reshaping after the bake, e.g. swamps pulled down to a floor 2-5 m over the sea). Levels move with it.
         std::function<float(Vector3 dir, float h)> regionalShift;
@@ -49,6 +51,8 @@ public:
     // Bake-native: the ground under the channels - h lowered to each piece's bed within its half width and to a 0.6 bank
     // slope just beyond (the lowest of all pieces near, so overlapping ends never leave a ridge, #608). Lakes carve nothing.
     float carve(Vector3 dir, float h) const;
+    // #1988: fn(dist m, water level m, half width m) for each river piece indexed near dir within reach m (lake pieces skipped).
+    void forEachPieceNear(Vector3 dir, float reach, const std::function<void(float, float, float)>& fn) const;
     // Bake-native: the river head (a source) nearest to dir with water over minLevel, and its downstream direction (#625 looks).
     bool nearestHead(Vector3 dir, float minLevel, Vector3& head, Vector3& down) const;
 
@@ -148,6 +152,7 @@ private:
     const PlanetErosion* bake = nullptr;
     std::unordered_map<int, int> fineLake;  // bake cell -> lake id
     std::vector<int> nodeCell, nodeParent, nodePiece; // per node: its bake cell, the node it drains to (-1: the sea), its piece
+    std::vector<float> nodeDisc; // per node: the discharge's half width (m), before the valley fill (#637); never shrinks downstream
     // River flow (#656): per node its discharge (as an area at the default runoff), the order sources first, and the state.
     std::vector<float> nodeQ, nodeChildQ; // discharge (as a drainage area), and its tributaries' together
     std::vector<int> nodeTopo;

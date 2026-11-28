@@ -16,6 +16,14 @@ bool Compute_Available();
 // Expands `#include "file"` lines (relative to the including file); the included paths are appended.
 std::string LoadShaderSource(const std::string& path, std::vector<std::string>& includes);
 
+// (#1769) Linked GL programs on disk (cache/shaders, RAYLIBGAME_SHADER_CACHE): a cold driver cache made every process compile
+// its shaders again (~16 s of each scenario's start). The file is keyed by the source and the driver; a binary the driver
+// refuses is deleted (Load returns 0 and the caller compiles, then saves).
+bool ProgramCache_Usable();
+std::string ProgramCache_Path(const std::string& name, const std::string& src);
+unsigned ProgramCache_Load(const std::string& file); // a linked program, or 0
+void ProgramCache_Save(const std::string& file, unsigned program);
+
 struct ComputeBuffer;
 struct ComputeProgram {
     unsigned int id = 0;
@@ -43,6 +51,12 @@ struct ComputeBuffer {
     void bind(unsigned int index) const;
     void destroy();
 };
+
+// (#1047) Start compiling these compute shaders in the background (parallel shader compile, shaderasync.h), so a later
+// ComputeProgram::load of the same path takes the finished program instead of compiling cold in one frame. Returns how many
+// were started (0 without the extension: load compiles as before). Compute_PrewarmPending: those not finished yet.
+int Compute_Prewarm(const std::vector<std::string>& paths);
+int Compute_PrewarmPending();
 
 // glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) and friends.
 void Compute_Barrier();

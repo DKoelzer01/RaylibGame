@@ -1,4 +1,5 @@
 #include "hostserver.h"
+#include "headless.h"
 #include "netinterest.h"
 #include "netguard.h"
 #include "gputimer.h"
@@ -15,14 +16,17 @@
 #include "netclient.h"
 #include "terraintool.h"
 #include "buildtool.h"
+#include "machineact.h" // (#1684) the dungeon action codes
 #include "plots.h"
 #include "factory.h"
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
+#include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
@@ -33,11 +37,13 @@
 #include "claims.h"
 #include "serveradmin.h"
 #include "trees.h"
+#include "structures.h" // (#1641 slice 2c) breakable props
 #include <cmath>
 #include <map>
 #include <ctime>
 #include <future>
 #include <chrono>
+#include <filesystem>
 #include "playerinput.h"
 #include "worldtypes.h"
 #include "voxel.h"
@@ -56,8 +62,23 @@
 #include <unordered_map>
 
 extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmake, #501)
+#include "utils/logger.h"
+#include <cstdarg>
+#include "buildcommit.h"
+#include "ruincache.h" // (#2072)
 
 namespace {
+    // (#1916) A connection's life (connect, refusal, join, join sync, kick, disconnect): on stdout as "host: ..." as before
+    // (the console, Pterodactyl, tools/test_server.sh) and in log.txt under [Host], so a join can be read back afterwards.
+#if defined(__GNUC__)
+    __attribute__((format(gnu_printf, 1, 2)))
+#endif
+    void HostLog(const char* fmt, ...) {
+        char b[1024];
+        va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
+        printf("host: %s\n", b);
+        LOG_INFO("Host", "%s", b);
+    }
     bool listening = false;
     int joins = 0;
     std::set<uint32_t> localClients;                   // tests: client connections opened in this process
@@ -80,7 +101,7 @@ namespace {
     std::vector<Session> sessions;
     // #326 / #345: the dedicated server's hooks (main.cpp sets them in --server mode).
     std::string motd;
-    std::function<bool(const std::string& name, const std::string& address, std::string& why)> joinCheck;
+    std::function<bool(const std::string& name, const std::string& address, const std::string& uuid, std::string& why)> joinCheck; // (#1868: and the id)
     std::function<void(uint32_t session, const std::string& name, const std::string& text)> chatHandler;
     std::function<void(const char* what, uint32_t session, const std::string& detail)> eventHook;
     uint32_t nextSession = 1;
@@ -133,6 +154,23 @@ namespace {
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
+    // (#1868) The item a player really holds: its loadout's, when the inventory the server keeps for it has one; else hands ("").
+    // Read where it counts (digging, felling, hitting), so an item that left the inventory after the loadout came stops too.
+    // Slots are matched by id (not Inventory::count: tools that carry item data are left out of counts). Creative players may
+    // take any item from the Catalog, so their loadout stands as sent.
+    bool InventoryHolds(const Inventory& inv, const std::string& id) {
+        for (const InvSlot& s : inv.grid()) if (!s.empty() && s.id == id) return true;
+        return false;
+    }
+    std::string HeldItem(uint32_t session) {
+        std::string held;
+        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        if (held.empty()) return held;
+        const auto rit = remotes.find(session);
+        if (rit == remotes.end()) return "";
+        return rit->second.creative || InventoryHolds(rit->second.inventory, held) ? held : std::string();
+    }
+    int loadoutsRefused = 0; // (#1868) loadouts naming an item the player doesn't have (tests)
     void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
     void TeamXp(uint32_t session, const char* event, double n);         // (#920) and teammates' share of it (below)
     // (#920) A remote player's perk multipliers by stat name (Skills_Stat on the skills the server keeps for them).
@@ -171,6 +209,17 @@ namespace {
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
     bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
+    // (#1922) A creative flyer's step: the pose its client flew to. Player::update's fly path moves world.camera (the
+    // player's own view), so on the server it flew the host's camera and the remote stayed put: the client's next state
+    // from us was far behind and pulled it back. Only creative players fly; it's their mode, so their pose is trusted.
+    bool FlyPoseTo(Scene& world, Player& p, const MsgInput& m) {
+        Player::NetState s;
+        if (!p.netState(world, s)) return false;
+        s.body = m.flyBody; s.local = m.flyLocal; s.vel = { m.fvx, m.fvy, m.fvz }; s.grounded = false;
+        if (!p.applyNetState(world, s)) return false; // (that body isn't here)
+        p.flyMode = true;
+        return true;
+    }
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -203,7 +252,16 @@ namespace {
                 // (#1087) the player's own suit, as single player applies it every frame: the starting suit has no jetpack
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
-                if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
+                if (!r.survival.dead && !(r.creative && m.fly && FlyPoseTo(world, r.player, m))) { // (#1922: a flyer's pose, above)
+                    // (#1922) Only the client flies: a step it didn't fly isn't flown here either (here fly mode flies
+                    // world.camera), and its F or double jump can't start flight here; the client's next step says it flies.
+                    const bool flyAllowed = r.player.flyAllowed;
+                    r.player.flyMode = false; r.player.flyAllowed = false;
+                    r.player.update(world, in, SimDt());
+                    r.player.flyAllowed = flyAllowed;
+                    if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false);
+                } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
@@ -236,12 +294,36 @@ namespace {
     long long lastAnimals = 0;
     std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
     std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
-    int animalHits = 0, animalHitsRefused = 0;
+    int animalHits = 0, animalHitsRefused = 0, animalHitsRewound = 0; // (rewound: #1108, allowed only by the rewind)
     bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
         Planetoid* b = r.player.nearest;
         if (!b) return false;
         body = b->netId; local = b->toLocalD(r.player.position).toFloat(); scale = b->scale;
         return true;
+    }
+    // (#1343, #1364) Creature shots launched and ended, and creature events, to each player near them (80 m), each tick
+    // there are any: the clients fly the shots and play the creatures' sounds and captions.
+    void SendCreatureFx(Scene&) {
+        static MsgCreatureFx all;
+        Animals_TakeFx(all);
+        if (all.shots.empty() && all.ended.empty() && all.events.empty()) return;
+        constexpr float kFxRange = 80.0f;
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+            if (rit == remotes.end() || !RemoteLocal(rit->second, body, at, scale)) continue;
+            MsgCreatureFx m;
+            for (const MsgCreatureFx::Shot& s : all.shots)
+                if (s.body == body && Vector3Distance(s.pos.toFloat(), at) * (float)scale <= kFxRange) m.shots.push_back(s);
+            m.ended = all.ended; // (ids it never had are ignored there)
+            for (const MsgCreatureFx::Event& e : all.events)
+                if (e.body == body && Vector3Distance(e.pos.toFloat(), at) * (float)scale <= kFxRange) m.events.push_back(e);
+            if (m.shots.empty() && m.ended.empty() && m.events.empty()) continue;
+            NetWriter w; NetWrite(w, m);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+        all.shots.clear(); all.ended.clear(); all.events.clear();
     }
     void SendAnimals(Scene& world) {
         if (SimTick() - lastAnimals < kAnimalEvery) return;
@@ -290,6 +372,7 @@ namespace {
     // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kHitRewind = 0.2;   // (#1108) s: how far back a hit may be checked (the combat design's cap, #1002)
     constexpr double kAnimalHitCooldown = 0.25; // s
     // (#337) each player's survival numbers to that player, 5 a second (its HUD; its own simulation fills in between)
     constexpr int kVitalsEvery = 12; // sim steps
@@ -379,9 +462,33 @@ namespace {
         else if (!strcmp(kind, "obtained")) TeamQuests_Obtained(team, what, n);
         questContributor[team] = session;
     }
+    // (#1886) The team's progression store (research, explored map, blueprint library) to one member: on join and team
+    // changes (with the book), and to every online member when it changes (TeamStoreTick). A text over the message cap
+    // goes without its map section (the client keeps the map it has; a known gap: the map needs deltas).
+    std::map<int, std::string> teamStoreSent;  // team -> the store text its online members have
+    std::map<int, long long> teamStoreSentAt;  // team -> SimTick of that send
+    int teamStoreMsgs = 0;
+    // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
+    bool TeamStoreTextForNet(int team, std::string& text) {
+        text = TeamStore_Text(team);
+        if (text.size() <= MsgTeamStore::kMaxText) return true;
+        const size_t full = text.size();
+        const size_t a = text.find("section map\n"), b = a == std::string::npos ? a : text.find("section_end\n", a);
+        if (b != std::string::npos) text.erase(a, b + strlen("section_end\n") - a);
+        const bool fits = text.size() <= MsgTeamStore::kMaxText;
+        printf("host: team %d's store is %zu KB: %s\n", team, full / 1024, fits ? "sent without its map" : "too big even without its map, not sent");
+        return fits;
+    }
+    void SendTeamStore(uint32_t conn, int team) {
+        MsgTeamStore m; m.team = (uint32_t)team;
+        if (!TeamStoreTextForNet(team, m.text)) return;
+        SendMsg(conn, m);
+        ++teamStoreMsgs;
+    }
     void SendQuestBook(uint32_t conn, int team) {
         MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
         SendMsg(conn, m);
+        SendTeamStore(conn, team); // (#1886) a book goes out on join and team changes: the progression store with it
     }
     // ---- Machines (#332): the factory runs here only; players act on machines by request and see views ----
     // Each player's open machine (watch) gets its full view 5 times a second; the machines working on the plots within
@@ -422,6 +529,7 @@ namespace {
         std::vector<Vector3> near;
         for (auto& [sid, r] : remotes) near.push_back((r.player.position - world.renderOrigin).toFloat());
         Factory::SetNearPoints(near);
+        Factory::SetCameraNear(!Headless()); // (#1302) a dedicated server's camera is nobody: only its players make plots near
         std::vector<Factory::MachineKey> keys;
         for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
         for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(sid, r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
@@ -503,12 +611,78 @@ namespace {
             }
         }
     }
+    // (#1684) The part changes of a dungeon edit, as the clients apply them (in order: the removes and places keep every plot's indices equal).
+    void SendPartEdits(uint64_t bodyNet, uint32_t plotId, const std::vector<PartEdit>& edits) {
+        for (const PartEdit& e : edits) {
+            MsgPlotEdit out; out.session = 0; out.seq = 0; out.body = bodyNet; out.plot = plotId;
+            if (e.remove) { out.op = NetPartOp::Remove; out.partIndex = (uint32_t)e.index; }
+            else { out.op = NetPartOp::Place; out.part = NetPart{ (uint8_t)e.part.type, e.part.origin.x, e.part.origin.y, e.part.origin.z, e.part.orient, e.part.material }; }
+            SendToJoined(out);
+        }
+    }
+    // A vault door (a dungeon_key from the requester's inventory) or a lever (#1684), asked for as a machine action.
+    void OnDungeonAction(uint32_t conn, Remote& rm, Planetoid& b, Plot& plot, const MsgMachineAction& a) {
+        auto refuse = [&](const char* why) { ++machineActionsRefused; SendMsg(conn, MsgChat{ 0, why }); };
+        const Part& pt = plot.parts[a.part];
+        const bool vault = a.action == kMachineActUnlockVault;
+        if (vault ? !GateLocked(pt) : (pt.type != PartType::Lever || pt.material != 0)) { if (!vault) refuse("The lever is already down"); return; } // (a locked door that is open by now: nothing to say)
+        const Int3 c = pt.origin;
+        const Vector3 at = plot.toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+        if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kMachineReach) { refuse("That is out of reach"); return; }
+        std::vector<PartEdit> edits;
+        const auto before = AllAmounts(rm.inventory);
+        if (vault) {
+            if (!rm.inventory.remove("dungeon_key", 1)) { refuse("Locked: it needs a dungeon key"); return; }
+            Dungeon_UnlockVault(plot, a.part, &edits);
+            SendMsg(conn, MsgChat{ 0, "The vault door unlocks" });
+        } else {
+            const int gates = Dungeon_PullLever(plot, a.part, &edits);
+            SendMsg(conn, MsgChat{ 0, gates <= 0 ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open" });
+        }
+        SendPartEdits(b.netId, plot.id, edits);
+        SendChangedItems(conn, rm.inventory, before);
+        ++machineActions;
+    }
+    // (#2072) A ruin cache the requester held E on: opened here (once per world), the rewards from their team's roll; the
+    // part edit tells everyone it is open, the requester gets the result lines.
+    void OnCacheAction(uint32_t conn, uint32_t session, Remote& rm, Planetoid& b, Plot& plot, int part) {
+        auto refuse = [&](const std::string& why) { ++machineActionsRefused; if (!why.empty()) SendMsg(conn, MsgChat{ 0, why }); };
+        const Part& pt = plot.parts[part];
+        const Vector3 at = plot.toBody({ (pt.origin.x + 0.5f) * kCellSize, (pt.origin.y + 0.5f) * kCellSize, (pt.origin.z + 0.5f) * kCellSize });
+        if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kCacheReach) { refuse("That is out of reach"); return; }
+        const auto before = AllAmounts(rm.inventory);
+        std::vector<CacheRoll> rolls;
+        std::vector<std::pair<std::string, int>> overflow;
+        std::vector<PartEdit> edits;
+        std::string why;
+        if (!Cache_Open(b, plot, part, rm.inventory, TeamOfSession(session), rolls, overflow, &edits, &why)) { refuse(why); return; }
+        SendPartEdits(b.netId, plot.id, edits);
+        SendChangedItems(conn, rm.inventory, before);
+        std::string name;
+        for (const Session& s : sessions) if (s.id == session) name = s.name;
+        for (const auto& [item, n] : overflow) Combat_DropFor(b.name, DVec3(at), InvSlot{ item, (int64_t)n * 100 }, name); // what didn't fit: at the cache
+        SendMsg(conn, MsgChat{ 0, std::string("Opened the ") + CacheKindName(CacheKindOf(pt)) + ":" }); // (a result screen for clients: a later slice)
+        for (const CacheRoll& r : rolls) SendMsg(conn, MsgChat{ 0, "  " + r.text });
+        ++machineActions;
+    }
     void OnMachineAction(uint32_t conn, uint32_t session, const MsgMachineAction& a) {
         auto rit = remotes.find(session);
         Planetoid* b = Planetoid::findNet(a.body);
         Plot* plot = b && b->plots ? b->plots->byId(a.plot) : nullptr;
         auto refuse = [&](const char* why) { ++machineActionsRefused; SendMsg(conn, MsgChat{ 0, why }); };
         if (rit == remotes.end() || rit->second.survival.dead) return;
+        if (a.action == kMachineActUnlockVault || a.action == kMachineActPullLever) { // (#1684) a dungeon's door or lever: not a machine
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size()) { refuse("That isn't there any more"); return; }
+            const Vector3 at = plot->toBody({ (plot->parts[a.part].origin.x + 0.5f) * kCellSize, (plot->parts[a.part].origin.y + 0.5f) * kCellSize, (plot->parts[a.part].origin.z + 0.5f) * kCellSize });
+            if (ClaimBlocks(session, b, at)) { const std::string why = ClaimRefusal(b, at); refuse(why.c_str()); return; } // (#343)
+            OnDungeonAction(conn, rit->second, *b, *plot, a);
+            return;
+        }
+        if (a.action == kMachineActOpenCache) { // (#2072) a ruin cache: not a machine; ruins are never claimed ground
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::RuinCache) { refuse("That isn't there any more"); return; }
+            OnCacheAction(conn, session, rit->second, *b, *plot, a.part);
+            return;
+        }
         if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
         const Factory::MachineKey key{ b->id, plot->id, a.part };
         if (a.action == 7) { machineWatch[session].on = false; return; }
@@ -550,6 +724,10 @@ namespace {
             case 5: // one slot of its screen; with a count (#854), that much of it (its client puts it on its cursor)
                 if (a.count > 0) Factory::TakeSlotToCursor(b->id, plot->id, a.part, a.slot, a.which, a.count, session);
                 else Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session);
+                break;
+            case 10: // (#1103) light (count 1) or put out a campfire
+                if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
+                Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
                 break;
             default: return;
         }
@@ -638,8 +816,7 @@ namespace {
             }
             if (const float d = Vector3Distance(pl.base, me); d > kPlantReach * b->scale) { refuseLog(TextFormat("out of reach (%.1f m)", d), "That's out of reach"); return; }
             if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuseLog(why.c_str(), why.c_str()); return; } // (#343)
-            std::string held;
-            for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+            const std::string held = HeldItem(session); // (#1868) only if the player has it
             const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuseLog(TextFormat("too soon (%.2f s of %.2f s, %d swings with '%s')", SimTime() - rm.lastFellAt, minGap, hits, held.c_str()), nullptr); return; }
@@ -699,7 +876,7 @@ namespace {
                 if (auto pf = std::dynamic_pointer_cast<const PlanetField>(b->field); pf && !b->flat) {
                     const DVec3 l = b->toLocalD(r.player.position);
                     if (l.length() > 1.0) {
-                        TeamQuests_Explore(team, b->name, Vector3Normalize(l.toFloat()), pf->radius);
+                        TeamQuests_Explore(team, b->name, Vector3Normalize(l.toFloat()), pf->radius, r.record.uuid); // (#1886) the player's own tiles too
                         Nav_RevealTiles(Vector3Normalize(l.toFloat()), pf->radius, r.tilesAlone); // (tests: what it revealed alone)
                     }
                 }
@@ -717,7 +894,17 @@ namespace {
             const std::string text = TeamQuests_Text(team);
             if (text != questBookSent[team]) {
                 questBookSent[team] = text;
-                for (const auto& [s, c] : members) SendQuestBook(c, team);
+                for (const auto& [s, c] : members) { MsgQuestBook m; m.team = (uint32_t)team; m.text = text; SendMsg(c, m); }
+            }
+            // (#1886) the progression store when it changed, at most every 5 s: exploring grows the map's tiles often and
+            // each send is the whole text (research done right now waits up to 5 s)
+            constexpr long long kStoreEvery = 5 * 60; // ticks
+            if (SimTick() - teamStoreSentAt[team] >= kStoreEvery) {
+                std::string store;
+                if (TeamStoreTextForNet(team, store) && store != teamStoreSent[team]) {
+                    teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
+                    for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
+                }
             }
         }
     }
@@ -796,14 +983,58 @@ namespace {
     int animalBites = 0;
     // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
     // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
-    void SetAnimalTargets(Scene&) {
+    void SetAnimalTargets(Scene& world) {
         gAnimalTargets.clear();
         for (const Session& s : sessions) {
             if (!s.online) continue;
             auto rit = remotes.find(s.id);
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
-            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
+            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, HeldItem(s.id) }); // (#337: the dead aren't prey; #1868 held: only if had)
+        }
+        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
+        // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
+        // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
+        // (#1421) "Playing": each has walked 3 m from where it first stood - the test's players walk once their loading screens
+        // are gone. Online was not enough (on the runner the join sync took 35-67 s), nor were inputs (they flow during the ~20 s
+        // spawn-area loading screen after the sync): the creature lived and fell before the clients were in the world.
+        static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
+        if (joinCreature) {
+            static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
+            static std::unordered_map<uint32_t, Vector3> firstAt; static std::unordered_set<uint32_t> walked;
+            const double now = GetTime();
+            for (const auto& kv : remotes) {
+                uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+                if (kv.second.lastQueued == 0 || !RemoteLocal(kv.second, body, at, scale)) continue;
+                auto it = firstAt.find(kv.first);
+                if (it == firstAt.end()) firstAt[kv.first] = at;
+                else if (Vector3Distance(it->second, at) * (float)scale > 3.0f) walked.insert(kv.first);
+            }
+            const int playing = (int)walked.size();
+            if (playing >= 2 && gAnimalTargets.size() >= 2 && bothAt < 0.0) {
+                bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false);
+                printf("host: creature: both players in the world\n");
+            }
+            if (bothAt >= 0.0 && spawnedAt < 0.0 && now - bothAt > 3.0 && !gAnimalTargets.empty()) {
+                const AnimalTarget& t = gAnimalTargets[0];
+                Planetoid* b = Planetoid::findNet(t.body);
+                const Vector3 up = Vector3Normalize(t.local);
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const int before = Animals_Count();
+                if (b) Animals_Spawn(world, *b, "thornback", Vector3Add(t.local, Vector3Scale(side, 5.0f)), 1, false, 0.01f);
+                if (Animals_Count() > before) { net = Animals_NetId(Animals_Count() - 1); printf("host: creature: a thornback (%llu) by session %u\n", (unsigned long long)net, t.session); }
+                spawnedAt = now; lastHit = now;
+            }
+            // (#1421) The test is the creature's replication, not the players' survival: while it lives, neither test player
+            // goes below half health. On the runner a ram threw bob into the air and the hit killed him; he spent the
+            // creature's whole life on the respawn screen and never saw it.
+            if (net && !fell) for (auto& kv : remotes) kv.second.survival.health = std::max(kv.second.survival.health, 50.0f);
+            if (net && !fell && spawnedAt >= 0.0 && now - spawnedAt > 6.0 && now - lastHit >= 1.0) {
+                lastHit = now;
+                const int i = Animals_FindNet(net);
+                if (i < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); }
+                else { DamageEvent e; e.amount = 10.0f; Animals_HitEvent(i, e); if (Animals_FindNet(net) < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); } else printf("host: creature: health %.0f\n", Animals_HealthOf(i)); }
+            }
         }
         if (!gAnimalDamageRemote) gAnimalDamageRemote = [](uint32_t session, const DamageEvent& e) {
             auto rit = remotes.find(session);
@@ -826,7 +1057,12 @@ namespace {
         const int i = Animals_FindNet(netId);
         if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
         const Planetoid* b = rit->second.player.nearest;
-        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        if (!b || Animals_Body(i) != b->name) { ++animalHitsRefused; return; }
+        // (#1108) lag compensation: within reach of where the animal was in the last kHitRewind (the player swung at what
+        // they saw: a round trip and their interpolation behind); a fleeing animal's hits were refused at the edge of reach
+        const float nowD = Vector3Distance(Animals_Position(i), at) * (float)scale, rewD = Animals_HitDistance(i, at, kHitRewind) * (float)scale;
+        if (rewD > kAnimalReach) { ++animalHitsRefused; return; }
+        if (nowD > kAnimalReach) ++animalHitsRewound; // (allowed only by the rewind)
         if (ClaimBlocks(session, b, Animals_Position(i))) { ++animalHitsRefused; if (const uint32_t conn = ConnOf(session)) SendMsg(conn, MsgChat{ 0, ClaimRefusal(b, Animals_Position(i)) + ": its animals are theirs" }); return; } // (#343)
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
@@ -841,7 +1077,7 @@ namespace {
             }
             return;
         }
-        std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const std::string held = HeldItem(session); // (#1868) only if the player has it
         const ToolSpec t = ToolOf(held);
         const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
         std::vector<std::pair<std::string, int>> drops;
@@ -954,7 +1190,7 @@ namespace {
 
     void Send(uint32_t conn, const NetWriter& w) { Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), true); }
     template <class M> void SendMsg(uint32_t conn, const M& m) { NetWriter w; NetWrite(w, m); Send(conn, w); }
-    std::string BuildCommit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string BuildCommit() { return Build_CommitOf(kGameVersion); } // (#1906)
 
     template <class M> void SendToJoined(const M& m) { NetWriter w; NetWrite(w, m); for (const auto& [c, p] : peers) if (p.joined) Send(c, w); }
     // The roster (#750): everyone online, to everyone joined, on each join and leave (reliable; the whole list each time:
@@ -973,7 +1209,7 @@ namespace {
         if (it == peers.end()) return;
         for (Session& s : sessions) if (s.id == it->second.session && s.conn == conn) { s.online = false; s.conn = 0; }
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
-        printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
+        HostLog("connection %u (session %u) %s", conn, it->second.session, NetByeText(why));
         if (eventHook && it->second.joined) { // (#345 audit)
             std::string name; for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
             eventHook("leave", it->second.session, name + " (" + NetByeText(why) + ")");
@@ -999,7 +1235,7 @@ namespace {
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
         SendMsg(conn, MsgReject{ why, detail });
-        printf("host: refused connection %u: %s%s%s\n", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
+        HostLog("refused connection %u: %s%s%s", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
         peers.erase(conn);
         Net_Close(conn); // (lingers: the reject goes out first)
     }
@@ -1043,7 +1279,7 @@ namespace {
         if (rm.record.firstSeen <= 0.0) rm.record.firstSeen = (double)time(nullptr);
         rm.joinedAt = GetTime();
         Teams_Join(s.uuid, s.name, 0); // a team of one to start with (#604 forms bigger ones)
-        printf("host: %s (%s): %s\n", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
+        HostLog("%s (%s): %s", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
         return loaded;
     }
     bool SaveRecord(uint32_t session) {
@@ -1053,7 +1289,7 @@ namespace {
         const double now = GetTime();
         const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt, &rm.skills);
         if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
-        else printf("host: could not write the record of %s\n", rm.record.name.c_str());
+        else HostLog("could not write the record of %s", rm.record.name.c_str());
         return ok;
     }
     int SaveAllRecords() { int n = 0; for (const auto& [id, rm] : remotes) n += SaveRecord(id); return n; }
@@ -1078,6 +1314,15 @@ namespace {
     void TellTeam(int team, const std::string& text) {
         if (const TeamRecord* t = Teams_Find(team)) for (const std::string& u : t->members) if (const Session* s = SessionOfUuid(u)) Tell(*s, text);
     }
+    // (#828) An offline player's "last seen": seconds since their record file was last written (on leaving, and by autosaves
+    // while they played); 0 when there is none.
+    uint32_t SecondsSinceRecord(const std::string& uuid) {
+        std::error_code ec;
+        const auto when = std::filesystem::last_write_time(PlayerRecord_Path(uuid), ec);
+        if (ec) return 0;
+        const long long s = std::chrono::duration_cast<std::chrono::seconds>(std::filesystem::file_time_type::clock::now() - when).count();
+        return s > 0 ? (uint32_t)std::min<long long>(s, 0xFFFFFFFFll) : 1;
+    }
     void SendTeamState(const Session& s) {
         MsgTeamState m;
         m.team = Teams_Of(s.uuid);
@@ -1087,9 +1332,12 @@ namespace {
             for (const std::string& u : t->members) {
                 MsgTeamState::Member x;
                 x.name = NameOfUuid(u); x.owner = u == owner; x.you = u == s.uuid;
-                if (const Session* o = SessionOfUuid(u)) { x.online = true; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                if (const Session* o = SessionOfUuid(u)) { x.online = true; x.session = o->id; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                else x.lastSeen = SecondsSinceRecord(u); // (#828) their record is written when they leave
                 m.members.push_back(x);
             }
+            m.claimBudget = Claims_Budget(TeamQuests_BodiesReached(m.team)); // (#828)
+            for (const int a : Claims_AlliesOf(m.team)) if (const TeamRecord* at = Teams_Find(a)) m.allies.push_back(at->name);
         }
         for (const TeamInvite& i : teamInvites) if (i.to == s.uuid && GetTime() < i.until) if (const TeamRecord* t = Teams_Find(i.team)) m.invite = t->name;
         SendMsg(s.conn, m);
@@ -1102,12 +1350,14 @@ namespace {
     }
     // Into another team. A joiner who was alone keeps their progress: their book is merged into the team's (#861, the user
     // on #604), then it goes with the emptied team. One who moves straight from a team that still has members brings nothing
-    // across: that team keeps its book (leaving or a kick is SplitOff: a team of one with a copy, unchanged).
+    // across: that team keeps its book (leaving or a kick is SplitOff: a team of one with a copy, unchanged), except the
+    // map they explored themselves, which comes with them (the user, on #1886).
     void JoinTeam(const Session& s, int team) {
         const int from = Teams_Of(s.uuid);
         if (from) TeamQuests_Book(from); // (loaded from its record now: Teams_Move removes an emptied team's record)
         const int emptied = Teams_Move(s.uuid, team);
         if (emptied) { if (emptied == from) TeamQuests_Merge(from, team); TeamQuests_Forget(emptied); Claims_MoveTeam(emptied, team); } // (#343) its claims go with them
+        if (Teams_Of(s.uuid) == team) TeamQuests_CarryPlayer(s.uuid, team); // (#1886)
         SendQuestBook(s.conn, team);
     }
     // Out of their team into a team of one with a copy of its progress (leave, kick). Online or not.
@@ -1324,17 +1574,23 @@ namespace {
     // (#349) connections: at most kMaxPerAddress from one address at once (loopback exempt: the host's own machine and the
     // tests), and a connection must say Hello within kHelloSeconds.
     const int kMaxPerAddress = getenv("RAYLIBGAME_MAX_PER_ADDRESS") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PER_ADDRESS"))) : 8;
-    constexpr double kHelloSeconds = 10.0;
+    // (#1868) and at most kMaxPending connections that haven't joined yet (from any non-loopback address), counted from the
+    // moment they connect (a silent one used to count only after its first message); the tests shorten the Hello wait
+    const int kMaxPending = getenv("RAYLIBGAME_MAX_PENDING") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PENDING"))) : 16;
+    const double kHelloSeconds = getenv("RAYLIBGAME_HELLO_SECONDS") ? std::max(0.5, atof(getenv("RAYLIBGAME_HELLO_SECONDS"))) : 10.0;
+    int pendingRefused = 0, silentDropped = 0; // (#1868) tests
     std::string AddressHost(const std::string& a) { const size_t c = a.rfind(':'); return c == std::string::npos ? a : a.substr(0, c); }
     // (loopback is counted too when RAYLIBGAME_MAX_PER_ADDRESS is set: the tests check the limit on one machine)
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
-        if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
+        if (!h.build.empty() && !Build_SameCommit(Build_CommitOf(h.build), BuildCommit())) { // (#1906) e5f5f13 == e5f5f132
+            Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return;
+        }
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
-            if (!joinCheck(h.name, Net_RemoteAddress(conn), why)) {
+            if (!joinCheck(h.name, Net_RemoteAddress(conn), h.uuid, why)) {
                 Refuse(conn, NetReject::Banned, why);
                 if (eventHook) eventHook("refused", 0, h.name + " (" + why + ")");
                 return;
@@ -1380,13 +1636,13 @@ namespace {
         }
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
-        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
+        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) { MsgLoadout l = x.loadout; l.held = HeldItem(x.id); SendMsg(conn, l); } // (#1868) as had
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         SendGraves(conn); // (#804) the graves so far
         SendAllPlants(world, conn); // (#335) the plants felled so far
         claimsSent.erase(conn); // (#343) the claims list goes with the next claims step
         ++joins;
-        printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
+        HostLog("%s joined as session %u%s (connection %u, %d joins so far)", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
         if (!hadRecord) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one); (#346) never again for one with a record
             Host_Give(s->id, "telescope", 1);
@@ -1451,9 +1707,8 @@ namespace {
         if ((q.hit - eye).length() * p->scale > TerrainToolSettings{}.reach + kReachSlack) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
         if (!p->field->editable(hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Mantle); return; }
         if (ClaimBlocks(session, p, hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Claim); return; } // (#343)
-        // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
-        std::string held;
-        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        // The tool in the player's hands (its loadout, when its inventory here has one: #1868) and what it does to the ground.
+        const std::string held = HeldItem(session);
         const ToolSpec tool = ToolOf(held);
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
@@ -1513,6 +1768,7 @@ namespace {
             e.till = true;
             out.flags = 16;
             TeamEvent(session, "count", "till"); RemoteXp(session, "till"); // (#335) the quest's count, Farming XP
+            printf("host: session %u tilled (edit %u, radius %.2f m)\n", session, q.seq, q.radius); // (#1107) an accepted till, to trace it
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
@@ -1563,6 +1819,7 @@ namespace {
             Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
             if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
             if (q.partIndex >= plot->parts.size() || plot->parts[q.partIndex].type == PartType::Count) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            if (PartUnbreakable(plot->parts[q.partIndex])) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; } // (#1641) a vault door, a portcullis or a lever is opened or pulled, never broken
             const Part removed = plot->parts[q.partIndex];
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
@@ -1580,14 +1837,17 @@ namespace {
                 give.push_back({ "nickel_iron_ore", GameRng_Int(6, 10) });
                 if (GameRng_Int(0, 99) < 35) give.push_back({ "platinum_ore", 2 });
                 if (GameRng_Int(0, 99) < 12) give.push_back({ "iridium_ore", 1 });
-            } else give.push_back({ PartItem(removed), PartCostCount(removed.type) });
+            } else {
+                give.push_back({ PartItem(removed), PartCostCount(removed.type) });
+                Structures_BreakLoot(*p, q.plot, (int)q.partIndex, removed, give); // (#1641 slice 2c) a dungeon urn or crate: its loot too
+            }
             for (const auto& [item, n] : give) { before.emplace(item, rm.inventory.amount(item)); rm.inventory.add(item, n); }
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Remove; out.body = q.body; out.plot = q.plot; out.partIndex = q.partIndex;
             SendToJoined(out);
             if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
             const Part part = ToPart(q.part);
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || part.type == PartType::RuinCache || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
             Plot* plot = nullptr;
@@ -1649,6 +1909,7 @@ namespace {
         std::vector<uint32_t> order; size_t cur = 0; uint32_t offset = 0; // what to send, the one being sent, how far
         uint64_t sent = 0; double started = 0.0, budget = 0.0, lastAt = 0.0;
         int wanted = 0;
+        double statusAt = 0.0; // (#1836) when its transport queue was last printed
         std::future<std::vector<SyncItem>> regions; // the worker encoding and hashing the regions
         bool indexed = false;
     };
@@ -1705,7 +1966,7 @@ namespace {
             for (size_t i = (size_t)pg * kSyncIndexPage; i < n && i < (size_t)(pg + 1) * kSyncIndexPage; ++i) x.entries.push_back(job.items[i].e);
             SendMsg(conn, x);
         }
-        printf("host: join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)\n", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
+        HostLog("join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
     }
     void OnSyncWant(Scene& world, uint32_t conn, const MsgSyncWant& w) {
         auto it = syncs.find(conn);
@@ -1745,6 +2006,13 @@ namespace {
                 ++it; continue;
             }
             if (!job.wantIn) { ++it; continue; }
+            if (GetTime() - job.statusAt >= 1.0) { // (#1836, #1421) the joining link's transport queue, once a second, to see a join stall
+                job.statusAt = GetTime();
+                NetQueueStatus q;
+                if (Net_QueueStatus(it->first, q))
+                    HostLog("join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends",
+                           job.snapshot, job.cur, job.order.size(), job.sent / 1048576.0, q.pendingReliable, q.pendingUnreliable, q.sentUnacked, q.pingMs, Net_SendFailures());
+            }
             if (Net_PendingBytes(it->first) > kSyncMaxPending) { job.lastAt = GetTime(); ++it; continue; } // the link is behind: wait
             const double now = GetTime();
             job.budget = std::min(job.budget + (now - job.lastAt) * SyncRate(), SyncRate() * 0.25); // (a quarter second's worth at most)
@@ -1766,9 +2034,9 @@ namespace {
             }
             if (job.cur >= job.order.size()) {
                 SendMsg(it->first, MsgSyncDone{ job.snapshot, (uint32_t)job.wanted, job.sent });
-                printf("host: join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s\n", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
+                HostLog("join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
                 if (getenv("RAYLIBGAME_SYNC_FINGERPRINT")) // (tests: a client's after its sync must equal this; costs an encode of every region)
-                    printf("host: terrain fingerprint %016llx\n", (unsigned long long)NetSync_TerrainFingerprint(world));
+                    HostLog("terrain fingerprint %016llx", (unsigned long long)NetSync_TerrainFingerprint(world));
                 ++syncsDone;
                 it = syncs.erase(it);
             } else ++it;
@@ -1780,7 +2048,7 @@ namespace {
     void GuardKick(uint32_t conn, const std::string& why) {
         auto it = peers.find(conn);
         std::string name; if (it != peers.end()) for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
-        printf("host: kicked connection %u (%s) for flooding: %s\n", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
+        HostLog("kicked connection %u (%s) for flooding: %s", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
         if (eventHook) eventHook("kicked", it != peers.end() ? it->second.session : 0, (name.empty() ? std::string("connection") : name) + " (flooding: " + why + ")");
         if (it != peers.end() && it->second.joined) SendMsg(conn, MsgChat{ 0, "You were kicked: too many invalid messages" });
         ++guardKicks;
@@ -1792,23 +2060,44 @@ namespace {
         ++guardDropped;
         if (NetGuard_Violation(it->second.guard, GetTime()) == GuardVerdict::Kick) GuardKick(conn, why);
     }
+    // (#349, #1868) A new connection's admission: 0 admit, 1 too many from its address, 2 too many not joined yet. Loopback
+    // (the host's machine, the tests) is exempt.
+    int AdmitVerdict(bool loopback, int sameAddress, int pending) {
+        if (loopback) return 0;
+        if (sameAddress >= kMaxPerAddress) return 1;
+        return pending >= kMaxPending ? 2 : 0;
+    }
+    // Admit a new connection as a peer (its Hello clock starts now), or refuse it. Called when it connects (#1868) and, for a
+    // connection the transport didn't report, at its first message.
+    bool AdmitPeer(uint32_t conn) {
+        const std::string host = AddressHost(Net_RemoteAddress(conn));
+        const bool loop = Loopback(host);
+        int same = 0, pending = 0;
+        if (!loop)
+            for (const auto& [c, p] : peers) {
+                const std::string h = AddressHost(Net_RemoteAddress(c));
+                if (h == host) ++same;
+                if (!p.joined && !Loopback(h)) ++pending;
+            }
+        if (const int v = AdmitVerdict(loop, same, pending)) {
+            const char* why = v == 1 ? "too many connections from your address" : "too many players connecting at once: try again shortly";
+            HostLog("refused connection %u from %s: %s (%d from that address, %d not joined)", conn, host.c_str(), why, same, pending);
+            if (eventHook) eventHook("refused", 0, "connection from " + host + (v == 1 ? " (too many from one address)" : " (too many connecting)"));
+            Refuse(conn, NetReject::Full, why);
+            ++pendingRefused;
+            return false;
+        }
+        Peer& p = peers[conn];
+        p.firstHeard = p.lastHeard = GetTime();
+        HostLog("connection %u from %s", conn, host.empty() ? "?" : host.c_str());
+        return true;
+    }
     void OnMessage(Scene& world, const NetMessage& m) {
         if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
-        if (it == peers.end()) { // first word on a new connection
-            const std::string host = AddressHost(Net_RemoteAddress(m.conn));
-            if (!Loopback(host)) { // (#349) too many from one address
-                int same = 0;
-                for (const auto& [c, p] : peers) if (AddressHost(Net_RemoteAddress(c)) == host) ++same;
-                if (same >= kMaxPerAddress) {
-                    printf("host: refused connection %u from %s: %d connections from that address already\n", m.conn, host.c_str(), same);
-                    if (eventHook) eventHook("refused", 0, "connection from " + host + " (too many from one address)");
-                    Refuse(m.conn, NetReject::Full, "too many connections from your address");
-                    return;
-                }
-            }
-            it = peers.emplace(m.conn, Peer{}).first;
-            it->second.firstHeard = GetTime();
+        if (it == peers.end()) { // first word on a connection not admitted yet
+            if (!AdmitPeer(m.conn)) return;
+            it = peers.find(m.conn);
         }
         it->second.lastHeard = GetTime();
         if (NetPeek(m.data) == NetMsg::Input) it->second.inGame = true; // (#1033)
@@ -1816,6 +2105,8 @@ namespace {
             std::string why;
             const GuardVerdict v = NetGuard_Admit(it->second.guard, NetPeek(m.data), m.data.size(), NetWellFormed(m.data), GetTime(), why);
             if (v != GuardVerdict::Accept) {
+                // (#1107) the first drops are logged: a player's request lost here was silent ("can't interact")
+                if (guardDropped < 20) printf("host: dropped a %s from session %u (%zu bytes): %s\n", NetMsgName(NetPeek(m.data)), it->second.session, m.data.size(), why.c_str());
                 ++guardDropped;
                 if (v == GuardVerdict::Kick) GuardKick(m.conn, why);
                 return;
@@ -2060,13 +2351,17 @@ namespace {
                 MsgLoadout l;
                 if (!it->second.joined || !NetRead(r, l)) return;
                 l.session = it->second.session; // (a client speaks only for itself)
-                for (Session& s : sessions) if (s.id == l.session) s.loadout = l;
-                SendToJoined(l);
+                for (Session& s : sessions) if (s.id == l.session) s.loadout = l; // kept as sent: HeldItem checks it at each use (#1868),
+                // so a loadout that came a moment before its item (a craft, a take) works once the item is there
+                MsgLoadout shown = l;
+                if (!shown.held.empty() && HeldItem(l.session).empty()) { shown.held.clear(); ++loadoutsRefused; } // others see bare hands
+                SendToJoined(shown);
                 return;
             }
             case NetMsg::EditRequest: {
                 MsgEditRequest q;
-                if (!it->second.joined || !NetRead(r, q)) return;
+                if (!it->second.joined) return;
+                if (!NetRead(r, q)) { printf("host: an edit request from session %u didn't read (%zu bytes)\n", it->second.session, m.data.size()); return; } // (#1107)
                 OnEditRequest(world, m.conn, it->second.session, q);
                 return;
             }
@@ -2092,7 +2387,7 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, int count, float heat) {
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
@@ -2123,6 +2418,10 @@ int Host_GravesMade() { return gravesMade; }
 int Host_DropsMade() { return dropsMade; }
 int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
+int Host_LoadoutsRefused() { return loadoutsRefused; }
+std::string Host_HeldItem(uint32_t session) { return HeldItem(session); }
+int Host_ConnectionsRefused() { return pendingRefused; }
+int Host_SilentDropped() { return silentDropped; }
 
 void Host_Update(Scene& world) {
     hostWorld = &world;
@@ -2138,6 +2437,12 @@ void Host_Update(Scene& world) {
     }
     if (!listening) return;
     Net_Poll();
+    { // (#1868) connections admitted (or refused) as they come up, before any message: a silent one counts and times out too
+        static std::vector<uint32_t> fresh;
+        fresh.clear();
+        Net_TakeNewIncoming(fresh);
+        for (uint32_t c : fresh) if (!peers.count(c) && Net_IsConnected(c)) AdmitPeer(c);
+    }
     std::vector<NetMessage> in;
     Net_Receive(in, 256);
     for (NetMessage& m : in) {
@@ -2149,7 +2454,7 @@ void Host_Update(Scene& world) {
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
         else if (GetTime() - p.lastHeard > Host_SilenceLimit(p.joined, p.inGame)) silent.push_back(conn);
-        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
+        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) { silent.push_back(conn); ++silentDropped; } // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
@@ -2159,6 +2464,7 @@ void Host_Update(Scene& world) {
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
+    SendCreatureFx(world); // (#1343, #1364) their shots and calls
     SendVitals();         // (#337) and each player's survival numbers, to that player
     SendSkills();         // (#920) and their skills, when they changed
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
@@ -2168,6 +2474,16 @@ void Host_Update(Scene& world) {
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     StepClaims();         // (#343) claim decay, enter/leave lines
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
+    {   // (#1224) every connected player's footsteps (no sound on the server): what creatures hear (Footsteps_RecentNoises)
+        static std::vector<std::pair<uint32_t, const Player*>> walkers;
+        walkers.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit != remotes.end() && rit->second.player.nearest) walkers.push_back({ s.id, &rit->second.player });
+        }
+        Footsteps_UpdateServer(world, walkers, GetFrameTime());
+    }
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
 }
@@ -2216,12 +2532,24 @@ bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& loc
     body = s.body; local = s.local;
     return true;
 }
+// (#1171) An op's /tp: the remote player to a body-local spot, at rest (hovering when flying). Their game follows: its next
+// state from us is far from its prediction, so it goes back to ours (NetClient_Step's reconcile).
+bool Host_TeleportPlayer(Scene& world, uint32_t session, uint64_t body, const DVec3& local, bool hover) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    Player::NetState s;
+    if (!it->second.player.netState(world, s)) return false;
+    s.body = body; s.local = local; s.vel = {}; s.grounded = false; s.hovering = hover;
+    if (hover && it->second.creative) it->second.player.flyMode = true;
+    return it->second.player.applyNetState(world, s);
+}
 int Host_EditsApplied() { return editsApplied; }
 double Host_InventoryAmount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? 0.0 : it->second.inventory.amount(item);
 }
 int Host_PartsApplied() { return partsApplied; }
+void Host_BroadcastPartEdits(const Planetoid& body, const Plot& plot, const std::vector<PartEdit>& edits) { SendPartEdits(body.netId, plot.id, edits); } // (#1684)
 bool Host_Give(uint32_t session, const std::string& item, int count) {
     auto it = remotes.find(session);
     if (it == remotes.end() || count <= 0 || !itemDB.find(item)) return false;
@@ -2234,7 +2562,7 @@ bool Host_Give(uint32_t session, const std::string& item, int count) {
 // ---- The dedicated server's console and admin (#326, #345) ----
 std::vector<HostPlayer> Host_ListPlayers() {
     std::vector<HostPlayer> out;
-    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string() });
+    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string(), s.uuid });
     return out;
 }
 bool Host_Kick(const std::string& name, const std::string& reason) {
@@ -2252,7 +2580,7 @@ void Host_Say(const std::string& text, uint32_t fromSession, uint32_t toSession)
     for (const Session& s : sessions) if (s.id == toSession && s.online && s.conn) SendMsg(s.conn, c);
 }
 void Host_SetMotd(const std::string& text) { motd = text; }
-void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
+void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
 void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
 void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }
 int Host_SyncsDone() { return syncsDone; }
@@ -2329,6 +2657,7 @@ bool Host_SetCreative(const std::string& name, bool on) {
         if (it == remotes.end()) return false;
         it->second.creative = on;
         it->second.player.flyAllowed = on; // (#781: flying only for creative players, whom ops set)
+        it->second.player.doubleTapFly = on; // (#1562) as the client predicts it
         if (!on) it->second.player.flyMode = false;
         lastVitals = 0; // (its client hears at once, with the next vitals)
         return true;
@@ -2338,9 +2667,54 @@ bool Host_SetCreative(const std::string& name, bool on) {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
+// (#1906) git abbreviates the same commit to 7 digits in a shallow clone and 8+ in a big one: the join compares by prefix.
+TEST(HostBuild, TheSameCommitAbbreviatedToDifferentLengthsMatches) {
+    EXPECT_EQ(Build_CommitOf("playtest-20261124b e5f5f13"), "e5f5f13");
+    EXPECT_EQ(Build_CommitOf("staging e5f5f132 +local changes"), "e5f5f132") << "not \"changes\"";
+    EXPECT_EQ(Build_CommitOf("detached unknown"), "unknown");
+    EXPECT_TRUE(Build_SameCommit("e5f5f13", "e5f5f132"));
+    EXPECT_TRUE(Build_SameCommit("E5F5F132", "e5f5f13"));
+    EXPECT_FALSE(Build_SameCommit("e5f5f13", "e5f5f142")) << "a different commit";
+    EXPECT_FALSE(Build_SameCommit("e5f5f1", "e5f5f132")) << "6 digits: too short to tell commits apart";
+    EXPECT_FALSE(Build_SameCommit("unknown", "e5f5f13"));
+    EXPECT_TRUE(Build_SameCommit("unknown", "unknown")) << "(unchanged: equal strings match)";
+}
+
 TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
     EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(false, false), 15.0) << "not joined yet: the usual limit (Hello has its own)";
+}
+
+// (#1868) The held item counts only when the server's copy of the player's inventory has it (creative players excepted), and
+// stops counting once it leaves the inventory.
+TEST(HostLoadout, TheHeldItemCountsOnlyWhenThePlayerHasIt) {
+    const uint32_t id = 0xF1868u;
+    Session s;
+    s.id = id;
+    s.loadout.session = id;
+    s.loadout.held = "unit_pickaxe";
+    sessions.push_back(s);
+    Remote& r = remotes[id];
+    EXPECT_EQ(HeldItem(id), "") << "claimed, not in the inventory: bare hands";
+    r.inventory.grid()[3] = InvSlot{ "unit_pickaxe", 100, 0.0f };
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "in the inventory";
+    r.inventory.grid()[3] = InvSlot{};
+    EXPECT_EQ(HeldItem(id), "") << "it left the inventory after the loadout came";
+    r.creative = true;
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "creative: any Catalog item";
+    EXPECT_EQ(HeldItem(id + 1), "") << "no such session";
+    remotes.erase(id);
+    sessions.pop_back();
+}
+
+// (#1868) Admission: the per-address cap and the cap on connections that haven't joined yet; loopback exempt.
+TEST(HostAdmission, PerAddressAndPendingCaps) {
+    if (getenv("RAYLIBGAME_MAX_PER_ADDRESS") || getenv("RAYLIBGAME_MAX_PENDING")) GTEST_SKIP() << "limits overridden by the environment";
+    EXPECT_EQ(AdmitVerdict(false, 0, 0), 0);
+    EXPECT_EQ(AdmitVerdict(false, 7, 15), 0) << "under both caps";
+    EXPECT_EQ(AdmitVerdict(false, 8, 0), 1) << "the 9th from one address";
+    EXPECT_EQ(AdmitVerdict(false, 0, 16), 2) << "the 17th not joined yet, from anywhere";
+    EXPECT_EQ(AdmitVerdict(true, 100, 100), 0) << "loopback: the host's own machine and the tests";
 }
 #endif

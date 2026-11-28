@@ -257,7 +257,11 @@ static const bool kShoreSim = [] { const char* e = getenv("RAYLIBGAME_SHORE_SIM"
 // films lifted over the sand and tilted toward dry neighbours (shards), a resting one's 15 cm skin and sheet rule cut the
 // shallow band into jagged pieces, and the drawing switched rules at every brick edge. Water the simulation holds at the
 // generated level is the generated water: the mesher draws it so (the same level, so it meets the simulated water - the
-// flooded hole, dug cells - without a seam). A drained column (no wet cell) stays the simulation's.
+// flooded hole, dug cells - without a seam). A drained column (no wet cell) stays the simulation's (a pond emptied by bucket),
+// except in a brick that holds generated water at its level (#1590): there a dry undug column is land the dig's bricks reached
+// beside the sea, lake or river. Drawn as the simulation's (dry), it pulled the generated surface next to it down into walls and
+// shards along the beach; the generated water's own rules (its level, clipped by the ground and the original bed) draw nothing
+// there. Held water never drains, and pond bricks hold none (their water is finite), so an emptied pond stays empty.
 bool ChunkSampler::generatedColumn(int si, int ci, int cj, int ck) const {
     if (kShoreSim) return false;
     const int bk = ck >> 4;
@@ -271,9 +275,21 @@ bool ChunkSampler::generatedColumn(int si, int ci, int cj, int ck) const {
         if (flags & kDug) gen = false;                                   // an edit opened it: the simulation's water
         else if (fill > 0) { if ((flags & kStatic) && CellKind(flags) == 0) wet = true; else gen = false; }
     }
-    const bool r = gen && wet;
+    if (gen && !wet) gen = holdsGenerated(si, ci >> 4, cj >> 4, bk);
+    const bool r = gen;
     genMemo.emplace(key, r);
     return r;
+}
+
+bool ChunkSampler::holdsGenerated(int si, int bi, int bj, int bk) const {
+    const int64_t key = ((int64_t)si << 56) | ((int64_t)((bi + 8192) & 0x3FFF) << 28) | ((int64_t)((bj + 8192) & 0x3FFF) << 14) | (int64_t)((bk + 8192) & 0x3FFF);
+    auto it = heldMemo.find(key);
+    if (it != heldMemo.end()) return it->second;
+    bool held = false;
+    if (const Brick* b = brickPtr(si, bi, bj, bk))
+        for (int i = 0; i < kBrick * kBrick * kBrick && !held; ++i) held = b->fill[i] > 0 && (b->flags[i] & kStatic) && CellKind(b->flags[i]) == 0;
+    heldMemo.emplace(key, held);
+    return held;
 }
 
 bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
@@ -303,6 +319,12 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
         const float gx = fx - 0.5f, gy = fy - 0.5f;
         const int i0 = (int)floorf(gx), j0 = (int)floorf(gy);
         const float tx = gx - (float)i0, ty = gy - (float)j0;
+        // Only columns the water can reach this one through count (#1773): the blend drew the surface across a solid the
+        // simulation blocks. A diagonal column behind two solid side cells (tiles or ground meeting at a corner) is cut off,
+        // and a dry column takes nothing from a solid side neighbour: that column's surface is the wet side's carried into
+        // the ground to meet the shore, and blended on into the dry side it showed as a sliver beyond a bank or tile.
+        auto solidAt = [&](int i, int j) { uint8_t f, fl; return cellAt(si, i, j, ck, f, fl) && (fl & kSolid); };
+        const bool ownDry = surface(si, ci, cj, ck, kind) <= kNone * 0.5f;
         float sum = 0.0f;
         for (int b = 0; b < 2; ++b)
             for (int a = 0; a < 2; ++a) {
@@ -310,10 +332,31 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
                 const float w = (a ? tx : 1.0f - tx) * (b ? ty : 1.0f - ty);
                 if (w <= 0.0f) continue;
                 const bool same = i == ci && j == cj;
-                const bool known = same || brickAt(si, i, j, ck);
-                sum += w * (same ? own : known ? columnDensity(i, j) : own);
+                bool reached = same || brickAt(si, i, j, ck);
+                if (reached && !same) {
+                    if (i != ci && j != cj) reached = !(solidAt(i, cj) && solidAt(ci, j));
+                    else reached = !(ownDry && solidAt(i, j));
+                }
+                sum += w * (reached && !same ? columnDensity(i, j) : own);
             }
         wd = sum;
+        return true;
+    }
+    return false;
+}
+
+bool ChunkSampler::wetCellMiddle(Vector3 p, int kind, Vector3& mid) const {
+    for (int si = 0; si < (int)sites.size(); ++si) {
+        const Site& s = *sites[si];
+        float fx, fy, fz;
+        s.frame(p, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        uint8_t fill, flags;
+        if (!cellAt(si, ci, cj, ck, fill, flags)) continue;
+        if ((flags & kSolid) || fill == 0 || CellKind(flags) != kind) return false;
+        const float cs = CellSize(), mx = (ci + 0.5f) * cs, my = (cj + 0.5f) * cs, mz = (ck + 0.5f) * cs;
+        mid = { s.origin.x + s.e.x * mx + s.n.x * my + s.u.x * mz, s.origin.y + s.e.y * mx + s.n.y * my + s.u.y * mz,
+                s.origin.z + s.e.z * mx + s.n.z * my + s.u.z * mz };
         return true;
     }
     return false;
@@ -437,25 +480,102 @@ TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
                 uint8_t fl = kSource | kStatic;
                 if (x == 5) fl = kDug;   // column 5: dug, flooded from the sea
                 if (x == 9) fl = 0;      // column 9: water the simulation moved (no generated level)
-                if (x == 12) continue;   // column 12: dry
+                if (x == 12) { b->flags[i] = kSolid; continue; } // column 12: the beach, its ground over the sea's level (#1590)
                 b->flags[i] = fl; b->fill[i] = b->drawn[i] = 255;
             }
     b->kinds = 1;
+    auto pond = std::make_shared<Brick>(); // a pond's brick, emptied by bucket: finite water, none held, nothing left
+    pond->kinds = 1;
     Snapshot snap;
     Site s;
     s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 };
     const float cs = CellSize(), side = kBrick * cs;
-    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.lo = { 0, 0, 0 }; s.hi = { 2 * side, side, side };
     s.bricks[BrickKey(0, 0, 0)] = b;
+    s.bricks[BrickKey(1, 0, 0)] = pond;
     snap.sites.push_back(s);
-    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { 2 * side, side, side });
     auto at = [&](int x) { return Vector3{ (x + 0.5f) * cs, (sea - 0.5f) * cs, 3.5f * cs }; }; // a sample just under the sea's surface
+    auto over = [&](int x) { return Vector3{ (x + 0.5f) * cs, (sea + 0.5f) * cs, 3.5f * cs }; }; // just over it
     float w = 0.0f;
     EXPECT_FALSE(sampler.density(at(2), 0, w)) << "generated sea: the generated water draws it";
     EXPECT_FALSE(sampler.covered(at(2)));
     EXPECT_TRUE(sampler.density(at(5), 0, w)) << "a dug, flooded column";
     EXPECT_TRUE(sampler.covered(at(5)));
     EXPECT_TRUE(sampler.density(at(9), 0, w)) << "simulated water";
-    EXPECT_TRUE(sampler.density(at(12), 0, w)) << "a drained column stays drained";
+    EXPECT_FALSE(sampler.covered(over(12))) << "dry land beside the sea: the generated water's rules (#1590)";
+    EXPECT_TRUE(sampler.density(at(kBrick + 4), 0, w)) << "an emptied pond stays empty";
+    EXPECT_TRUE(sampler.covered(at(kBrick + 4)));
+}
+
+// #1773: water in a corner pen, its two walls meeting only diagonally at the dry cell (6,6). The simulation blocks the
+// flow there; the drawn surface must not cross the corner into that cell either (the blend pulled it in).
+TEST(WaterField, SurfaceStopsAtADiagonalCorner) {
+    auto b = std::make_shared<Brick>();
+    for (int cj = 0; cj < kBrick; ++cj)
+        for (int ci = 0; ci < kBrick; ++ci)
+            for (int ck = 0; ck < 8; ++ck) {
+                const int i = CellIdx(ci, cj, ck);
+                const bool wall = (ci == 6 && cj < 6) || (cj == 6 && ci < 6);
+                if (ck < 4 || wall) { b->flags[i] = kSolid; continue; } // the ground, and the walls (tiles) on it
+                if (ci < 6 && cj < 6 && ck < 7) b->fill[i] = b->drawn[i] = ck < 6 ? 255 : 128; // the pen: its surface at 6.5 cells
+            }
+    b->kinds = 1;
+    Snapshot snap;
+    Site s;
+    s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 }; // cells: i = x, j = z, k = y
+    const float cs = CellSize(), side = kBrick * cs;
+    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.bricks[BrickKey(0, 0, 0)] = b;
+    snap.sites.push_back(s);
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    auto cell = [&](float i, float j, float k) { return Vector3{ i * cs, k * cs, j * cs }; };
+    float w = 0.0f;
+    ASSERT_TRUE(sampler.density(cell(6.05f, 6.05f, 6.1f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "under the pen's level just past the corner: the dry cell stays dry";
+    ASSERT_TRUE(sampler.density(cell(5.95f, 5.95f, 6.1f), 0, w));
+    EXPECT_GT(w, ISO_LEVEL) << "the pen's own corner cell is still water";
+    ASSERT_TRUE(sampler.density(cell(3.5f, 3.5f, 6.9f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "over the pen's surface";
+}
+
+// #1773: the same pen with walls two cells thick (0.5 m tiles), its open corner at cell (c, c) in a 2 x 2 brick site, at and
+// beside the bricks' border (the playtest's sliver came and went with where the corner fell). Fine samples outside the corner,
+// under the pen's level: none is water.
+TEST(WaterField, SurfaceStopsAtADiagonalCornerOnBrickBorders) {
+    for (int c : { 8, 15, 16, 17 }) {
+        Snapshot snap;
+        Site s;
+        s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 }; // cells: i = x, j = z, k = y
+        const float cs = CellSize(), side = kBrick * cs;
+        s.lo = { 0, 0, 0 }; s.hi = { 2 * side, side, 2 * side };
+        for (int bj = 0; bj < 2; ++bj)
+            for (int bi = 0; bi < 2; ++bi) {
+                auto b = std::make_shared<Brick>();
+                for (int lj = 0; lj < kBrick; ++lj)
+                    for (int li = 0; li < kBrick; ++li)
+                        for (int ck = 0; ck < 8; ++ck) {
+                            const int ci = bi * kBrick + li, cj = bj * kBrick + lj, i = CellIdx(li, lj, ck);
+                            const bool inner = (ci >= c && ci < c + 2 && cj >= c - 6 && cj < c) || (cj >= c && cj < c + 2 && ci >= c - 6 && ci < c);
+                            const bool outer = (ci >= c - 8 && ci < c - 6 && cj >= c - 8 && cj < c + 2) || (cj >= c - 8 && cj < c - 6 && ci >= c - 8 && ci < c + 2);
+                            if (ck < 4 || inner || outer) { b->flags[i] = kSolid; continue; }
+                            if (ci >= c - 6 && ci < c && cj >= c - 6 && cj < c && ck < 6) b->fill[i] = b->drawn[i] = ck < 5 ? 255 : 200; // level 5.78
+                        }
+                b->kinds = 1;
+                s.bricks[BrickKey(bi, bj, 0)] = b;
+            }
+        snap.sites.push_back(s);
+        ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { 2 * side, side, 2 * side });
+        auto cell = [&](float i, float j, float k) { return Vector3{ i * cs, k * cs, j * cs }; };
+        int wet = 0;
+        float w = 0.0f;
+        for (float di = 0.01f; di < 1.5f; di += 0.02f)
+            for (float dj = 0.01f; dj < 1.5f; dj += 0.02f)
+                for (float k = 4.05f; k < 5.75f; k += 0.1f)
+                    if (sampler.density(cell(c + di, c + dj, k), 0, w) && w >= ISO_LEVEL) { ++wet; break; }
+        EXPECT_EQ(wet, 0) << "corner at cell " << c << ": water drawn past it";
+        ASSERT_TRUE(sampler.density(cell(c - 0.5f, c - 0.5f, 5.0f), 0, w)) << c;
+        EXPECT_GT(w, ISO_LEVEL) << "corner at cell " << c << ": the pen's corner holds water";
+    }
 }
 #endif

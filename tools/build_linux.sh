@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the Linux dedicated server (#792, #326) and packs a self-contained runtime folder:
 #
-#   tools/build_linux.sh [--out DIR] [--no-gns] [--jobs N]            on a Linux host with Docker: builds in a
+#   tools/build_linux.sh [--out DIR] [--no-gns] [--jobs N] [--fast|--o3]   on a Linux host with Docker: builds in a
 #                                                                     Debian 12 container (tools/linux/Dockerfile.build)
 #   tools/build_linux.sh --inside [--out DIR] [--no-gns] [--jobs N]   in that container, or on any Debian 12 / Ubuntu
 #                                                                     22.04+ host with the packages the Dockerfile lists
@@ -22,12 +22,17 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/build/linux"
 INSIDE=0; GNS=1; JOBS="${JOBS:-4}"
+# (#1758) --fast: compile at -O1 (the sandbox's builds); --o3: back to the Release -O3. Neither (or RAYLIBGAME_FAST_BUILD
+# unset): the build folder keeps what it was configured with, so a folder set up once stays so (the runner's never are).
+FAST="${RAYLIBGAME_FAST_BUILD:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --inside) INSIDE=1 ;;
         --out) OUT="$2"; shift ;;
         --no-gns) GNS=0 ;;
         --jobs) JOBS="$2"; shift ;;
+        --fast) FAST=1 ;;
+        --o3) FAST=0 ;;
         -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
         *) echo "build_linux: unknown argument $1"; exit 2 ;;
     esac
@@ -43,6 +48,7 @@ if [ "$INSIDE" = 0 ]; then
     VERSION="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo linux) $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     [ -f "$REPO/.raylibgame-version" ] && VERSION="$(cat "$REPO/.raylibgame-version")"
     ARGS=(--inside --out /out --jobs "$JOBS"); [ "$GNS" = 0 ] && ARGS+=(--no-gns)
+    [ "$FAST" = 1 ] && ARGS+=(--fast); [ "$FAST" = 0 ] && ARGS+=(--o3)
     # As the calling user (files in OUT stay theirs), the source read-only.
     exec docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e RAYLIBGAME_VERSION="$VERSION" \
         -v "$REPO":/src:ro -v "$OUT":/out raylibgame-build:bookworm bash /src/tools/build_linux.sh "${ARGS[@]}"
@@ -53,6 +59,8 @@ for t in cmake gcc g++ make git curl tar; do command -v "$t" >/dev/null || { ech
 export RAYLIBGAME_VERSION="${RAYLIBGAME_VERSION:-linux}"
 BUILD="$OUT/build"; STAGE="$OUT/stage/raylibgame-server"
 CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DRAYLIBGAME_HEADLESS=ON -DGAME_OUTPUT_DIR="$OUT/bin")
+[ "$FAST" = 1 ] && CMAKE_ARGS+=(-DRAYLIBGAME_FAST_BUILD=ON)
+[ "$FAST" = 0 ] && CMAKE_ARGS+=(-DRAYLIBGAME_FAST_BUILD=OFF)
 if [ "$GNS" = 1 ]; then
     JOBS="$JOBS" nice -n 10 bash "$REPO/tools/build_gns.sh" "$OUT/deps/gns"
     CMAKE_ARGS+=(-DENABLE_GNS=ON -DGNS_ROOT="$OUT/deps/gns/install")

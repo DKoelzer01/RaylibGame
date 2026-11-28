@@ -1,0 +1,74 @@
+# Research nodes (#1030; the factory and progression doc, section 7.6). Tiers 3-7 are researched in labs with packs.
+# One node per line, fields separated by |:
+#   node <id> | <name> | tier <3..7> | core | branch <line> | units <n> | time <seconds per unit> | packs <item> [<item>...]
+#        | needs <node> [<node>...] | unlocks <kind>:<id> [...] | tome <page>
+# - core nodes are required for their tier's milestone; branch nodes (combat, logistics, efficiency, magic, ...) are free.
+# - a unit takes one of each listed pack and `time` seconds in one lab; N labs run N units at once.
+# - a node's packs are its tier's kind and every earlier kind (decided); needs only name nodes of its tier or earlier.
+# - unlocks: recipe:<output item> (a hand or machine recipe), machine:<part>. Nothing is gated by them yet: the gating
+#   lands with the tier ladder rewrite and save migration (doc section 8, steps 8-10 and 14).
+# - branch nodes give content (machines, recipes, methods), never percentages (decided 2026-11-20, second pass).
+# - tome <page>: a magic cross link (#1001); no core node needs one.
+# All counts and times are first guesses, to tune after playtests.
+
+# --- Tier 3: Steam and steel (steam packs) ---
+node steam_power      | Boiler and steam engine     | tier 3 | core            | units 20 | time 10 | packs steam_pack | needs - | unlocks machine:boiler machine:steam_engine
+node steelmaking      | Coke oven and blast furnace | tier 3 | core            | units 30 | time 15 | packs steam_pack | needs steam_power | unlocks machine:coke_oven machine:blast_furnace recipe:steel_ingot
+node wire_drawing     | Wire drawing                | tier 3 | core            | units 20 | time 10 | packs steam_pack | needs - | unlocks recipe:copper_wire recipe:copper_cable
+node vacuum_tube      | Vacuum tube                 | tier 3 | core            | units 30 | time 15 | packs steam_pack | needs wire_drawing | unlocks recipe:vacuum_tube
+node electricity      | Electricity (the dynamo)    | tier 3 | core            | units 40 | time 15 | packs steam_pack | needs steam_power wire_drawing | unlocks machine:dynamo
+node gunpowder        | Gunpowder and muskets       | tier 3 | branch combat   | units 20 | time 10 | packs steam_pack | needs - | unlocks recipe:gunpowder
+node blasting_powder  | Black-powder blasting charge| tier 3 | branch mining   | units 20 | time 10 | packs steam_pack | needs gunpowder | unlocks recipe:blasting_charge
+node chutes           | Chutes and mechanical sorting | tier 3 | branch logistics | units 20 | time 10 | packs steam_pack | needs - | unlocks machine:chute
+node steam_assembler  | The steam assembler         | tier 3 | branch efficiency | units 30 | time 15 | packs steam_pack | needs steam_power | unlocks machine:steam_assembler
+node resonance_tuning | Resonance tuning            | tier 3 | branch magic    | units 20 | time 10 | packs steam_pack | needs - | tome first_sight
+node steel_armour     | Steel armour and shields    | tier 3 | branch combat   | units 25 | time 10 | packs steam_pack | needs steelmaking | unlocks recipe:steel_shield
+
+# --- Tier 4: LV (LV packs) ---
+node basic_circuits   | Basic circuits              | tier 4 | core            | units 40 | time 15 | packs steam_pack lv_pack | needs vacuum_tube | unlocks recipe:basic_circuit
+node electric_furnace | Electric furnace            | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs electricity | unlocks machine:electric_furnace
+node lv_power         | LV hull and generator       | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs electricity | unlocks machine:generator
+node batteries        | Batteries                   | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs lv_power | unlocks machine:battery
+node basic_macerator  | Basic macerator x1.5        | tier 4 | branch efficiency | units 30 | time 15 | packs steam_pack lv_pack | needs lv_power | unlocks machine:macerator
+node rifles           | Rifles and repeaters        | tier 4 | branch combat   | units 30 | time 15 | packs steam_pack lv_pack | needs gunpowder | unlocks recipe:rifle
+node dynamite         | Dynamite (~5 m)             | tier 4 | branch mining   | units 30 | time 15 | packs steam_pack lv_pack | needs blasting_powder | unlocks recipe:dynamite
+node filters          | Filters and splitters       | tier 4 | branch logistics | units 30 | time 15 | packs steam_pack lv_pack | needs chutes | unlocks machine:splitter
+node overclocking_1   | Overclocking I              | tier 4 | branch efficiency | units 40 | time 15 | packs steam_pack lv_pack | needs basic_circuits | unlocks recipe:overclocker
+node mana_dynamo      | Mana dynamo and scholar's ward | tier 4 | branch magic | units 30 | time 15 | packs steam_pack lv_pack | needs resonance_tuning | unlocks machine:mana_dynamo | tome insight
+
+# --- Tier 5: MV (MV packs) ---
+node sulfuric_acid    | Sulfuric acid               | tier 5 | core            | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs electric_furnace | unlocks recipe:sulfuric_acid
+node acid_washing     | Acid ore washing            | tier 5 | core            | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs sulfuric_acid | unlocks machine:ore_washer
+node centrifuge       | Centrifuge (gold)           | tier 5 | core            | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs acid_washing | unlocks machine:centrifuge
+node electrolysis     | Electrolysis                | tier 5 | core            | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs batteries | unlocks machine:electrolyzer
+node aluminium        | Aluminium                   | tier 5 | core            | units 50 | time 20 | packs steam_pack lv_pack mv_pack | needs electrolysis | unlocks recipe:aluminium_ingot
+node mv_power         | MV transformer and batteries| tier 5 | core            | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs batteries | unlocks machine:transformer
+node energy_shield    | Energy shield module        | tier 5 | branch combat   | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs steel_armour | unlocks recipe:shield_module
+node tnt_charge       | TNT quarry charge and detonator | tier 5 | branch mining | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs dynamite | unlocks recipe:tnt_charge recipe:detonator
+node drones           | Drones                      | tier 5 | branch logistics | units 50 | time 20 | packs steam_pack lv_pack mv_pack | needs filters | unlocks machine:drone_port
+node alchemy          | Alchemy and insight runes   | tier 5 | branch magic    | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs mana_dynamo
+node lab_speed_1      | Lab speed I (a faster lab)  | tier 5 | branch efficiency | units 40 | time 20 | packs steam_pack lv_pack mv_pack | needs overclocking_1 | unlocks machine:mv_lab
+
+# --- Tier 6: HV (HV packs) ---
+node advanced_circuits| Good and advanced circuits  | tier 6 | core            | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs basic_circuits | unlocks recipe:good_circuit recipe:advanced_circuit
+node arc_furnace      | Arc furnace                 | tier 6 | core            | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs mv_power | unlocks machine:arc_furnace
+node titanium         | Titanium                    | tier 6 | core            | units 60 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs arc_furnace | unlocks recipe:titanium_ingot
+node titanium_alloy   | Titanium alloy              | tier 6 | core            | units 60 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs titanium | unlocks recipe:titanium_alloy_plate
+node hv_power         | HV generator                | tier 6 | core            | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs mv_power | unlocks machine:hv_generator
+node diving_gear      | Diving gear                 | tier 6 | core            | units 40 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs aluminium | unlocks recipe:diving_suit
+node titanium_armour  | Titanium armour             | tier 6 | branch combat   | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs energy_shield titanium
+node overclocking_2   | Overclocking II             | tier 6 | branch efficiency | units 60 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs overclocking_1 advanced_circuits
+node sending_runes    | Sending runes               | tier 6 | branch magic    | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs alchemy
+node lab_speed_2      | Lab speed II (a faster lab) | tier 6 | branch efficiency | units 60 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs lab_speed_1 | unlocks machine:hv_lab
+node survey_scanner   | Long-range survey scanner   | tier 6 | branch exploration | units 50 | time 25 | packs steam_pack lv_pack mv_pack hv_pack | needs advanced_circuits | unlocks recipe:survey_scanner
+
+# --- Tier 7: Rocketry (rocket packs) ---
+node sounding_rocket  | Sounding rocket             | tier 7 | core            | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs titanium_alloy | unlocks recipe:sounding_rocket
+node rocket_engine    | Rocket engine               | tier 7 | core            | units 80 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs titanium_alloy | unlocks recipe:rocket_engine
+node rocket_fuel      | Fuel tanks and rocket fuel  | tier 7 | core            | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs titanium_alloy | unlocks recipe:fuel_tank recipe:rocket_fuel
+node flight_computer  | Flight computer             | tier 7 | core            | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs advanced_circuits | unlocks recipe:guidance_computer
+node life_support     | Cockpit and life support    | tier 7 | core            | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs flight_computer | unlocks recipe:cockpit
+node launch_pad       | Launch pad                  | tier 7 | core            | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs rocket_engine | unlocks recipe:launch_pad
+node solid_boosters   | Solid rocket boosters       | tier 7 | branch combat   | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs tnt_charge rocket_engine
+node telescope_upgrade| Telescope upgrade           | tier 7 | branch exploration | units 40 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs survey_scanner
+node pad_automation   | Pad automation              | tier 7 | branch logistics | units 60 | time 30 | packs steam_pack lv_pack mv_pack hv_pack rocket_pack | needs launch_pad drones

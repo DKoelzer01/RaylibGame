@@ -13,11 +13,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 #include <raylib.h>
 
 class Scene;
 class Planetoid;
+struct Part;
 
 void Structures_Update(Scene& world);   // once a second is plenty; cheap when nothing is near
 void Structures_Reset();                // a new or loaded world
@@ -37,9 +39,20 @@ bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash
 // Tests (#719): a watchtower with its dungeon forced 40 m away; rooms, corridors and ramp open, the rare chest waiting.
 // eye/target (body-local): a view into the first room.
 bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target);
+// Tests (#1637): every set standing on the ground built on the side of a raised hill round the player; per set, the cells
+// inside its walls with no part in them (-1: not built) and how many of those are solid ground.
+struct StructureInterior { std::string set, skip; int cells = 0, solid = 0; }; // skip: why it wasn't built (cells -1)
+std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid& body, Vector3 nearLocal);
 int Structures_SitesBuilt();          // tests: sites built by the world placement
+// (#1641 slice 2c) A breakable prop of a dungeon room (a template part with "loot <table>") was just broken: the items its table
+// gives, rolled now (false: it was no prop). The authority calls it; the caller hands the items to the breaker.
+bool Structures_BreakLoot(Planetoid& body, uint32_t plotId, int part, const Part& removed, std::vector<std::pair<std::string, int>>& out);
 void Structures_TestFill(Planetoid& body);          // tests: fill every waiting chest now
 int Structures_TestCheck(Planetoid& body, int& items); // tests: how many of those chests hold items (and how many)
 bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, Vector3& at, std::string& set);
+// (#1171 /locate) Every site (built or not) within range of a body-local point, nearest first: on the ground there, its set's
+// name and kind (ruin, camp, wreck, wonder), and whether a dungeon lies under it.
+struct SiteInfo { Vector3 at; std::string set, kind; bool dungeon = false; float distance = 0.0f; };
+int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std::vector<SiteInfo>& out);
 
 #endif

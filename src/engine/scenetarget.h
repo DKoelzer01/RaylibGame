@@ -31,9 +31,12 @@ long long SceneTarget_Frame();    // frames ended so far (the one being drawn ha
 long long SceneTarget_HiZFrame(); // the frame the current pyramid was built in (-1: none)
 // Restores the standard depth state and copies the colour to the window.
 void SceneTarget_End();
+// (#1164) The opaque scene so far (colour, depth) resolved for screen-space reflections; drawing continues into the target.
+bool SceneTarget_ResolveOpaque(unsigned& colorTex, unsigned& depthTex, int& w, int& h);
 void SceneTarget_Unload();
 // #131 the tonemap curve (0 knee - the default, today's look -, 1 ACES, 2 clip): Settings sets it; RAYLIBGAME_TONEMAP wins.
 void SceneTarget_SetTonemap(int curve);
 int SceneTarget_Tonemap();
+void SceneTarget_SetBrightness(float ev); // (#1166) Settings > Brightness: stops, -1..+1
 
 #endif

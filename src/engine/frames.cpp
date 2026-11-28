@@ -2,10 +2,21 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "bodies.h"
+#include "netid.h"
+#include "ring.h"
 #include <algorithm>
 #include <cmath>
 
 // Plan 11 (#667). See frames.h.
+
+// Read on first use, not in a static initialiser: a scenario's s.env is set inside main() (Scenario_PrepareArgs), after
+// static initialisers ran - read there, every "-pose" scenario ran with the switch off.
+static int gFramesOn = -1; // -1: not read yet
+bool Frames_On() {
+    if (gFramesOn < 0) { const char* e = getenv("RAYLIBGAME_FRAMES"); gFramesOn = (e && e[0] == '1') ? 1 : 0; }
+    return gFramesOn == 1;
+}
+void Frames_SetOn(bool on) { gFramesOn = on ? 1 : 0; }
 
 namespace {
 constexpr double kInf = 1e300;
@@ -35,17 +46,52 @@ BodyPose Frames_Pose(const Planetoid& b) {
         p.vel = q.vel + DVec3{ -inPlane.z * w, 0.0, inPlane.x * w };
         p.acc = q.acc - inPlane * (w * w);
     } else {
-        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept; no acceleration
-        // known here (a station falls freely: its frame feels ~0, F5 takes the orbit's).
+        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept. A free-falling
+        // one (freeFall: stations) accelerates as its code moves it (freeFallAcc), so anything in its frame feels only the
+        // difference, not the fall a second time (Plan 11 F5, #1457: stations as Fixed(station) frames).
         p.vel = DVec3{ b.linearVelocity.x, b.linearVelocity.y, b.linearVelocity.z };
+        // Its own code's acceleration, not this file's gravity model: a station flies a two-body Kepler orbit, and the
+        // all-bodies model differs from it (Luna's pull, the inside model): 1.4 m of drift in 30 s beside one
+        // (rocket/station-hold), since a framed rocket is drawn at the station's real place plus its offset.
+        if (b.freeFall) p.acc = b.freeFallAcc;
     }
     return p;
 }
 
+bool Frames_RingRockPose(uint64_t netId, BodyPose& p) {
+    if (NetId_Kind(netId) != NetKind::RingRock) return false;
+    const uint64_t v = NetId_Value(netId);
+    const uint32_t hash = (uint32_t)(v >> 32), idx = (uint32_t)v; // ring name hash, rock index (netid.h)
+    for (const auto& ring : Rings()) {
+        if (!ring || NetId_NameHash(ring->name.c_str()) != hash || idx >= ring->rocks.size()) continue;
+        const Planetoid* parent = ring->parentBody();
+        if (!parent) return false;
+        const RingRock& r = ring->rocks[idx];
+        const BodyPose q = Frames_Pose(*parent);
+        p.centre = ring->rockPosition((int)idx);
+        // Its spin from the clock about its own axis, as promote() and the spin step give the live rock (#315).
+        double a = fmod((double)r.spin * WorldTime(), 360.0);
+        if (a < 0.0) a += 360.0;
+        BodyRotationFromAngles(0.0, a, 0.0, p.R);
+        p.omega = r.spin != 0.0f ? BodyAngularVelocity(Vector3{ 0.0f, (float)a, 0.0f }, Vector3{ 0.0f, r.spin, 0.0f }) : DVec3{ 0, 0, 0 };
+        // Its circular orbit in the parent's XZ plane, as Frames_Pose gives an orbiting body.
+        const DVec3 rel = p.centre - q.centre;
+        const DVec3 inPlane{ rel.x, 0.0, rel.z };
+        p.vel = q.vel + DVec3{ -inPlane.z * r.rate, 0.0, inPlane.x * r.rate };
+        p.acc = q.acc - inPlane * (r.rate * r.rate);
+        return true;
+    }
+    return false;
+}
+
+bool Frames_PoseOf(uint64_t netId, BodyPose& p) {
+    if (const Planetoid* b = Planetoid::findNet(netId)) { p = Frames_Pose(*b); return true; }
+    return Frames_RingRockPose(netId, p);
+}
+
 bool Frames_ToGlobal(const FramePos& f, DVec3& pg, DVec3& vg) {
-    const Planetoid* b = Planetoid::findNet(f.frame.body);
-    if (!b) return false;
-    const BodyPose p = Frames_Pose(*b);
+    BodyPose p;
+    if (!Frames_PoseOf(f.frame.body, p)) return false;
     if (f.frame.kind == FrameKind::Centred) { pg = p.centre + f.pos; vg = p.vel + f.vel; return true; }
     const DVec3 rx = Mul(p.R, f.pos);
     pg = p.centre + rx;
@@ -54,9 +100,8 @@ bool Frames_ToGlobal(const FramePos& f, DVec3& pg, DVec3& vg) {
 }
 
 bool Frames_FromGlobal(const DVec3& pg, const DVec3& vg, FrameRef to, FramePos& out) {
-    const Planetoid* b = Planetoid::findNet(to.body);
-    if (!b) return false;
-    const BodyPose p = Frames_Pose(*b);
+    BodyPose p;
+    if (!Frames_PoseOf(to.body, p)) return false;
     out.frame = to;
     const DVec3 d = pg - p.centre;
     if (to.kind == FrameKind::Centred) { out.pos = d; out.vel = vg - p.vel; return true; }
@@ -127,7 +172,7 @@ FrameRef Frames_Choose(const std::vector<Planetoid*>& bodies, const DVec3& pg, F
     const Planetoid* best = nullptr;
     double bestSoi = kInf * 10.0, bestGap = kInf;
     for (const Planetoid* b : bodies) {
-        if (!b || b->vehicle || b->netId == 0) continue;
+        if (!b || (b->vehicle && !b->freeFall) || b->netId == 0) continue; // a flying rocket isn't a frame; a station (also a vehicle body, EmptyField) is (F5)
         const double d = (pg - b->worldPos).length();
         const double soi = Frames_Soi(*b);
         const double reach = soi >= kInf ? kInf : soi * (b->netId == current.body ? 1.03 : 0.97);
@@ -250,5 +295,25 @@ TEST(FramesCore, ChooseFramesWithHysteresis) {
     const DVec3 edge{ 560000.0 + soi * 1.01, 0.0, 0.0 };
     EXPECT_EQ(Frames_Choose(bodies, edge, FrameRef{ 0x9006, FrameKind::Centred }).body, 0x9006u);
     EXPECT_EQ(Frames_Choose(bodies, edge, tc).body, 0x9005u);
+}
+
+// (Plan 11 F5, #1457) A station: an Asteroid-kind body of 4 m with no gravity of its own, 45 km over a Terra-like root.
+// A point 20 m from it, coming from Centred(Terra), belongs in Fixed(station) (its SOI is 10 x 4 m); and as a free
+// faller its frame accelerates with the gravity at its centre.
+TEST(FramesCore, StationFrameAndFreeFall) {
+    auto terra = Body("terra", 0x9101, { 0.0, 0.0, 0.0 }, 60000.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.1f, 0.0f }, BodyKind::Planet);
+    auto st = Body("station", 0x9102, { 0.0, 105000.0, 0.0 }, 4.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
+    st->surfaceGravity = 0.0f;
+    st->freeFall = true;
+    st->vehicle = true; // as in the game: stations are EmptyField bodies, which the constructor marks as vehicles
+    st->freeFallAcc = Frames_GravityGlobal({ terra.get() }, st->worldPos); // (set by station.cpp from its orbit in the game)
+    const std::vector<Planetoid*> bodies{ terra.get(), st.get() };
+    const DVec3 p{ 0.0, 105000.0, 20.0 };
+    const FrameRef pick = Frames_Choose(bodies, p, FrameRef{ 0x9101, FrameKind::Centred });
+    EXPECT_EQ(pick.body, 0x9102u);
+    EXPECT_EQ((int)pick.kind, (int)FrameKind::Fixed);
+    const DVec3 g = st->freeFallAcc;
+    EXPECT_GT(g.length(), 1.0); // ~1.9 m/s^2 at 105 km
+    EXPECT_LT(Dist(Frames_Pose(*st).acc, g), 1e-9);
 }
 #endif

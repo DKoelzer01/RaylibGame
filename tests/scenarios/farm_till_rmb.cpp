@@ -1,34 +1,51 @@
-// farm/till-rmb (#1085 playtest fail): a hoe's or shovel's RMB tills soil into farmland. #1141's rule "RMB places ground
-// only with a ground item in hand" kept the stroke from running with a tool at all, so nothing tilled (--test-farm calls
-// Farm_Till directly and missed it). Through the real input path (TerrainTool_Update, RMB held): a stone hoe and a stone
-// shovel each till the sandbox's natural surface and a patch of placed dirt; a pickaxe (the control) tills and places
-// nothing.
+// farm/till-rmb (#1085 playtest fail): a hoe's RMB tills soil into farmland. #1141's rule "RMB places ground only with a
+// ground item in hand" kept the stroke from running with a tool at all, so nothing tilled (--test-farm calls Farm_Till
+// directly and missed it). Through the real input path (TerrainTool_Update, RMB held): a stone hoe tills the sandbox's
+// natural surface and a patch of placed dirt, its preview the size it tills; a shovel (#1085, the user: it digs, it doesn't
+// till) and a pickaxe till and place nothing.
 #include "scenario.h"
 #include "farming.h"
 #include "playerinput.h"
 #include "playersession.h"
+#include "scene.h"
 #include "terraintool.h"
+#include "tools.h"
 #include "world.h"
 #include <raymath.h>
 #include <string>
 
 namespace {
 // The camera at the player's eyes, looking at the ground 2 m ahead (side: metres to the right); the tool's aim from it.
+// (#1176) From a pose taken once, body-local: the player turns to the camera's view, so building each aim from the
+// player's facing turned it further with every sideways look - the stroke and the check 3.8-8.3 m apart.
 bool Aim(ScenarioCtx& c, float side, Vector3& local) {
+    static bool taken = false;
+    static Vector3 feetL{}, upL{}, fwdL{};
     Player& p = LocalSession().player;
-    const Vector3 feet = (p.position - c.world.renderOrigin).toFloat();
-    const Vector3 up = Vector3Normalize(p.up);
-    Vector3 fwd = Vector3Subtract(p.forward, Vector3Scale(up, Vector3DotProduct(p.forward, up)));
-    fwd = Vector3Length(fwd) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })) : Vector3Normalize(fwd);
-    c.world.camera.position = Vector3Add(feet, Vector3Scale(up, 1.6f));
-    c.world.camera.target = Vector3Add(Vector3Add(feet, Vector3Scale(fwd, 2.0f)), Vector3Scale(Vector3Normalize(Vector3CrossProduct(fwd, up)), side));
-    c.world.camera.up = up;
+    Planetoid* b = c.body;
+    if (!taken) {
+        taken = true;
+        feetL = b->toLocal((p.position - c.world.renderOrigin).toFloat());
+        upL = Vector3Normalize(feetL);
+        const Vector3 f = b->dirToLocal(p.forward);
+        fwdL = Vector3Subtract(f, Vector3Scale(upL, Vector3DotProduct(f, upL)));
+        fwdL = Vector3Length(fwdL) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(upL, { 0, 0, 1 })) : Vector3Normalize(fwdL);
+    }
+    const Vector3 rightL = Vector3Normalize(Vector3CrossProduct(fwdL, upL));
+    c.world.camera.position = b->toWorld(Vector3Add(feetL, Vector3Scale(upL, 1.6f)));
+    c.world.camera.target = b->toWorld(Vector3Add(Vector3Add(feetL, Vector3Scale(fwdL, 2.0f)), Vector3Scale(rightL, side)));
+    c.world.camera.up = b->dirToWorld(upL);
     TerrainTool_Update(c.world, PlayerInput::None(), true);
     Planetoid* body = nullptr; Vector3 n{};
     return TerrainTool_LastHit(body, local, n);
 }
 // RMB held for one update with `held` in hand (the caller waited out the cooldown): what the player's RMB does there.
 void Rmb(ScenarioCtx& c, const char* held) {
+    // In hand as a player has it (#1176): carried (the terrain tool uses a tool only while it is in the inventory) and
+    // nothing else held (holdingItem, left on by the hotbar's start selection, blocks every RMB). Setting heldTool alone
+    // worked only while the sandbox's starting kit happened to carry these tools.
+    if (inventory.count(held) <= 0) inventory.add(held, 1);
+    terrainTool.holdingItem = false;
     terrainTool.heldTool = held;
     PlayerInput in; in.hold(Act::Secondary);
     TerrainTool_Update(c.world, in, true);
@@ -45,9 +62,9 @@ SCENARIO("farm/till-rmb") {
     static double dirt0 = 0.0;
     static Vector3 spot{};
     struct Case { const char* tool; bool placedDirt; bool tills; };
-    static const Case cases[] = { { "stone_hoe", false, true }, { "stone_shovel", false, true }, { "stone_hoe", true, true },
-                                  { "stone_shovel", true, true }, { "stone_pickaxe", false, false } };
-    s.step("RMB with a hoe or shovel tills; with a pickaxe nothing", 40.0, [](ScenarioCtx& c) {
+    static const Case cases[] = { { "stone_hoe", false, true }, { "stone_shovel", false, false }, { "stone_hoe", true, true },
+                                  { "stone_shovel", true, false }, { "stone_pickaxe", false, false } };
+    s.step("RMB with a hoe tills (its preview the size it tills); with a shovel or a pickaxe nothing", 40.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;
         terrainTool.creative = false;
         const int i = stage / 3, phase = stage % 3;
@@ -62,7 +79,12 @@ SCENARIO("farm/till-rmb") {
             return false;
         }
         if (phase == 1) {
+            if (inventory.count(k.tool) <= 0) inventory.add(k.tool, 1); // (in hand for the aim: the preview is the held tool's)
+            terrainTool.holdingItem = false;
+            terrainTool.heldTool = k.tool;
             Aim(c, side, spot);
+            if (k.tills) // (#1085, the user: the hoe's preview showed the dig's size, not the patch it tills)
+                c.near(TextFormat("case %d: the preview is the till's size (m)", i), gToolSphere.radius, TillRadius(ToolOf(k.tool)), 1e-4);
             strokes0 = terrainTool.swings;
             dirt0 = inventory.amount("dirt");
             Rmb(c, k.tool);
@@ -74,8 +96,8 @@ SCENARIO("farm/till-rmb") {
         if (k.tills) {
             c.check(("RMB tills: " + what).c_str(), Farm_Aims(*c.body, spot), TextFormat("strokes %d -> %d", strokes0, terrainTool.swings));
         } else {
-            c.check("RMB with a pickaxe tills nothing (the control)", !Farm_Aims(*c.body, spot));
-            c.eq("RMB with a pickaxe strikes nothing", terrainTool.swings - strokes0, 0);
+            c.check(("RMB tills nothing: " + what).c_str(), !Farm_Aims(*c.body, spot));
+            c.eq(("RMB strikes nothing: " + what).c_str(), terrainTool.swings - strokes0, 0);
         }
         c.eq(("no ground placed or paid: " + what).c_str(), inventory.amount("dirt"), dirt0);
         side += 3.0f;

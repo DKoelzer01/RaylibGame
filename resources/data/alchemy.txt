@@ -1,0 +1,44 @@
+# Alchemy (#1254, magic step 7; the magic doc section 4). Behind RAYLIBGAME_MAGIC like the rest of magic.
+# Essence is one fluid (fluids.txt "essence"); its aspect (aspects.txt) is a tag on what holds it: a distillery's outputs,
+# an essence tank, a phial, a cauldron's inputs, or one pipe run. A tank, a phial or a run holds one aspect at a time, and a
+# run whose tanks hold two aspects moves nothing. Spilled from an outlet it loses its aspect and fizzles away.
+# A distillery boils an item into its aspects (aspects.txt "of item:" lines: one measure per point). A cauldron brews the
+# potions below. All numbers are first guesses.
+#   set <name> <value>
+#   essence <aspect> | glow <0..1> | text <what it is good for>        (look and use per aspect; colour from aspects.txt)
+#   potion <id> | <name> | brew <aspect> <n>, <aspect> <n> | makes <n> | effect <kind> [amount] | seconds <s>
+#        | colour <RRGGBB> | once_a_day | text <one line>
+# Effects: heal <health>, night_vision, water_breathing, cold_resist, mining_haste <speed factor>, cleanse_burden <burden>.
+
+set tank_measures   256   # an essence tank holds this many measures of one aspect
+set pipe_measures   8     # a pipe run moves at most this many measures a pass (two passes a second)
+set feed_measures   16    # a cauldron keeps up to this many measures of each essence its brews use
+set spill_m3        0.05  # the fluid one spilled measure makes (m^3)
+set fizzle_seconds  3     # a spill fizzles away after this long
+set distill_ticks   100   # a distillery takes 5 s an item (20 ticks a second)
+set distill_eu      4     # EU a tick while it works
+set brew_ticks      300   # a cauldron's brew takes 15 s
+
+essence earth   | glow 0.3 | text Steadies: mining draughts.
+essence water   | glow 0.5 | text Flows: breathing draughts.
+essence fire    | glow 0.9 | text Warms and lights: hearth and night-eye draughts.
+essence air     | glow 0.6 | text Lifts: breathing draughts.
+essence life    | glow 0.7 | text Mends: healing, and with Order the cleansing draught.
+essence frost   | glow 0.6 | text Cools.
+essence storm   | glow 0.9 | text Crackles.
+essence rot     | glow 0.3 | text Breaks down.
+essence void    | glow 0.2 | text Empties.
+essence metal   | glow 0.4 | text Hardens: mining draughts.
+essence crystal | glow 0.8 | text Rings clear.
+essence plant   | glow 0.5 | text Grows: healing draughts.
+essence beast   | glow 0.4 | text Endures: hearth draughts.
+essence light   | glow 1.0 | text Shows: night-eye draughts.
+essence order   | glow 0.7 | text Settles: the cleansing draught.
+essence motion  | glow 0.6 | text Quickens.
+
+potion healing         | Healing draught   | brew life 2, plant 2  | makes 2 | effect heal 40           | seconds 0   | colour e05050 | text Mends 40 health at once.
+potion night_vision    | Night-eye draught | brew light 2, fire 1  | makes 2 | effect night_vision      | seconds 180 | colour f0e070 | text See in the dark for 3 minutes.
+potion water_breathing | Gill draught      | brew water 2, air 2   | makes 2 | effect water_breathing   | seconds 120 | colour 50b0e0 | text Breathe under water for 2 minutes.
+potion cold_resist     | Hearth draught    | brew fire 2, beast 2  | makes 2 | effect cold_resist       | seconds 300 | colour e08040 | text The cold doesn't touch you for 5 minutes.
+potion mining_haste    | Delver's draught  | brew metal 2, earth 2 | makes 2 | effect mining_haste 1.5  | seconds 120 | colour a0a0b0 | text Dig and chop half as fast again for 2 minutes.
+potion cleansing       | Cleansing draught | brew life 2, order 2  | makes 1 | effect cleanse_burden 15 | seconds 0   | colour e8f0ff | once_a_day | text Lifts 15 burden; it works once a day.

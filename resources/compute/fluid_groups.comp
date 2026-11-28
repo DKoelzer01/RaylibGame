@@ -11,7 +11,7 @@
 layout(local_size_x = 64) in;
 layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
 layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
-layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
+layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 0 = not processed; else its gravity scale, float bits (#1942)
 layout(std430, binding = 10) buffer Mask { uint mask[]; };           // per slot: 3 substeps (rotating) x 2 words of group bits
 layout(std430, binding = 11) buffer Groups { uint groups[]; };       // [0..2] dispatch args, [3] listed, [4] counter, [8..] slot * 64 + group
 uniform uint count; // processed slots

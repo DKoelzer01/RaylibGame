@@ -95,7 +95,7 @@ class Scene {
         float shadowWideHalfExtent = 2000.0f;
         float shadowWideDistance = 4000.0f; // the light camera back along the sun (depth range twice this)
         bool wideShadows = true;
-        int wideEvery = 4;          // render it every Nth frame (world-anchored: 2 m texels hardly notice a few frames of spin)
+        int wideEvery = 1;          // render it every Nth frame (#1163: at 4 the stale map made shadows jump on and off every 4 frames in flight; RAYLIBGAME_WIDE_EVERY=N)
         int wideFrame = 0;
         DVec3 wideOrigin{};         // the render origin it was drawn with (the matrix is moved along if the origin shifts)
         Matrix lightSpaceWideDrawn{};
@@ -127,6 +127,8 @@ class Scene {
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
+        float lightning = 0.0f;          // (#1162) a lightning flash now, 0..1 (set by the game): lights the sky and clouds
+        Vector3 lightningDir = { 0, 1, 0 }; //   toward lightningDir (world, unit) and lifts the open-sky ambient briefly
         Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         std::function<void(Shader&)> frameLighting;  // set during onDraw3D: binds shadow cascades + headlamp to a shader

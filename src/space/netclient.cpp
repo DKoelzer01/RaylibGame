@@ -5,6 +5,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "factory.h"
 #include "farming.h"
 #include "claims.h"
@@ -39,6 +40,7 @@
 #include <set>
 
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
+#include "buildcommit.h"
 
 namespace {
     // A player's state from the server - its own message, or decoded from a snapshot (#769): the same handling either way.
@@ -56,11 +58,12 @@ namespace {
         NetWriter w; NetWrite(w, m);
         Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), true);
     }
-    std::string Commit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string Commit() { return Build_CommitOf(kGameVersion); } // (#1906) the hash, not "changes" from " +local changes"
     void End(NetClient& c, NetClient::State s) {
         if (c.conn) Net_Close(c.conn);
         c.conn = 0;
         c.state = s;
+        if (gNetRole == NetRole::Client) TeamStore_ResetLocalTeam(); // (#1886) the research tab goes back to our own teams
     }
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
@@ -267,6 +270,13 @@ namespace {
                 Animals_ApplyNet(in, am.removed);
                 return;
             }
+            case NetMsg::CreatureFx: { // (#1343, #1364) the server's creature shots (flown here) and creature events (heard here)
+                MsgCreatureFx fx;
+                if (c.state != NetClient::State::Joined || !NetRead(r, fx)) return;
+                ++c.creatureFxMsgs;
+                if (gAnimalsReplicated) Animals_ApplyFx(fx);
+                return;
+            }
             case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
                 MsgDamage dm;
                 if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
@@ -350,6 +360,13 @@ namespace {
                 if (gNetRole == NetRole::Client) TeamQuests_ApplyText(q.text); // (a host in this process keeps the real ones)
                 return;
             }
+            case NetMsg::TeamStore: { // (#1886) our team's research, explored map and blueprint library as the server keeps them
+                MsgTeamStore t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                ++c.teamStores; c.teamStoreTeam = (int)t.team; c.teamStoreText = t.text;
+                if (gNetRole == NetRole::Client) TeamStore_ApplyFromHost((int)t.team, t.text); // (a host in this process has the real ones)
+                return;
+            }
             case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
                 MsgGraves g;
                 if (c.state != NetClient::State::Joined || !NetRead(r, g)) return;
@@ -371,6 +388,7 @@ namespace {
                 MsgVitals v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
                 c.vitals = v; ++c.vitalsMsgs;
+                if (v.flags & 1) c.respawnGraceUntil = GetTime() + 3.0; // (#828) dead: the respawn teleport that follows is no prediction miss
                 if (gNetRole != NetRole::Client) return; // (a host's in-process test client: not the host's own player)
                 SurvivalState& sv = LocalSession().survival;
                 sv.health = v.health; sv.food = v.food; sv.oxygen = v.oxygen; sv.power = v.power; sv.temperature = v.temperature;
@@ -519,7 +537,7 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
         if (body && !c.history.empty() && c.history.front().tick == c.own.ackInput) {
             const DVec3 d = c.history.front().local - c.own.local;
             c.lastError = d.length();
-            c.worstError = std::max(c.worstError, c.lastError);
+            if (GetTime() >= c.respawnGraceUntil) c.worstError = std::max(c.worstError, c.lastError); // (#828: not around a death's respawn)
             c.history.pop_front(); // acknowledged
             if (c.lastError > kReconcileError) {
                 ++c.corrections;
@@ -547,6 +565,13 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
         self.update(world, in, SimDt());
     }
     if (body) step.local = body->toLocalD(self.position);
+    // (#1922) Flying in creative: the server can't step our fly camera, so it takes our pose (it checks creative itself).
+    // (Not netState(): the fly path returns before update() caches it, so that would be the state from before the flight.)
+    if (self.flyMode && terrainTool.creative && body) {
+        const Vector3 rel = self.groundVelocity(world); // (against the ground, as netState() has it airborne)
+        step.fly = true; step.flyBody = body->netId; step.flyLocal = step.local;
+        step.flyVel = Vector3RotateByQuaternion(rel, QuaternionInvert(body->rotationQuat()));
+    }
     c.history.push_back(step);
     while (c.history.size() > 600) c.history.pop_front(); // 10 s unacknowledged: something is wrong; don't grow forever
     // The newest kInputRedundancy steps, unreliable (a lost packet is covered by the next).
@@ -555,7 +580,9 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
     m.ackSnap = c.snapNewest; m.ackMask = c.snapMask; // (#769)
     for (auto it = c.history.rbegin(); it != c.history.rend() && (int)m.steps.size() < kInputRedundancy; ++it) {
         if (!m.steps.empty() && it->tick != m.steps.back().tick - 1) break; // (consecutive only)
-        m.steps.push_back({ it->tick, it->in.held, it->in.pressed, it->fx, it->fy, it->fz });
+        MsgInput s{ it->tick, it->in.held, it->in.pressed, it->fx, it->fy, it->fz };
+        s.fly = it->fly; s.flyBody = it->flyBody; s.flyLocal = it->flyLocal; s.fvx = it->flyVel.x; s.fvy = it->flyVel.y; s.fvz = it->flyVel.z;
+        m.steps.push_back(s);
     }
     NetWriter w; NetWrite(w, m);
     Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);

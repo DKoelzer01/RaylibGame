@@ -59,7 +59,17 @@ inline int SiteBricks() {
 }
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry up (user 2026-11-16: puddles should last a while)
-constexpr unsigned kEvapEvery = 1200;   // specks soak away on one step in this many (~10 s on the GPU): only the ones that stay put (#454)
+// Drying (#454, #1944 user 2026-11-27: "slow water film drying down to minutes"): a resting film (under the spread limit, ~1 cm)
+// thins a unit (~1 mm) every 20 s, so a fresh pour spread flat keeps ~2/3 at 60 s and is gone in ~3 min; specks (1-2 units,
+// too thin to draw) still go within 2 s in sleeping bricks, so slopes clear. (Was a unit every 2 s: half a pour gone in 10 s.)
+constexpr unsigned kEvapEvery = 2400;   // awake bricks: films thin on one substep in this many (~20 s): only cells that stay put (#454)
+constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting specks dry (#454)
+constexpr int kFilmThinEvery = 10; // of those passes: every 20 s their films (3 units to the spread limit) lose a unit (#1944)
+// Shallow puddles dry too (#1944: "dry gradually"; 5 cm and the rate are the user's ruling, 2026-11-26): standing water
+// one cell deep on the ground, no water over it, thinner than this, loses a unit every 20 s with the films (a 2 cm
+// puddle: ~7 min). Deeper pools and ponds never dry.
+constexpr float kPuddleDryDepth = 0.05f; // m
+std::atomic<bool> gFilmDryDue{ false }; // (#454) set by Update, taken by the next publish
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
@@ -105,7 +115,10 @@ constexpr int kInitPerStep = 24;       // bricks classified per step, in paralle
 inline int MaxBricks() { static const int n = std::min(32768, (int)lroundf(4096.0f / (WaterField::CellSize() * WaterField::CellSize()))); return n; }
 
 inline int Idx(int x, int y, int z) { return x + y * B + z * B * B; }
-inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); }
+inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); } // bricks (+-1024)
+// A cell's key by site cell coordinates (#1855 M9): a site reaches 256 m, +-1024 cells of 0.25 m and past them at its edge, so
+// Key's 11-bit fields overflowed into the next one and cells merged in the levelling pass (Key(0, 0, 1030) == Key(0, 1, -1018)).
+inline int64_t CellKey(int i, int j, int k) { return ((int64_t)(i + (1 << 20)) << 42) | ((int64_t)(j + (1 << 20)) << 21) | (int64_t)(k + (1 << 20)); }
 inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 // Partly solid cells (#454): RAYLIBGAME_WATER_SHUT=0 treats every open cell as wholly open (the old model, for A/B).
 inline bool ShutOn() { static const bool on = !(getenv("RAYLIBGAME_WATER_SHUT") && getenv("RAYLIBGAME_WATER_SHUT")[0] == '0'); return on; }
@@ -144,6 +157,7 @@ struct Brick {
     int statSolid = 0; // solid cells (all solid: nothing to run, #669)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
+    std::vector<int32_t> press;           // the pressure pass (#1168): each cell's head between ticks (CPU), or while its GPU slot is given back (empty: none)
     std::vector<int16_t> colFlow;         // the drawn current (#677): per column (x + 16 y) its flow along east, north (cm/s); empty: none yet
     std::vector<int16_t> drawnFlow; int flowStep = -100000; // the current the chunks last drew, and when (#677: a steady stream's levels never change, so it redraws on its flow)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
@@ -267,6 +281,18 @@ struct PartSolid {
         }
         return false;
     }
+    // (#1772) A part near c (within `margin` m of a plot's solid cells), and whether a point lies in a solid part cell: the
+    // ground share of an open fluid cell counts part tops too, or a film on a tile stood at the cell's floor, inside the tile.
+    bool near(Vector3 c, float margin) const {
+        for (const PlotSnap& p : plots)
+            if (!p.solid.empty() && Vector3DistanceSqr(c, p.centre) <= (p.radius + margin) * (p.radius + margin)) return true;
+        return false;
+    }
+    bool pointSolid(Vector3 q) const {
+        for (const PlotSnap& p : plots)
+            if (!p.solid.empty() && Vector3DistanceSqr(q, p.centre) <= (p.radius + 1.0f) * (p.radius + 1.0f) && p.cellSolid(q)) return true;
+        return false;
+    }
 };
 
 struct BodyRef {
@@ -274,10 +300,34 @@ struct BodyRef {
     std::shared_ptr<const TerrainDeltas> edits;
     const PlanetField* pf = nullptr;
     std::shared_ptr<const PartSolid> parts; // build parts (#391), or null
+    float gScale = 1.0f; // the kernels' g over Terra's (#1942): FluidGravityScale
 };
+// Fluids flow by their body's gravity (#1942, user 2026-11-26): the kernels' g (9.81, tuned on Terra) times the body's
+// surface gravity over the home planet's (the planet that orbits nothing; else the first planet). Exactly 1 on Terra and
+// on a world with no planet (the sandbox), so their water is bit-identical to before. Main thread (Planetoid::All).
+static float FluidGravityScale(const Planetoid& b) {
+    // Tests: RAYLIBGAME_FLUID_GSCALE=<s> forces the scale on every body (a sandbox scenario at Luna's water: the GPU and the
+    // CPU compared at k != 1 in lockstep, fluid/mass-ledger-luna).
+    static const float forced = getenv("RAYLIBGAME_FLUID_GSCALE") ? (float)atof(getenv("RAYLIBGAME_FLUID_GSCALE")) : 0.0f;
+    if (forced > 0.0f) return forced;
+    const Planetoid* home = nullptr;
+    for (const Planetoid* q : Planetoid::All()) {
+        if (!q || q->kind != BodyKind::Planet || !q->field) continue;
+        if (!q->orbitParent) { home = q; break; }
+        if (!home) home = q;
+    }
+    if (!home || home == &b || home->surfaceGravity <= 0.0f || b.surfaceGravity == home->surfaceGravity) return 1.0f;
+    return std::max(0.01f, b.surfaceGravity / home->surfaceGravity); // > 0: the GPU's inS reads 0 as "not processed"
+}
 std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
-struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind
+struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; uint64_t seq = 0; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind; seq: a take's number
+// Takes promised but not yet in the published snapshot (#1677): Take reads the snapshot, so two takes from one small pool
+// before the next publish were both credited in full (water made from nothing). Each take reserves its amount here until
+// the step that applied it has published (cmdMx).
+std::vector<Command> pendingTakes;
+uint64_t takeSeq = 0;
+std::vector<uint64_t> takesApplied; // the takes this step applied (the step job's own; cleared from pendingTakes after its publish)
 
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
@@ -300,6 +350,14 @@ void FlushEnsures() {
     ensureQueue.clear();
 }
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
+// The kernels' gravity factor for a site (#1942): k = sqrt(scale), from the snapshot (1 for a body it lacks). The kernels use
+// G k k for the momentum and k for the levelling share (its rate goes as sqrt(g)); the host takes the root so the GPU and the
+// CPU multiply the same floats (GLSL's sqrt need not round as std::sqrt does). sqrt(1) is 1: Terra unchanged.
+static float SiteGRoot(const Site* s) {
+    if (!s) return 1.0f;
+    const auto it = refs.find(s->body);
+    return it != refs.end() ? std::sqrt(it->second.gScale) : 1.0f;
+}
 long long stepCount = 0;
 Fluid::Stats stats;
 long long settledTotal = 0;     // bricks put to sleep resting (#366), since the start
@@ -413,10 +471,14 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // How much of an open cell is ground (#454), in cells near the surface: 16 points (2 x 2 across, 4 heights)
                 // interpolated from the density at the cell's 8 corners - as marching cubes draws the ground. The corners
                 // are sampled once and shared with the neighbouring cells (16 field samples a cell cost ~40 ms of a step).
+                // (#1772) Built parts count the same way: a fluid cell (0.25 m) straddling a tile's top stays open, and a film on
+                // the tile stood at the cell's floor - up to a cell under the top, drawn inside it or in patches.
                 int sh = 0;
-                if (!solid && ShutOn() && r < top && dc > ISO_LEVEL - 0.75f * DENSITY_GRADIENT / kVoxelSize) {
-                    float d8[8];
-                    for (int k = 0; k < 8; ++k) {
+                const bool nearGround = !solid && ShutOn() && r < top && dc > ISO_LEVEL - 0.75f * DENSITY_GRADIENT / kVoxelSize;
+                const bool nearPart = !solid && ShutOn() && ref.parts && ref.parts->near(c, cs);
+                if (nearGround || nearPart) {
+                    float d8[8] = {};
+                    for (int k = 0; k < 8 && nearGround; ++k) {
                         const int ax = x + (k & 1), ay = y + ((k >> 1) & 1), az = z + (k >> 2);
                         float& d = corner[(az * (B + 1) + ay) * (B + 1) + ax];
                         if (std::isnan(d)) {
@@ -430,10 +492,15 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                         for (int bb = 0; bb < 2; ++bb)
                             for (int h = 0; h < 4; ++h) {
                                 const float tx = a ? 0.75f : 0.25f, ty = bb ? 0.75f : 0.25f, tz = 0.125f + 0.25f * h;
-                                const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
-                                const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
-                                const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
-                                n += lo + (hi - lo) * tz >= ISO_LEVEL ? 1 : 0;
+                                bool g = false;
+                                if (nearGround) {
+                                    const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
+                                    const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
+                                    const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
+                                    g = lo + (hi - lo) * tz >= ISO_LEVEL;
+                                }
+                                if (!g && nearPart) g = ref.parts->pointSolid(s.cellPoint((float)ci + tx, (float)cj + ty, (float)(b.bk * B + z) + tz));
+                                n += g ? 1 : 0;
                             }
                     sh = std::min(kMaxShut, n * 255 / 16);
                 }
@@ -445,7 +512,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
                 if (!solid && kind && kind != 5 && z <= coveredTo && r - hc < level && r > bed - hc) fl |= kDug;
                 uint8_t tg = 0;
-                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc) {
+                // (#1520) A cell an edit changed holds the generated water only if it held it before the edit: the level over
+                // the ORIGINAL ground (the height map's bed) in this cell. A dig beside a river took the sand out of cells
+                // straddling its level, and they turned into river sources up to the level - an infinite source in the hole,
+                // under where the bank had stood over the water ("hidden water voxels in the sand": the hole flooded with no
+                // path to the river). Such space is fed only by flow from the river's own cells; a cell that was river water
+                // (a channel cut into the river's mouth) still fills to the level as its neighbours do, or the water never
+                // sleeps (fluid/flow). Unedited cells are as before.
+                static const bool genOnOriginal = !(getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND") && getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND")[0] == '0'); // A/B: =0 before #1520
+                bool wasWater = true;
+                if (genOnOriginal && kind && ref.edits && r - hc < level && r > bed - hc && fabsf(dc - ref.field->density(c, nullptr)) > 1e-4f)
+                    wasWater = level > std::max(r - hc, bed);
+                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc && wasWater) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - hc)) / cs * 255.0f), 0, 255);
                     if ((int)tg - sh > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {
@@ -467,6 +545,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
     b.faces.clear(); // CPU mode: a (re)classified brick starts at rest (#654)
+    b.press.clear(); // and without heads (#1168: both modes; the GPU upload then gives its slot none)
     b.keepFill = false;
     b.active = true; b.idle = 0; b.changed = true;
 }
@@ -495,13 +574,21 @@ void PinPondFace(Brick& b, int f) {
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 std::atomic<long long> pourDroppedUnits{ 0 }; // fill units pours found no room for, even widened (#766)
+// The mass ledger (#1885): fill units the CPU side added or removed since the start, by cause (Fluid::GetLedger). The kernels'
+// own changes (source cells held at their level, sinks, kernel evaporation) are not in it: a closed basin with
+// RAYLIBGAME_FLUID_NOEVAP=1 must hold its volume to what the ledger says.
+enum LedgerCause { kLedgerPoured, kLedgerTaken, kLedgerTakenFree, kLedgerSpring, kLedgerDried, kLedgerCauses };
+std::atomic<long long> ledgerUnits[kLedgerCauses] = {};
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
+std::atomic<long long> diagTicks{ 0 }, diagDispatches{ 0 }, diagFlowReads{ 0 }; // (#1407) for Stats: ticks, GPU dispatches, flux reads
 int slotsUsed = 0;                    // GPU slots held now (stats, #675)
 int G_Capacity();                     // the GPU brick pool (below)
 constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; b->steady = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
+// The pressure pass (#1168, CPU-only opt-in for now). Read on first use, not at static init: a scenario's s.env is set in main().
+static bool PressureOn() { static const bool on = FluidKernel::Params{}.pressure; return on; }
 // Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
 // (water never enters it) nor a dry brick above (water rises into it only through sources, pours or levelling, which wake
 // it). Under and over a big pool they were most of every dispatch.
@@ -587,6 +674,7 @@ void StepSpring(Site& s, Site::Spring& sp) {
             TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
             b->fill[i] = (uint8_t)(b->fill[i] + add);
             GpuDelta(b, i, add);
+            ledgerUnits[kLedgerSpring] += add;
             sp.acc -= (float)add;
             Touch(b); ++dbgSrc;
             return sp.acc < 1.0f;
@@ -621,7 +709,7 @@ void LevelSite(Site& s) {
         for (int i0 = 0; i0 < B3; ++i0) {
             if (b0->fill[i0] < Cap(b0, i0) || (b0->flags[i0] & kSolid)) continue; // full: at its capacity (#454)
             const int x0 = i0 % B, y0 = (i0 / B) % B, z0 = i0 / (B * B);
-            const int64_t k0 = Key(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
+            const int64_t k0 = CellKey(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
             if (seen.count(k0)) continue;
             const uint8_t kind0 = b0->flags[i0] & kKindMask; // a body is all one kind
             // BFS through full cells; partial and empty-above neighbours are leaves.
@@ -644,7 +732,7 @@ void LevelSite(Site& s) {
                     Brick* nb; int ni;
                     if (!s.cell(nc[0], nc[1], nc[2], nb, ni) || (nb->flags[ni] & kSolid)) continue;
                     if (nb->fill[ni] > 0 && (nb->flags[ni] & kKindMask) != kind0) continue; // the other fluid
-                    const int64_t nk = Key(nc[0], nc[1], nc[2]);
+                    const int64_t nk = CellKey(nc[0], nc[1], nc[2]);
                     if (nb->fill[ni] >= Cap(nb, ni)) {
                         if (!seen.count(nk)) { seen.insert(nk); q.push_back({ nc[0], nc[1], nc[2] }); }
                     } else if ((nb->fill[ni] > 0 || k == 4) && !leafSeen.count(nk)) {
@@ -665,7 +753,7 @@ void LevelSite(Site& s) {
                 for (const C& c : comp)
                     if (c.leaf) {
                         const int li = c.i, lx = c.b->bi * B + li % B, ly = c.b->bj * B + (li / B) % B;
-                        leafAt.emplace(Key(lx, ly, c.ck), (int)parent.size());
+                        leafAt.emplace(CellKey(lx, ly, c.ck), (int)parent.size());
                         leafPos.push_back({ lx, ly, c.ck });
                         parent.push_back((int)parent.size());
                     }
@@ -676,7 +764,7 @@ void LevelSite(Site& s) {
                         for (int dy = -1; dy <= 1; ++dy)
                             for (int dx = -1; dx <= 1; ++dx) {
                                 if ((dx != 0) + (dy != 0) + (dz != 0) == 0 || (dx != 0 && dy != 0)) continue; // side, up/down, side +- a layer
-                                auto it = leafAt.find(Key(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
+                                auto it = leafAt.find(CellKey(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
                                 if (it == leafAt.end()) continue;
                                 const int ra = root((int)a), rb = root(it->second);
                                 if (ra != rb) { parent[ra] = rb; --groups; }
@@ -798,7 +886,10 @@ bool SiteHasWaterNear(Site& s, Vector3 c, float r) {
     return false;
 }
 
-void EnsureAround(Site& s, Vector3 c, float r) {
+// The bricks around a point exist (new ones queued for classification). reclassify: the ones that exist are classified again,
+// keeping their water (a terrain edit changed solidity there); false only makes the missing ones (#1414: a take ran this
+// with reclassify on, so every brick in reach went not-ready and the take, which skips those, removed nothing).
+void EnsureAround(Site& s, Vector3 c, float r, bool reclassify = true) {
     int ci, cj, ck;
     s.cellOf(c, ci, cj, ck);
     const int R = (int)ceilf(r / WaterField::CellSize()) + 2;
@@ -806,7 +897,7 @@ void EnsureAround(Site& s, Vector3 c, float r) {
         for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
             for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi)
                 if (Brick* b = s.ensure(bi, bj, bk)) {
-                    if (b->ready) { // reclassify (solidity changed); keep the water
+                    if (reclassify && b->ready) { // reclassify (solidity changed); keep the water
                         b->ready = false; b->keepFill = true;
                         if (std::find(s.pending.begin(), s.pending.end(), b) == s.pending.end()) s.pending.push_front(b);
                     }
@@ -949,6 +1040,7 @@ void ApplyCommand(const Command& c) {
                         b->fill[i] = (uint8_t)(b->fill[i] + add);
                         GpuDelta(b, i, add);
                         left -= add;
+                        ledgerUnits[kLedgerPoured] += add;
                         Touch(b);
                     }
         if (left > 0.0f) pourDroppedUnits += (long long)left;
@@ -957,7 +1049,11 @@ void ApplyCommand(const Command& c) {
     // Take: from the wettest cells within the radius (sources are free: they refill).
     float want = c.m3 * 255.0f / WaterField::CellVolume();
     const int R = (int)ceilf(c.r / WaterField::CellSize());
-    EnsureAround(*s, c.c, c.r);
+    EnsureAround(*s, c.c, c.r, false); // (#1414) the bricks in reach as they are: a take changes no solidity
+    // (#1677) Not classified yet: again after classification, as a pour does (it removed nothing while Take had already
+    // reported the water taken: a free first scoop from an untouched pond).
+    { Brick* b0; int i0; if (!s->cell(ci, cj, ck, b0, i0)) { std::lock_guard<std::mutex> lock(cmdMx); commands.push_back(c); return; } }
+    if (c.seq) takesApplied.push_back(c.seq);
     for (int dk = R; dk >= -R && want > 0.0f; --dk)
         for (int dj = -R; dj <= R && want > 0.0f; ++dj)
             for (int di = -R; di <= R && want > 0.0f; ++di) {
@@ -965,7 +1061,19 @@ void ApplyCommand(const Command& c) {
                 if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->fill[i] == 0) continue;
                 if (CellKind(b->flags[i]) != c.fluid) continue; // only the asked-for fluid
                 const int t = (int)std::min(want, (float)b->fill[i]);
-                if (!(b->flags[i] & kSource)) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                // Infinite water gives without running out (Plan 4: sea, rivers and large lakes are infinite): a source, or a
+                // released river reach (#1414: with takes really removing water, a pump at a river's edge drained the reach's
+                // cells there faster than the river refilled them and ran dry after 0.6 m^3; finite ponds drain as they should).
+                // Only the river's own water is free in a released reach (#1678): its brick flag covered every cell and fluid in
+                // it, so oil or a pit's water there never ran out.
+                bool infinite = (b->flags[i] & kSource) != 0;
+                if (!infinite && b->reach && c.fluid == 0)
+                    for (const Site::Release& rel : s->releases) {
+                        const float dx = (float)(ci + di - rel.ci), dy = (float)(cj + dj - rel.cj);
+                        if (dx * dx + dy * dy < rel.r * rel.r) { infinite = true; break; }
+                    }
+                if (!infinite) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                ledgerUnits[infinite ? kLedgerTakenFree : kLedgerTaken] += t;
                 want -= t;
                 Touch(b);
             }
@@ -1000,13 +1108,8 @@ void RunJob() {
         }
     }
     if (!work.empty()) {
-        std::atomic<int> left{ (int)work.size() - 1 };
-        for (size_t k = 1; k < work.size(); ++k) {
-            Work* w = &work[k];
-            JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
-        }
-        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].faces); // this thread takes one too
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), (int)work.size(), [&work](int k) { Work& w = work[k]; Classify(*w.s, *w.b, *w.ref, w.faces); },
+                      -3.0f, JobTag::Fluid); // this thread takes its share; no hang with one worker (#1671)
         static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         for (Work& w : work) {
             for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
@@ -1057,8 +1160,36 @@ void RunJob() {
             if (kv.second->ready) outs.push_back({ s.get(), kv.first, kv.second.get() });
         }
     }
+    const bool filmDry = gFilmDryDue.exchange(false); // (#454) this publish dries sleeping bricks' specks (Update sets it every 2 s)
+    static int dryPasses = 0; // (#1944) the job's; GPU and CPU count the same passes
+    const bool filmThin = filmDry && ++dryPasses % kFilmThinEvery == 0; // and every 20 s thins their films a unit
     auto publishBrick = [&](PubOut& out) {
             Brick& b = *out.b;
+            // (#454) Films dry in sleeping bricks too: a film under the spread limit never moves, and the kernels' evaporation
+            // only reaches awake bricks - one asleep after 2-3 s kept its films on a slope for good
+            // ("water clings to slopes as a thin film after all water has flowed away"). Here: every 2 s resting specks of 2 or
+            // less go, every 20 s films and shallow puddles on the ground lose a unit (#1944). Deeper pools stay.
+            static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // (tests: water accounting)
+            if (!b.active && !noEvap && filmDry) {
+                bool dried = false;
+                const int shallowUnits = (int)(kPuddleDryDepth * 255.0f / WaterField::CellSize()); // (#1944)
+                for (int z = 0; z < B; ++z)
+                    for (int y = 0; y < B; ++y)
+                        for (int x = 0; x < B; ++x) {
+                            const int i = Idx(x, y, z), f = b.fill[i];
+                            if (f == 0 || (b.flags[i] & (kSolid | kSource))) continue;
+                            const bool film = f < kindMinSpread[CellKind(b.flags[i])];
+                            if (!film && (!filmThin || f >= shallowUnits)) continue; // a pool: stays
+                            const bool ground = b.shut[i] > 0 || (z > 0 ? (b.flags[Idx(x, y, z - 1)] & kSolid) != 0
+                                                                        : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
+                            if (!ground || (f > 2 && !filmThin)) continue;
+                            if (!film && (z + 1 < B ? b.fill[Idx(x, y, z + 1)] != 0 : b.nbr[5] && b.nbr[5]->fill[Idx(x, y, 0)] != 0)) continue; // water over it: deeper than a puddle
+                            b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
+                            ledgerUnits[kLedgerDried] += f <= 2 ? f : 1;
+                            dried = true;
+                        }
+                if (dried) { b.changed = true; b.statSet = false; if (gpuMode && b.slot >= 0) b.upload = true; }
+            }
             if (b.changed || !b.statSet) { // kinds in the brick (bit k), wet cells, volumes: recounted when it changed
                 uint8_t kindsHere = 0;
                 int wet = 0, vol = 0, other = 0, solid = 0;
@@ -1218,14 +1349,7 @@ void RunJob() {
     {
         const int n = (int)outs.size();
         const int parts = std::max(1, std::min(n / 64, (int)std::thread::hardware_concurrency()));
-        std::atomic<int> left{ parts - 1 };
-        auto run = [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); };
-        for (int part = 1; part < parts; ++part) {
-            JobSystem::tagNext(JobTag::Fluid);
-            WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-        }
-        run(0);
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), parts, [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); }, -3.0f, JobTag::Fluid); // (#1671)
     }
     for (PubOut& out : outs) {
         const Brick& b = *out.b;
@@ -1259,6 +1383,12 @@ void RunJob() {
         }
     }
     if (snap) WaterField::Publish(std::move(snap), std::move(dirty));
+    if (!takesApplied.empty()) { // (#1677) the takes this step applied are in the snapshot now (or took free water): no longer reserved
+        std::lock_guard<std::mutex> lock(cmdMx);
+        pendingTakes.erase(std::remove_if(pendingTakes.begin(), pendingTakes.end(), [](const Command& p) {
+            return std::find(takesApplied.begin(), takesApplied.end(), p.seq) != takesApplied.end(); }), pendingTakes.end());
+        takesApplied.clear();
+    }
     const auto t2 = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> p(pubMx);
@@ -1273,6 +1403,7 @@ void RunJob() {
         st.pinnedFaces = pinnedFaces;
         st.filmFlips = filmFlips;
         st.gpuSlots = slotsUsed; st.gpuCapacity = G_Capacity(); st.slotReleases = slotReleases;
+        st.ticks = diagTicks.load(); st.dispatches = diagDispatches.load(); st.flowReads = diagFlowReads.load();
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
@@ -1331,6 +1462,8 @@ struct GpuState {
     ComputeProgram step, delta;
     ComputeBuffer a, b, nbrs, list, inS, flags, deltas;
     ComputeBuffer faceP, faceN;            // face flows (#642, fluid_step.comp): applied (a vec4 a cell) / new (two vec4 a cell)
+    ComputeBuffer press, pressN;           // the pressure pass (#1168): each cell's head (int, by slot, kept while the slot is
+                                           // held) and this substep's (scratch); bound only with the pass on
     // Async readback (#669): the dispatch's flags and its bricks' cells packed (fluid_pack.comp) are copied into a persistent
     // mapped buffer behind a fence and read the next tick; without buffer storage, the old per-brick downloads.
     ComputeProgram pack, flowPack; // flowPack: per column the solver's current, for drawing (#677)
@@ -1384,6 +1517,7 @@ bool GpuInit() {
         G.a.create(64 * kCellsPerBrick * 4); G.b.create(64 * kCellsPerBrick * 4);
         const std::vector<float> noFlow((size_t)64 * kCellsPerBrick * 8, 0.0f);
         G.faceP.create(64 * kCellsPerBrick * kFacePBytes, noFlow.data()); G.faceN.create(64 * kCellsPerBrick * kFaceNBytes, noFlow.data());
+        if (PressureOn()) { G.press.create(64 * kCellsPerBrick * 4, noFlow.data()); G.pressN.create(64 * kCellsPerBrick * 4, noFlow.data()); } // (#1168: zeros)
         G.capacity = 64;
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
@@ -1420,6 +1554,7 @@ void GpuGrow(int need) {
     grow(G.b, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
     grow(G.faceP, G.capacity * kCellsPerBrick * kFacePBytes, cap * kCellsPerBrick * kFacePBytes);
     grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
+    if (PressureOn()) { grow(G.press, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4); grow(G.pressN, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4); }
     grow(G.flags, G.capacity * 4, cap * 4);
     grow(G.sinkOut, G.capacity * 4, cap * 4);
     if (G.colOn) grow(G.col, G.capacity * kCellsPerBrick * kColBytes, cap * kCellsPerBrick * kColBytes);
@@ -1445,6 +1580,10 @@ void GpuUploadBrick(const Brick& b) {
     G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
     static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f); // a (re)classified brick starts at rest (#642)
     G.faceP.upload(noFlow.data(), kCellsPerBrick * kFacePBytes, b.slot * kCellsPerBrick * kFacePBytes);
+    if (PressureOn()) { // (#1168) the heads it had when its slot was given back (as the CPU keeps them), else none
+        static const std::vector<int32_t> none(kCellsPerBrick, 0);
+        G.press.upload(b.press.size() == (size_t)kCellsPerBrick ? b.press.data() : none.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
+    }
     if (G.groupsOn) { static const unsigned all[6] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u }; G.mask.upload(all, 24, b.slot * 24); } // every group listed once: the next substeps narrow it
 }
 
@@ -1454,6 +1593,7 @@ void GpuUploadBrick(const Brick& b) {
 // division by the diameter under-read 3x with quarter-metre cells), smoothed over ~0.5 s; the buffer is cleared for the next dispatch.
 void GpuFlowRead() {
     if (G.fluxBlocks <= 0 || G.watchCells.empty()) return;
+    ++diagFlowReads;
     std::vector<int> fx((size_t)G.fluxBlocks * kCellsPerBrick * 4);
     G.flux.download(fx.data(), (unsigned)(fx.size() * 4));
     const float perSecond = WaterField::CellVolume() / (255.0f * (float)kTickSeconds * (float)std::max(1, speed.load())); // fill units a tick -> m^3/s
@@ -1541,9 +1681,18 @@ void GpuReadback() {
         std::vector<unsigned> flagsV;
         const unsigned* flags = nullptr;
         const uint32_t* packed = nullptr;
+        bool mapped = false;
         if (G.asyncRb && G.rbFence) {
-            glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // at most 100 ms
+            // Wait again until the copy is done (#1679): skipping this readback is not safe, GpuTick dispatches next and
+            // overwrites lastList, the fence and the mapped buffer, so these results would be lost. A failed wait (a broken
+            // fence) drops to the download path below instead of reading a buffer the copy may not have filled.
+            GLenum waited;
+            do waited = glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100 ms a try
+            while (waited == GL_TIMEOUT_EXPIRED);
             glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr;
+            mapped = waited != GL_WAIT_FAILED;
+        }
+        if (mapped) {
             flags = (const unsigned*)G.rbPtr;
             packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
             if (G.rbSinkBytes) creditSinks((const unsigned*)(G.rbPtr + G.rbSinkAt), (int)(G.rbSinkBytes / 4)); // #656
@@ -1599,13 +1748,7 @@ void GpuReadback() {
                     drift[li] = br->settled ? SettleDrift(*br) : 0;
                 }
             };
-            std::atomic<int> left{ parts - 1 };
-            for (int part = 1; part < parts; ++part) {
-                JobSystem::tagNext(JobTag::Fluid);
-                WorldJobs().submit(-3.0f, [&unpack, &left, part] { unpack(part); left.fetch_sub(1); });
-            }
-            unpack(0);
-            while (left.load() > 0) std::this_thread::yield();
+            ParallelParts(WorldJobs(), parts, unpack, -3.0f, JobTag::Fluid); // (#1671)
         }
         for (size_t li = 0; li < G.lastList.size(); ++li) {
             const int slot = G.lastList[li];
@@ -1659,6 +1802,7 @@ void GpuReadback() {
 }
 
 void GpuTick(int n) {
+    ++diagDispatches;
     G.sinkOn = false;
     for (auto& s : sites) for (const Site::Release& r : s->releases) G.sinkOn = G.sinkOn || r.piece >= 0;
     static int sinkTick = 0;
@@ -1699,6 +1843,7 @@ void GpuTick(int n) {
             if (!br.ready) continue;
             const bool needed = slotTick - br.slotNeeded <= kSlotKeepTicks;
             if (br.slot >= 0 && !needed && !br.active && !br.upload) { // released
+                if (PressureOn()) { br.press.resize(kCellsPerBrick); G.press.download(br.press.data(), kCellsPerBrick * 4, br.slot * kCellsPerBrick * 4); } // (#1168, rare)
                 G.owner[br.slot] = nullptr; G.ownerSite[br.slot] = nullptr;
                 br.slot = -1; --used; G.nbrDirty = true; ++slotReleases;
                 continue;
@@ -1772,19 +1917,21 @@ void GpuTick(int n) {
             }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
+    // inS: 0 = not run; a run slot holds its gravity root's float bits (SiteGRoot, #1942: never 0, the shader reads both).
     std::vector<unsigned> inS(G.capacity, 0u);
+    auto SlotGBits = [](int slot) { float g = SiteGRoot(G.ownerSite[slot]); unsigned u; memcpy(&u, &g, 4); return u; };
     std::vector<int> list;
     for (int slot = 0; slot < G.capacity; ++slot) {
         Brick* br = G.owner[slot];
         if (!br || !br->active) continue;
-        if (!inS[slot]) { inS[slot] = 1; list.push_back(slot); }
+        if (!inS[slot]) { inS[slot] = SlotGBits(slot); list.push_back(slot); }
         for (int fc = 0; fc < 6; ++fc) {
             Brick* o = br->nbr[fc];
             if (!o || o->slot < 0 || inS[o->slot]) continue;
             // Not run (#669): a brick of solid rock (water never enters it) or a dry brick above (water only rises into it
             // through sources, pours or levelling, which wake it): under and over a big pool they were most of the dispatch.
             if (!o->active && !RunsBeside(*o, fc)) continue;
-            inS[o->slot] = 1; list.push_back(o->slot);
+            inS[o->slot] = SlotGBits(o->slot); list.push_back(o->slot);
         }
     }
     if (list.empty()) return;
@@ -1820,6 +1967,8 @@ void GpuTick(int n) {
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9); G.sinkOut.bind(12);
+    G.step.setInt("pressure", PressureOn() ? 1 : 0);
+    if (PressureOn()) { G.press.bind(14); G.pressN.bind(15); } // the pressure pass (#1168)
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     // The dry-cell skip (#675, fluid_groups.comp): each substep runs only the 64-cell groups near water, by indirect dispatch.
     G.step.setInt("useGroups", G.groupsOn ? 1 : 0);
@@ -1928,14 +2077,7 @@ FluidKernel::Grid cpuGrid;
 template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
     if (count <= 0) return;
     const int parts = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
-    auto run = [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); };
-    std::atomic<int> left{ parts - 1 };
-    for (int part = 1; part < parts; ++part) {
-        JobSystem::tagNext(JobTag::Fluid);
-        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-    }
-    run(0);
-    while (left.load() > 0) std::this_thread::yield();
+    ParallelParts(WorldJobs(), parts, [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); }, -3.0f, JobTag::Fluid); // (#1671)
 }
 
 void CpuTick(int n) {
@@ -1972,8 +2114,13 @@ void CpuTick(int n) {
         std::copy(c, c + B3, &g.b[(size_t)i * B3]);
         if (b->faces.size() == (size_t)B3) std::copy(b->faces.begin(), b->faces.end(), &g.faceP[(size_t)i * B3]);
         else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
+        if (PressureOn()) { // (#1168) the heads, as the faces; a brick new to the sim starts at none (the first substep fills them)
+            if (b->press.size() == (size_t)B3) std::copy(b->press.begin(), b->press.end(), &g.pr[(size_t)i * B3]);
+            else std::fill(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3, 0);
+        }
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
+        g.gRoot[i] = SiteGRoot(slotSite[i]); // (#1942)
         // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
         // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
         uint32_t* m = &g.gmask[(size_t)i * 6];
@@ -2004,6 +2151,7 @@ void CpuTick(int n) {
     ParallelSlots(processedCount, [&](int i) {
         Brick* br = slots[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
+        if (PressureOn()) br->press.assign(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3); // (#1168)
         { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
             const uint32_t* m = &g.gmask[(size_t)i * 6];
             const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;
@@ -2072,7 +2220,8 @@ void Fluid::Reset() {
     sites.clear();
     refs.clear();
     stepCount = 0;
-    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); }
+    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); pendingTakes.clear(); } // (#1677) no reservations into a new world
+    takesApplied.clear();
     {
         std::lock_guard<std::mutex> p(pubMx);
         pubStats = Stats{};
@@ -2092,6 +2241,11 @@ Vector3 Fluid::FlowAt(const Planetoid& body, Vector3 local, float radius) {
     std::lock_guard<std::mutex> lk(flowMx);
     const double now = GetTime();
     radius = std::max(0.5f, radius); // as stored: a smaller radius matched no watch and added one every call (#392 review)
+    // The CPU path never resolves watches, so nothing else expires them: same 3 s rule here, or the list only grows (#1680).
+    // Not on the GPU path: GpuFlowResolve erases there, and watchCells is indexed by position until its next resolve.
+    if (!gpuMode)
+        flowWatches.erase(std::remove_if(flowWatches.begin(), flowWatches.end(), [&](const FlowWatch& w) { return now - w.lastAsk > 3.0; }), flowWatches.end());
+    // CPU mode has no flux readout yet (the value stays 0); only the GPU path reads flow back (GpuFlowRead).
     for (FlowWatch& w : flowWatches)
         if (w.body == body.id && fabsf(w.r - radius) < 0.01f && Vector3DistanceSqr(w.local, local) < 0.25f) { w.lastAsk = now; return w.value; }
     FlowWatch w; w.body = body.id; w.local = local; w.r = radius; w.lastAsk = now;
@@ -2123,11 +2277,17 @@ float Fluid::ReleasedNaturalFlow() {
 }
 
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
-    const float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    std::lock_guard<std::mutex> c(cmdMx);
+    // What earlier takes here have already promised and the snapshot doesn't show yet (#1677).
+    for (const Command& p : pendingTakes)
+        if (p.body == body.id && p.fluid == kind && Vector3Distance(p.c, local) < p.r + radius) have -= p.m3;
     const float t = std::min(m3, have);
     if (t <= 0.0f) return 0.0f;
-    std::lock_guard<std::mutex> c(cmdMx);
-    commands.push_back({ 1, body.id, local, radius, t, kind });
+    Command cmd{ 1, body.id, local, radius, t, kind };
+    cmd.seq = ++takeSeq;
+    commands.push_back(cmd);
+    pendingTakes.push_back(cmd);
     return t;
 }
 
@@ -2139,6 +2299,14 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
 }
 
 float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
+Fluid::Ledger Fluid::GetLedger() {
+    const double u = (double)WaterField::CellVolume() / 255.0; // m^3 a fill unit
+    Ledger l;
+    l.poured = ledgerUnits[kLedgerPoured].load() * u; l.taken = ledgerUnits[kLedgerTaken].load() * u;
+    l.takenFree = ledgerUnits[kLedgerTakenFree].load() * u; l.spring = ledgerUnits[kLedgerSpring].load() * u;
+    l.dried = ledgerUnits[kLedgerDried].load() * u;
+    return l;
+}
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {
     if (!dynamic_cast<const PlanetField*>(body.field.get()) || rate <= 0.0f) return;
@@ -2284,6 +2452,19 @@ void UpdateRiverFlow() {
             const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
             WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
             RequestRemesh(*body, b.mid, b.radius);
+            // The site bricks already classified on that link took its old flow as their source level: classify them again
+            // (keeping their water) so they follow the new one (#1675). A brick reaches the bounds up to its half diagonal.
+            const float reach = b.radius + 0.5f * 1.7321f * (float)B * WaterField::CellSize();
+            for (auto& s : sites) {
+                if (s->body != bodyId) continue;
+                for (auto& kv : s->bricks) {
+                    Brick* br = kv.second.get();
+                    if (!br->ready) continue;
+                    if (Vector3Distance(s->cellCentre(br->bi * B + B / 2, br->bj * B + B / 2, br->bk * B + B / 2), b.mid) > reach) continue;
+                    br->ready = false; br->keepFill = true;
+                    if (std::find(s->pending.begin(), s->pending.end(), br) == s->pending.end()) s->pending.push_front(br);
+                }
+            }
         }
     }
     static double last = -1.0;
@@ -2301,6 +2482,7 @@ void UpdateRiverFlow() {
     const float simDt = wallTime ? dt : (float)steps * 0.05f / (float)kSubsteps;
     static const bool flowLog = EnvFlag("RAYLIBGAME_RIVERFLOW_LOG"); // diagnostics: each reach's measure once a second
     static std::vector<int> changed;
+    std::vector<std::pair<uint64_t, const RiverNetwork*>> nets; // the distinct networks of the sites
     for (auto& s : sites) {
         Planetoid* body = Planetoid::find(s->body);
         const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
@@ -2354,10 +2536,14 @@ void UpdateRiverFlow() {
                 const int up = s->releases[sp.rel].upPiece;
                 sp.scale = up >= 0 ? std::clamp(net->flowOf(up), 0.0f, 1.5f) : 1.0f;
             }
+        if (std::find(nets.begin(), nets.end(), std::make_pair(s->body, net)) == nets.end()) nets.push_back({ s->body, net });
+    }
+    // Each network eases once a tick, however many sites sit on its body (#1676).
+    for (const auto& [bodyId, net] : nets) {
         changed.clear();
         if (!net->stepFlow(std::min(dt, 2.0f), changed)) continue; // a long gap (a load, a stall) must not jump the river: it eases at its speed
         for (int piece : changed)
-            if (refreshQueued.insert({ s->body, piece }).second) refreshQueue.push_back({ s->body, piece });
+            if (refreshQueued.insert({ bodyId, piece }).second) refreshQueue.push_back({ bodyId, piece });
     }
 }
 
@@ -2387,6 +2573,7 @@ void Fluid::Update(Scene& world, float dt) {
         if (++lsTicks % 40 == 0) { printf("fluid lockstep: %lld waits, %.1f s waited in all\n", lsTicks, waited); fflush(stdout); }
     }
     accum = std::min(accum - kTickSeconds, 0.1);
+    ++diagTicks;
     UpdatePartSnaps(world); // build parts placed or removed: refresh the water there (#391)
     bool work;
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }
@@ -2401,6 +2588,10 @@ void Fluid::Update(Scene& world, float dt) {
             for (const Site::Spring& sp : s->springs) if (!work && SpringWants(*s, sp)) work = true; // #645: inflow continues while everything sleeps
             if (work) break;
         }
+        // (#454) Every 2 s a pass dries the films in sleeping bricks (publishBrick): the job runs for it though all sleep.
+        static int filmDryTicks = 0;
+        static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
+        if (!noEvap && ++filmDryTicks >= kFilmDryTicks) { filmDryTicks = 0; gFilmDryDue = true; if (!sites.empty()) work = true; }
         UpdateRiverFlow(); // #656
         if (!work) return;
         // Snapshot the bodies the job may touch (fields are immutable; edits are copy-on-write).
@@ -2411,7 +2602,7 @@ void Fluid::Update(Scene& world, float dt) {
         for (uint64_t id : ids)
             if (Planetoid* p = Planetoid::find(id)) {
                 auto ps = partSnaps.find(id);
-                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr };
+                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr, FluidGravityScale(*p) };
             }
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
@@ -2428,7 +2619,11 @@ void Fluid::Update(Scene& world, float dt) {
     (void)world;
     { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
-    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // (#1672) A step dropped before it starts (unloadWorld's clearQueued) still clears `running`: the guard goes with the
+    // dropped job, or WaitIdle (Reset, Save) spun forever and quit-to-menu or load froze.
+    struct StepGuard { bool ran = false; ~StepGuard() { if (!ran) running = false; } };
+    auto guard = std::make_shared<StepGuard>();
+    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [guard] { RunJob(); guard->ran = true; running = false; });
     // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
     // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
     if (lockstep) WaitIdle();
@@ -2472,8 +2667,10 @@ namespace {
     }
 }
 
+float Fluid::GravityScale(const Planetoid& body) { return FluidGravityScale(body); }
+
 float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
-    constexpr float kRhoG = 1000.0f * 9.81f; // Pa per metre of water
+    const float kRhoG = 1000.0f * 9.81f * FluidGravityScale(body); // Pa per metre of water (the body's g, #1942)
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
@@ -2489,7 +2686,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
         const uint8_t kind = fl & kKindMask;
         std::unordered_set<int64_t> seen;
         std::deque<std::array<int, 3>> q;
-        q.push_back({ ci, cj, ck }); seen.insert(Key(ci, cj, ck));
+        q.push_back({ ci, cj, ck }); seen.insert(CellKey(ci, cj, ck));
         float level = -1e9f, top = (float)ck + 1.0f;
         static const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
         while (!q.empty() && seen.size() < 20000) {
@@ -2500,7 +2697,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
                 uint8_t nf, nfl, nsh;
                 if (!s.cell(nx, ny, nz, nf, nfl, nsh) || (nfl & kSolid)) continue;
                 if (nf > 0 && (nfl & kKindMask) != kind) continue;
-                if (nf + nsh >= 255) { if (seen.insert(Key(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
+                if (nf + nsh >= 255) { if (seen.insert(CellKey(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
                 else if (nf > 0) level = std::max(level, nz + (nsh + nf) / 255.0f); // a partial cell: the surface
                 else if (dd[2] == 1) level = std::max(level, (float)nz);      // open air right over a full cell
             }
@@ -2541,10 +2738,15 @@ float Fluid::SurfaceAbove(const Planetoid& body, Vector3 local, float reach) {
         if (s.body != body.id) continue;
         uint8_t f, fl, sh; float frac;
         if (!PubCell(s, local, 0, f, fl, &frac, &sh) || f == 0) continue;
-        float h = (sh + f) / 255.0f - frac;
-        for (int k = 1; k <= (int)(reach / WaterField::CellSize()) && sh + f >= 255; ++k) {
-            if (!PubCell(s, local, k, f, fl, nullptr, &sh) || (fl & kSolid)) break;
-            h += f > 0 ? (sh + f) / 255.0f : 0.0f;
+        // Up the column while the cell above holds water: a part-full cell under water is not the surface (#1168: a column
+        // the pressure pass is lifting has cells a little short of full, and moving water has them too); it counts as full.
+        float part = (sh + f) / 255.0f, h = part - frac;
+        for (int k = 1; k <= (int)(reach / WaterField::CellSize()); ++k) {
+            uint8_t f2, fl2, sh2;
+            if (!PubCell(s, local, k, f2, fl2, nullptr, &sh2) || (fl2 & kSolid) || f2 == 0) break;
+            h += 1.0f - part;           // the cell below is under water: full
+            part = (sh2 + f2) / 255.0f;
+            h += part;
         }
         return h * WaterField::CellSize(); // m
     }
@@ -2575,34 +2777,105 @@ float Fluid::VolumeAbove(const Planetoid& body, Vector3 local, float radius, flo
     return (float)vol;
 }
 
+namespace {
+    // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry): 0, 10 (a spring) or 100.
+    float GeneratedWaterAt(const Planetoid& body, Vector3 local, float radius) {
+        if (WaterField::CellFill(*WaterField::Current(), body.id, local, 0) >= 0) return 0.0f;
+        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+        if (!pf) return 0.0f;
+        const float d = Vector3Length(local);
+        const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
+        float level = pf->seaLevelRadius();
+        const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
+        if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
+        if (d - radius < level && pf->radius + pf->elevation(dir) < level) return ws.kind == 3 ? 10.0f : 100.0f;
+        return 0.0f;
+    }
+
+    // Every published cell of a site within `radius` (a cube of cells) of a body-local point: fn(fill, flags). Walks the
+    // site's bricks, not its cells (#1736: a 16 m query looped a 129^3 cube of quarter-metre cells, ~2.1 M lookups a site,
+    // 118 ms every half second from the cave audio): a site whose bricks don't reach the cube, and every missing brick in
+    // it, cost nothing. The same cells as the cell-by-cell walk.
+    template <typename Fn> void ForCellsNear(const WaterField::Site& s, Vector3 local, float radius, Fn&& fn) {
+        if (local.x + radius < s.lo.x || local.x - radius > s.hi.x || local.y + radius < s.lo.y || local.y - radius > s.hi.y ||
+            local.z + radius < s.lo.z || local.z - radius > s.hi.z) return; // (the cube's corners stay within radius * sqrt 3 of the point)
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        const int R = (int)ceilf(radius / WaterField::CellSize());
+        for (int bk = FloorDiv(ck - R, B); bk <= FloorDiv(ck + R, B); ++bk)
+            for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
+                for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi) {
+                    const WaterField::Brick* b = s.brick(bi, bj, bk);
+                    if (!b) continue;
+                    for (int k = std::max(ck - R, bk * B); k <= std::min(ck + R, bk * B + B - 1); ++k)
+                        for (int j = std::max(cj - R, bj * B); j <= std::min(cj + R, bj * B + B - 1); ++j)
+                            for (int i = std::max(ci - R, bi * B); i <= std::min(ci + R, bi * B + B - 1); ++i) {
+                                const int idx = ((k - bk * B) * B + (j - bj * B)) * B + (i - bi * B);
+                                fn(b->fill[idx], b->flags[idx]);
+                            }
+                }
+    }
+}
+
+bool Fluid::AnyWaterNear(const Planetoid& body, Vector3 local, float radius, float minVolume) {
+    // (#1736) WaterAt's cube is (2 * radius / 0.25 m)^3 cells per site (2 M at 16 m): too slow for a yes/no every 0.5 s.
+    // Here: only the bricks the cube touches (a handful of hash lookups), only those the solver says hold water (kinds
+    // bit 0), and at most kCellBudget cell reads in all. A budget that runs out with a wet brick in reach answers yes
+    // (this is a "look first" test; a false yes only costs the caller its precise follow-up).
+    constexpr int kCellBudget = 20000;
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    int budget = kCellBudget;
+    float total = 0.0f;
+    const float cellVol = WaterField::CellVolume();
+    for (const WaterField::Site& s : snapNow->sites) {
+        if (s.body != body.id) continue;
+        // Site bounds (body-local, axis-aligned) against the query box.
+        if (local.x + radius < s.lo.x || local.x - radius > s.hi.x || local.y + radius < s.lo.y || local.y - radius > s.hi.y ||
+            local.z + radius < s.lo.z || local.z - radius > s.hi.z) continue;
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int R = (int)ceilf(radius / WaterField::CellSize());
+        const int ci0 = (int)floorf(fx) - R, cj0 = (int)floorf(fy) - R, ck0 = (int)floorf(fz) - R;
+        const int ci1 = (int)floorf(fx) + R, cj1 = (int)floorf(fy) + R, ck1 = (int)floorf(fz) + R;
+        for (int bk = FloorDiv(ck0, B); bk <= FloorDiv(ck1, B); ++bk)
+            for (int bj = FloorDiv(cj0, B); bj <= FloorDiv(cj1, B); ++bj)
+                for (int bi = FloorDiv(ci0, B); bi <= FloorDiv(ci1, B); ++bi) {
+                    const WaterField::Brick* b = s.brick(bi, bj, bk);
+                    if (!b || !(b->kinds & 1)) continue; // no water (kind 0) in the brick
+                    const int i0 = std::max(ci0, bi * B), i1 = std::min(ci1, bi * B + B - 1);
+                    const int j0 = std::max(cj0, bj * B), j1 = std::min(cj1, bj * B + B - 1);
+                    const int k0 = std::max(ck0, bk * B), k1 = std::min(ck1, bk * B + B - 1);
+                    for (int k = k0; k <= k1; ++k)
+                        for (int j = j0; j <= j1; ++j)
+                            for (int i = i0; i <= i1; ++i) {
+                                const int ix = ((k - bk * B) * B + (j - bj * B)) * B + (i - bi * B);
+                                const uint8_t fl = b->flags[ix];
+                                if (CellKind(fl) != 0) continue;
+                                total += (fl & kSource) ? 100.0f : b->fill[ix] / 255.0f * cellVol;
+                                if (total > minVolume) return true;
+                            }
+                    budget -= (i1 - i0 + 1) * (j1 - j0 + 1) * (k1 - k0 + 1);
+                    if (budget <= 0) return true;
+                }
+    }
+    // Generated water, as WaterAt's fallback (cheap: one elevation sample).
+    return total <= 0.0f && GeneratedWaterAt(body, local, radius) > minVolume;
+}
+
 float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
     float total = 0.0f;
     {
         const WaterField::SnapshotPtr snapNow = WaterField::Current();
-    for (const WaterField::Site& s : snapNow->sites) {
+        for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
-            const int R = (int)ceilf(radius / WaterField::CellSize());
-            for (int dk = -R; dk <= R; ++dk)
-                for (int dj = -R; dj <= R; ++dj)
-                    for (int di = -R; di <= R; ++di) {
-                        const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
-                        uint8_t f, fl;
-                        if (PubCell(s, q, 0, f, fl) && CellKind(fl) == 0) total += (fl & kSource) ? 100.0f : f / 255.0f * WaterField::CellVolume();
-                    }
+            ForCellsNear(s, local, radius, [&](uint8_t f, uint8_t fl) {
+                if (CellKind(fl) == 0) total += (fl & kSource) ? 100.0f : f / 255.0f * WaterField::CellVolume();
+            });
         }
     }
     // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry).
-    if (total <= 0.0f && WaterField::CellFill(*WaterField::Current(), body.id, local, 0) < 0) {
-        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
-        if (pf) {
-            const float d = Vector3Length(local);
-            const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
-            float level = pf->seaLevelRadius();
-            const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
-            if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
-            if (d - radius < level && pf->radius + pf->elevation(dir) < level) total = ws.kind == 3 ? 10.0f : 100.0f;
-        }
-    }
+    if (total <= 0.0f) total = GeneratedWaterAt(body, local, radius);
     return total;
 }
 
@@ -2611,16 +2884,11 @@ namespace {
     void FluidVolumes(const Planetoid& body, Vector3 local, float radius, float out[8]) {
         for (int k = 0; k < 8; ++k) out[k] = 0.0f;
         const WaterField::SnapshotPtr snapNow = WaterField::Current();
-    for (const WaterField::Site& s : snapNow->sites) {
+        for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
-            const int R = (int)ceilf(radius / WaterField::CellSize());
-            for (int dk = -R; dk <= R; ++dk)
-                for (int dj = -R; dj <= R; ++dj)
-                    for (int di = -R; di <= R; ++di) {
-                        const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
-                        uint8_t f, fl;
-                        if (PubCell(s, q, 0, f, fl) && !(fl & (kSolid | kSource))) out[CellKind(fl)] += f / 255.0f * WaterField::CellVolume();
-                    }
+            ForCellsNear(s, local, radius, [&](uint8_t f, uint8_t fl) { // (#1736) brick by brick
+                if (!(fl & (kSolid | kSource))) out[CellKind(fl)] += f / 255.0f * WaterField::CellVolume();
+            });
         }
     }
 }
@@ -2775,7 +3043,8 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
     }
     // Only with flow state to restore: RiversOf builds the whole river network on first use (~470 ms), which an empty
     // "riverflow 0 0" line made every load pay up front (#737; it is built later anyway, when water first needs it).
-    if (!cur.empty() || !set.empty())
+    // A save at another cell size drops its sites, and the flow state goes with them: the reaches that set it start over (#1674).
+    if (keep && (!cur.empty() || !set.empty()))
         if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
 }
 
@@ -2787,6 +3056,47 @@ void Fluid::WaitIdle() {
 }
 
 void Fluid::SetSpeed(int steps) { speed = std::max(1, steps); }
+
+int Fluid::HeadAt(const Planetoid& body, Vector3 local) {
+    if (running.load()) WaitIdle();
+    std::lock_guard<std::mutex> lock(simMx);
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        int ci, cj, ck; s->cellOf(local, ci, cj, ck);
+        Brick* b; int i;
+        if (s->cell(ci, cj, ck, b, i)) return b->press.size() == (size_t)B3 ? b->press[i] : -1;
+    }
+    return -1;
+}
+
+// Tests (#1168): the simulation's cells whose centres lie in a box, summed - their water, or the water they can hold.
+static double SumCellsIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half, bool capacity) {
+    if (running.load()) Fluid::WaitIdle();
+    std::lock_guard<std::mutex> lock(simMx);
+    double v = 0.0;
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        for (auto& kv : s->bricks) {
+            const Brick& b = *kv.second;
+            if (!b.ready) continue;
+            for (int i = 0; i < B3; ++i) {
+                const int units = capacity ? ((b.flags[i] & kSolid) ? 0 : 255 - b.shut[i]) : b.fill[i];
+                if (units == 0) continue;
+                const int x = i % B, y = (i / B) % B, z = i / (B * B);
+                const Vector3 d = Vector3Subtract(s->cellPoint(b.bi * B + x + 0.5f, b.bj * B + y + 0.5f, b.bk * B + z + 0.5f), centre);
+                if (fabsf(Vector3DotProduct(d, ax)) <= half.x && fabsf(Vector3DotProduct(d, ay)) <= half.y && fabsf(Vector3DotProduct(d, az)) <= half.z)
+                    v += units / 255.0 * WaterField::CellVolume();
+            }
+        }
+    }
+    return v;
+}
+double Fluid::VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
+    return SumCellsIn(body, centre, ax, ay, az, half, false);
+}
+double Fluid::CapacityIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
+    return SumCellsIn(body, centre, ax, ay, az, half, true);
+}
 
 bool Fluid::Asleep() {
     // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
@@ -2801,6 +3111,20 @@ bool Fluid::Asleep() {
         for (auto& kv : s->bricks) if (kv.second->active) return false;
     }
     return true;
+}
+
+// Tests (#1131): whether the brick holding a body-local point is in steady flow (#674), so a check can wake that brick
+// with a pour and see it, instead of comparing global counts (whichever bricks happened to be steady).
+bool Fluid::SteadyAt(const Planetoid& body, Vector3 local) {
+    std::lock_guard<std::mutex> lock(simMx);
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        int ci, cj, ck;
+        s->cellOf(local, ci, cj, ck);
+        Brick* b; int i;
+        if (s->cell(ci, cj, ck, b, i)) return b->steady;
+    }
+    return false;
 }
 
 std::string Fluid::DebugAwake() {
@@ -2854,9 +3178,10 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
-        uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) continue;
-        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
+        uint8_t f, fl, sh = 0;
+        if (!PubCell(s, local, 0, f, fl, nullptr, &sh)) continue;
+        // shut: the cell's ground share (#454), last so the older "fill N flags X" prefix still parses (#1520)
+        return TextFormat("fill %d flags %s%s%s%s%s shut %d", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "", sh);
     }
     return "no site";
 }
@@ -2869,3 +3194,14 @@ bool Fluid::GeneratedWaterValid(uint64_t body, Vector3 local) {
     const int f = WaterField::CellFill(*WaterField::Current(), body, local, 0);
     return f < 0 || f > 0;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// #1855 M9: cells past +-1024 (a 256 m site of 0.25 m cells reaches them) kept apart by their keys; brick keys merged them.
+TEST(Fluid, CellKeysStayApartPastTheBrickKeysRange) {
+    EXPECT_EQ(Key(0, 0, 1030), Key(0, 1, -1018)) << "the old collision (the reason for CellKey)";
+    EXPECT_NE(CellKey(0, 0, 1030), CellKey(0, 1, -1018));
+    EXPECT_NE(CellKey(-1100, 1100, 0), CellKey(-1100, 1099, 0));
+    EXPECT_NE(CellKey(5000, -5000, 2000), CellKey(5000, -5000, -2000));
+}
+#endif

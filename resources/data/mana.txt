@@ -1,0 +1,43 @@
+# Mana kinds and their algebra (#1001, magic doc section 3; #1248 step 1, #1252 step 5).
+# Four base kinds; every other kind is one step from them (no compound of compounds in v1):
+#   combine <a> <b>  two different base kinds make a compound (A + B)
+#   invert <a>       a kind turned to its opposite effect (~A): a base kind, or Life
+#   cancel           A + ~A annihilate into this kind (Aether, the neutral hub); exactly one kind cancels
+# One kind per line, fields separated by |:
+#   kind <id> | <name> | latin <flavour> | base | combine <a> <b> | invert <a> | cancel | status <effect> | colour <RRGGBB> | slice 1
+# - name: the plain English name in the game; latin: flavour shown in the tome only.
+# - status: the combat status effect the kind applies (burn, chill, shock, bleed, poison, knockback, root; none if absent).
+# - slice 1: in the first playable slice (decided 2026-11-21: the four bases, Aether, Frost, Storm, Shard, Rot).
+#   The other kinds come with alchemy and wards.
+# - At most 16 kinds in v1 (decided): no inverses beyond these.
+# A kind and its inverse never share a jar or a pipe: they cancel.
+
+kind earth   | Earth   | latin Terra    | base                | colour 9a7b4f | slice 1
+kind water   | Water   | latin Aqua     | base                | colour 3f8fd8 | slice 1
+kind fire    | Fire    | latin Ignis    | base                | status burn      | colour e8642c | slice 1
+kind air     | Air     | latin Aer      | base                | colour d8e8f0 | slice 1
+
+kind steam   | Steam   | latin Vapor    | combine fire water  | status knockback | colour c8c8d0
+kind magma   | Magma   | latin Magma    | combine earth fire  | status burn      | colour b8381c
+kind life    | Life    | latin Vita     | combine earth water | colour 58c050
+kind storm   | Storm   | latin Tempestas| combine fire air    | status shock     | colour a080ff | slice 1
+kind mist    | Mist    | latin Nebula   | combine water air   | colour a8c8d8
+kind shard   | Shard   | latin Fragmen  | combine earth air   | status bleed     | colour 60e0d0 | slice 1
+
+kind frost   | Frost   | latin Gelum    | invert fire         | status chill     | colour 9ad8ff | slice 1
+kind void    | Void    | latin Vacuos   | invert earth        | colour 402858
+kind still   | Still   | latin Quies    | invert air          | status root      | colour 788090
+kind drought | Drought | latin Siccitas | invert water        | colour d8b860
+kind rot     | Rot     | latin Putredo  | invert life         | status poison    | colour 708030 | slice 1
+
+kind aether  | Aether  | latin Aether   | cancel              | colour f0e8ff | slice 1
+
+# Conversion rates (all guesses; research pages and machines raise each toward 90%, magic doc 3.1):
+#   combine: 1 A + 1 B -> 2 x rate of the compound;  split: a compound -> rate of each part
+#   invert: 1 A -> rate ~A;  cancel: 1 A + 1 ~A -> 2 x rate Aether;  alone: 1 A -> rate Aether;  from_aether: 1 Aether -> rate of a base
+rate combine     0.8
+rate split       0.7
+rate invert      0.7
+rate cancel      0.9
+rate alone       0.6
+rate from_aether 0.85

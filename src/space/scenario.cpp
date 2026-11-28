@@ -1,5 +1,7 @@
 // Tier 2 scenario runner (#870); see scenario.h.
 #include "scenario.h"
+#include "cliptelemetry.h"
+#include "survival.h"
 #include "fluid.h"
 #include "player.h"
 #include "playersession.h"
@@ -21,6 +23,10 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <atomic>
+#include <mutex>
+#include <set>
+#include <thread>
 
 extern const char* kGameVersion;
 int ScenarioProc_Run(const std::string& cmdline, double timeoutSec);
@@ -34,6 +40,8 @@ int ScenarioReport_Main(int argc, char** argv); // scenarioreport.cpp
 int ScenarioAB_Main(int argc, char** argv);     // scenarioab.cpp (#871)
 
 namespace fs = std::filesystem;
+void Scenario_LegacySetup();  // (below: the legacyDrives mode)
+void Scenario_LegacyFinish();
 
 namespace {
 
@@ -171,6 +179,20 @@ void WriteResults() {
 void Finish(const std::string& verdict, const std::string& reason) {
     if (R.finished) return;
     if (R.step < (int)R.stepTimes.size()) { R.stepTimes[R.step].sim = SimTime() - R.stepSim; R.stepTimes[R.step].wall = Wall() - R.stepWall; }
+    {   // (#1442) frames whose view was not normal gameplay: the camera or the player inside solid
+        const ClipStats& k = ClipTelemetry_Stats();
+        R.metrics.push_back({ "camera_inside_solid_frames", "frames", (double)k.cameraFrames, true });
+        R.metrics.push_back({ "player_inside_solid_frames", "frames", (double)k.playerFrames, true });
+        if (k.cameraFrames) R.notes.push_back(TextFormat("the camera was inside solid for %ld frames (%.2f s, t=%.2f-%.2f s, %.1f m deep at most)",
+                                                         k.cameraFrames, k.cameraSeconds, k.cameraFirst, k.cameraLast, k.cameraDepthMax));
+        if (k.playerFrames) R.notes.push_back(TextFormat("the player was inside solid for %ld frames (%.2f s, t=%.2f-%.2f s, %.1f m deep at most)",
+                                                         k.playerFrames, k.playerSeconds, k.playerFirst, k.playerLast, k.playerDepthMax));
+        if (R.def.expectNoClip && k.cameraFrames + k.playerFrames > 0 && verdict == "PASS") {
+            R.checks.push_back({ "no frame with the camera or the player inside solid", "==", "0", std::to_string(k.cameraFrames) + " camera, " + std::to_string(k.playerFrames) + " player frames",
+                                 (double)(k.cameraFrames + k.playerFrames), false });
+            R.finished = false; Finish("FAIL", "the camera or the player was inside solid (expectNoClip)"); return;
+        }
+    }
     R.finished = true;
     R.verdict = verdict; R.reason = reason;
     int failed = 0; for (const auto& c : R.checks) failed += c.pass ? 0 : 1;
@@ -181,6 +203,34 @@ void Finish(const std::string& verdict, const std::string& reason) {
     Profiler_PrintSummary();
     Profiler_Enable(false);
     WriteResults();
+}
+
+// (#1422) A hang the frame-driven backstops can't see: the main loop blocked inside a step, or the run held in a loading
+// screen (Scenario_Frame runs only out of it). The main thread touches this clock each frame (Scenario_Frame,
+// Scenario_Loading); a watchdog thread ends the run with a clear TIMEOUT when it stops for the scenario's wall backstop (at
+// least 120 s), naming the step and the last note, instead of leaving the parent to kill a silent process.
+std::atomic<double> gLastTouch{ 0.0 };
+std::mutex gWatchMx; // the watchdog's message vs the main thread's notes
+void StartWatchdog() {
+    static bool started = false;
+    if (started) return;
+    started = true;
+    gLastTouch = Wall();
+    std::thread([] {
+        const double limit = std::max(120.0, R.def.timeout * WallFactor());
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (R.finished) return;
+            const double idle = Wall() - gLastTouch.load();
+            if (idle < limit) continue;
+            std::lock_guard<std::mutex> lock(gWatchMx);
+            const std::string step = R.step < (int)R.def.steps.size() ? R.def.steps[R.step].name : std::string("?");
+            const std::string last = R.notes.empty() ? std::string("none") : R.notes.back();
+            Finish("TIMEOUT", "the main loop stopped in step '" + step + "' (no frame for " + Num(idle) + " s; last note: " + last + ")");
+            fflush(stdout);
+            std::_Exit(3);
+        }
+    }).detach();
 }
 
 void SetEnv(const std::string& k, const std::string& v) {
@@ -301,6 +351,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--scenario-report") { std::exit(ScenarioReport_Main(argc - i - 1, argv + i + 1)); }
+        else if (a == "--tier-report" && i + 1 < argc) { std::exit(QuestBook_TierReport(argv[i + 1])); } // (#1199)
         else if (a == "--scenario-ab") { std::exit(ScenarioAB_Main(argc - i - 1, argv + i + 1)); } // (#871) scenarioab.cpp
         else if (a == "--scenario" && i + 1 < argc) sel = argv[++i];
         else if (a == "--scenario-parity" && i + 1 < argc) { // (#968) NAME [TICKS]: the fluid's CPU and GPU paths compared
@@ -358,7 +409,10 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     SetEnv("RAYLIBGAME_BENCH_WARMUP", "0");
     for (const auto& kv : R.def.env) SetEnv(kv.first, kv.second);
 
-    std::vector<std::string> a = { argv[0], "--bench", "0.1", "--seed", std::to_string(R.def.seed), "--preload", "0", "--cache-verts", "1", "--window", "960", "540" };
+    // RAYLIBGAME_SCENARIO_SEED: another world (a place a playtest saw, its save's seed); results then aren't comparable.
+    const char* seedEnv = getenv("RAYLIBGAME_SCENARIO_SEED");
+    const std::string seed = seedEnv && *seedEnv ? std::string(seedEnv) : std::to_string(R.def.seed);
+    std::vector<std::string> a = { argv[0], "--bench", "0.1", "--seed", seed, "--preload", "0", "--cache-verts", "1", "--window", "960", "540" };
     if (R.def.world == ScenarioWorld::Sandbox) a.push_back("--sandbox");
     if (R.record) {
         // Low-res and every 4th frame, to the run's own folder (local temp): deleted on PASS (scenario.h). Implies a fixed
@@ -393,14 +447,18 @@ void Scenario_Setup() {
     const char* shared = R.def.world == ScenarioWorld::Sandbox ? "saves/sandbox.sav.erosion" : "saves/bench.sav.erosion";
     if (fs::exists(shared, ec)) fs::copy_file(shared, save + ".erosion", fs::copy_options::overwrite_existing, ec);
     SetWorldSavePath(save.c_str());
+    Scenario_LegacySetup(); // (legacyDrives: which bench*.png exist before the run)
 }
 
 bool Scenario_Frame(Scene& world) {
     if (!R.active || R.finished) return false;
     const double now = Wall();
+    gLastTouch = now; // (#1422) the watchdog's clock
     if (R.simStart < 0.0) {
         R.simStart = SimTime(); R.stepSim = SimTime(); R.wallStart = now; R.stepWall = now; R.lastBeat = now;
         printf("scenario: %s: world ready after %.1f s; %zu steps\n", R.def.name.c_str(), now - R.startedAt, R.def.steps.size());
+        ClipTelemetry_Reset(); // (#1442) the scenario's own frames, not the loading screen's
+        StartWatchdog(); // (#1422)
         if (Profiler_On()) { GpuTimer_KeepOn(true); Profiler_Reset(); } // (#871) the passes as cpu:/gpu: zones; the summary from here on (not the loading)
     }
     ScenarioCtx c{ world };
@@ -408,11 +466,18 @@ bool Scenario_Frame(Scene& world) {
     c.field = c.body ? dynamic_cast<const PlanetField*>(c.body->field.get()) : nullptr;
     c.T = SimTime() - R.simStart;
     c.t = SimTime() - R.stepSim;
+    c.wall = now - R.stepWall;
+    c.clock = R.def.realTime ? std::min(c.t, c.wall) : c.t;
     c.frame = R.frames++;
     c.stepIndex = R.step;
-    if (!c.field) { Finish("ERROR", "no planet field (body 0)"); return false; }
-    if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
-        const bool wall = c.T <= R.def.timeout;
+    if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
+    if (R.def.legacyDrives) { // a legacy bench drives: never hold it; its shots are compared when the game ends
+        if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
+        return false;
+    }
+    const double runClock = R.def.realTime ? std::min(c.T, now - R.wallStart) : c.T; // (#1972) as c.clock
+    if (runClock > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
+        const bool wall = runClock <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
                               (wall ? " x " + Num(WallFactor()) + " of wall time (sim only " + Num(c.T) + " s: the run stopped advancing)" : " of sim time") +
                               (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
@@ -445,15 +510,35 @@ bool Scenario_Frame(Scene& world) {
             Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " checks failed" : R.checks.empty() ? "no checks" : "");
             return false;
         }
-    } else if (c.t > st.deadline) {
-        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + " s sim" + (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
+    } else if (c.clock > st.deadline) {
+        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + (R.def.realTime ? " s of both sim and wall time" : " s sim") +
+                           (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
         return false;
     }
     return true;
 }
 
+// (#1422) Each frame of a loading screen once the world was ready: a heartbeat, and the wall backstop (Scenario_Frame doesn't
+// run then, so a run held in a loading screen ended only when the parent killed it, with nothing said).
+void Scenario_Loading() {
+    if (!R.active || R.finished || R.simStart < 0.0) return;
+    const double now = Wall();
+    gLastTouch = now;
+    if (now - R.lastBeat >= 5.0) {
+        R.lastBeat = now;
+        printf("scenario: %s heartbeat: a loading screen during step %d/%zu '%s' (wall %.0f s)\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
+               R.def.steps[R.step].name.c_str(), now - R.wallStart);
+    }
+    if (now - R.wallStart > R.def.timeout * WallFactor()) {
+        Finish("TIMEOUT", "a loading screen held step '" + R.def.steps[R.step].name + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
+        fflush(stdout);
+        std::_Exit(3);
+    }
+}
+
 void Scenario_Shutdown() {
     if (!R.active) return;
+    Scenario_LegacyFinish(); // (legacyDrives: the shots against their baselines)
     if (!R.finished) Finish("ERROR", "the game ended before the scenario finished");
     std::error_code ec;
     // Give the planet's erosion bake back to the bench save, so the next run doesn't bake again.
@@ -497,7 +582,7 @@ void ScenarioCtx::metric(const std::string& name, double v, const std::string& u
     R.metrics.push_back({ name, unit, v, lowerIsBetter });
     printf("scenario: metric %s = %s %s\n", name.c_str(), Num(v).c_str(), unit.c_str());
 }
-void ScenarioCtx::note(const std::string& text) { R.notes.push_back(text); printf("scenario: %s\n", text.c_str()); }
+void ScenarioCtx::note(const std::string& text) { { std::lock_guard<std::mutex> lock(gWatchMx); R.notes.push_back(text); } printf("scenario: %s\n", text.c_str()); }
 void ScenarioCtx::fail(const std::string& reason) { Finish("FAIL", reason); }
 void ScenarioCtx::waitingFor(const std::string& what) { R.waiting = what; }
 void ScenarioCtx::keepCapture(const std::string& reason) { R.keep = true; R.keepReason = reason; }
@@ -516,4 +601,118 @@ void ScenarioCtx::camera(Vector3 eyeLocal, Vector3 targetLocal, Vector3 upLocal)
     world.camera.up = body->dirToWorld(upLocal);
     player.flyMode = true;
     player.position = world.renderOrigin + world.camera.position;
+}
+
+// ---- Visual checks against baselines (#870 visual tier) ----
+std::string Scenario_RunDir() { return R.runDir; }
+std::string Scenario_BaselineDir() {
+    const char* e = getenv("RAYLIBGAME_BASELINES");
+    return e && *e ? e : "//DEWEYSERVER/files/claude-media/raylib-baselines";
+}
+namespace {
+// Compares the image file `shotPath` with the scenario's baseline NAME.png (both shrunk to 320x180): records a check (the %
+// of pixels that differ by more than 24 in a channel, under `tolPct`) and a metric (the mean difference). No baseline (or
+// RAYLIBGAME_BASELINE_UPDATE=1): the shot becomes it. On a failure a difference image goes next to the shot.
+bool CompareShot(const std::string& name, const std::string& shotPath, double tolPct) {
+    std::error_code ec;
+    std::string scen = R.def.name;
+    for (char& ch : scen) if (ch == '/' || ch == ':' || ch == '\\') ch = '_';
+    const std::string dir = Scenario_BaselineDir() + "/" + scen, base = dir + "/" + name;
+    const bool update = getenv("RAYLIBGAME_BASELINE_UPDATE") && atoi(getenv("RAYLIBGAME_BASELINE_UPDATE")) != 0;
+    if (!fs::exists(shotPath, ec)) return Record("shot " + name, 0.0, "is", "taken", false, "no image at " + shotPath);
+    if (update || !fs::exists(base, ec)) {
+        fs::create_directories(dir, ec);
+        fs::copy_file(shotPath, base, fs::copy_options::overwrite_existing, ec);
+        const std::string why = update ? "updated (RAYLIBGAME_BASELINE_UPDATE)" : "recorded (there was none)";
+        R.notes.push_back("baseline " + name + " " + why + ": " + base);
+        printf("scenario: baseline %s %s: %s\n", name.c_str(), why.c_str(), base.c_str());
+        return Record("shot " + name, 0.0, "<=", Num(tolPct) + " % differing", !ec, ec ? "could not write the baseline: " + ec.message() : "baseline " + why);
+    }
+    Image a = LoadImage(shotPath.c_str()), b = LoadImage(base.c_str());
+    if (!a.data || !b.data) { if (a.data) UnloadImage(a); if (b.data) UnloadImage(b); return Record("shot " + name, 100.0, "<=", Num(tolPct) + " % differing", false, "could not read the shot or its baseline"); }
+    constexpr int W = 320, H = 180;
+    ImageFormat(&a, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8); ImageFormat(&b, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    ImageResize(&a, W, H); ImageResize(&b, W, H);
+    const Color* pa = (const Color*)a.data; const Color* pb = (const Color*)b.data;
+    int differ = 0; double sum = 0.0;
+    Image d = GenImageColor(W, H, BLACK);
+    Color* pd = (Color*)d.data;
+    for (int i = 0; i < W * H; ++i) {
+        const int dr = abs(pa[i].r - pb[i].r), dg = abs(pa[i].g - pb[i].g), db = abs(pa[i].b - pb[i].b);
+        const int m = std::max(dr, std::max(dg, db));
+        sum += (dr + dg + db) / 3.0;
+        if (m > 24) ++differ;
+        pd[i] = Color{ (unsigned char)std::min(255, dr * 4), (unsigned char)std::min(255, dg * 4), (unsigned char)std::min(255, db * 4), 255 };
+    }
+    const double pct = 100.0 * differ / (W * H);
+    R.metrics.push_back({ "shot " + name + " mean difference", "/255", sum / (W * H), true });
+    const bool ok = Record("shot " + name, pct, "<=", Num(tolPct) + " % differing", pct <= tolPct, "against " + base);
+    if (!ok) {
+        const std::string diffPath = shotPath.substr(0, shotPath.size() - 4) + "_diff.png";
+        ExportImage(d, diffPath.c_str());
+        R.keep = true; R.keepReason = "shot " + name + " differs from its baseline (" + diffPath + ")";
+    }
+    UnloadImage(a); UnloadImage(b); UnloadImage(d);
+    return ok;
+}
+// (legacyDrives) the bench_*.png files in the working directory and their write times when the run began
+std::map<std::string, fs::file_time_type> pngsBefore;
+void SnapshotPngs() {
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(fs::current_path(ec), ec)) {
+        const std::string n = e.path().filename().string();
+        if (n.rfind("bench", 0) == 0 && e.path().extension() == ".png") pngsBefore[n] = fs::last_write_time(e.path(), ec);
+    }
+}
+void CompareLegacyShots() {
+    std::error_code ec;
+    std::vector<std::string> names = R.def.shots;
+    if (names.empty())
+        for (const auto& e : fs::directory_iterator(fs::current_path(ec), ec)) {
+            const std::string n = e.path().filename().string();
+            if (n.rfind("bench", 0) != 0 || e.path().extension() != ".png") continue;
+            auto it = pngsBefore.find(n);
+            if (it == pngsBefore.end() || fs::last_write_time(e.path(), ec) > it->second) names.push_back(n);
+        }
+    std::sort(names.begin(), names.end());
+    fs::create_directories(R.runDir + "/shots", ec);
+    for (const std::string& n : names) {
+        const std::string kept = R.runDir + "/shots/" + n;
+        fs::copy_file(n, kept, fs::copy_options::overwrite_existing, ec);
+        CompareShot(n, ec ? n : kept, R.def.shotTolerance);
+    }
+    if (names.empty()) Record("screenshots written", 0.0, ">", "0", false, "the legacy bench wrote no bench*.png");
+}
+}
+bool ScenarioCtx::shot(const std::string& name, double tolerancePct) {
+    std::error_code ec;
+    fs::create_directories(R.runDir + "/shots", ec);
+    const std::string file = name.size() > 4 && name.substr(name.size() - 4) == ".png" ? name : name + ".png";
+    const std::string path = R.runDir + "/shots/" + file;
+    Image im = LoadImageFromScreen();
+    ExportImage(im, path.c_str());
+    UnloadImage(im);
+    return CompareShot(file, path, tolerancePct);
+}
+void ScenarioCtx::grab(const std::string& name) {
+    const char* dir = getenv("RAYLIBGAME_SLIDE_SHOTS");
+    if (!dir || !*dir) return;
+    static std::set<std::string> taken; // once per name: steps call it every frame
+    if (!taken.insert(name).second) return;
+    std::string base = R.def.name;
+    for (char& ch : base) if (ch == '/' || ch == ':') ch = '_';
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string path = std::string(dir) + "/" + base + "-" + name + ".png";
+    Image im = LoadImageFromScreen();
+    const bool ok = ExportImage(im, path.c_str());
+    UnloadImage(im);
+    note("slide shot " + path + (ok ? "" : " FAILED"));
+}
+void Scenario_LegacySetup() { if (R.active && R.def.legacyDrives) SnapshotPngs(); }
+void Scenario_LegacyFinish() {
+    if (!R.active || !R.def.legacyDrives || R.finished) return;
+    CompareLegacyShots();
+    int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
+    Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " shots differ from their baselines" : "");
 }

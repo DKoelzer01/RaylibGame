@@ -1,0 +1,9 @@
+version 13
+seed 42
+player_local -51873.246808 28942.537485 -8829.893970
+strokes 1
+dig -51869.445312 28940.416016 -8829.248047 -0.090951
+plot 1 chest 0 fire 1
+chest_item iron_ingot 40
+chest_item copper_ingot 7
+fire_coal 3

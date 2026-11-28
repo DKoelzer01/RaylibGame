@@ -26,7 +26,9 @@ if (-not (Test-Path "$BuildDir/CMakeCache.txt")) {
     cmake -S . -B $BuildDir -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release "-DGAME_OUTPUT_DIR=$repo/$BuildDir/bin" | Out-Host
     if ($LASTEXITCODE -ne 0) { Write-Error "capture: configure failed (rerun once: the first configure can fail on an AV scan)"; exit 1 }
 }
-cmake --build $BuildDir -j 8 2>&1 | Select-Object -Last 15 | Out-Host
+# Merge stderr inside cmd, not PowerShell: PS 5.1 turns each stderr line (any compiler warning) into a
+# NativeCommandError, which $ErrorActionPreference = 'Stop' makes fatal (#492). Success = the exit code only.
+cmd /c "cmake --build `"$BuildDir`" -j 8 2>&1" | Select-Object -Last 15 | Out-Host
 if ($LASTEXITCODE -ne 0) { Write-Error "capture: build failed - fix it before capturing"; exit 1 }
 $exe = Join-Path $repo "$BuildDir/bin/game.exe"
 if (-not (Test-Path $exe)) { Write-Error "capture: $exe not found"; exit 1 }
@@ -68,6 +70,9 @@ if ($rec.Count -gt 0) {
         Write-Host "capture: frames $($m.Groups[2].Value)  (frame_0000.png ...)"
         if ($m.Groups[4].Value -ne '-') { Write-Host "capture: sheet  $($m.Groups[4].Value -replace '/', '\')" }
         if ($m.Groups[3].Value -ne '-') { Write-Host "capture: gif    $($m.Groups[3].Value -replace '/', '\')" }
+        # A Read of a UNC path always asks for permission: on deweyserver, look with media_get instead (SKILL.md).
+        $mm = [regex]::Match($m.Groups[1].Value, '(?i)claude-media/(.+?)/?$')
+        if ($mm.Success) { Write-Host "capture: look   mcp__deweyserver__media_get(path=""$($mm.Groups[1].Value)"")  (frame=N for one frame; not Read)" }
     }
 } else {
     Get-Content $log -Tail 12 | Out-Host

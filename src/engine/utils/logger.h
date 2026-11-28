@@ -41,6 +41,16 @@ LogLevel Log_Level();
 bool Log_ParseLevel(const char* name, LogLevel& out); // trace, debug, info, warn(ing), error, fatal, off
 const char* Log_LevelName(LogLevel l);
 void Log_Open(const char* path);  // truncates; nothing is written before (or without) it
+// (#1526) Crash reports: the build in every crash entry, and where a minidump goes (Windows; default saves/logs).
+void Log_SetBuild(const char* build);
+void Log_SetCrashDir(const char* dir);
+// (#1527) A console Ctrl+C / Ctrl+Break / close (a timeout or a kill from a script) ends the process at once with a
+// log line: no fatal box, no std::terminate from threads still running. A --server installs its own handler on top.
+void Log_InstallConsoleStop();
+bool Log_Interactive();           // a person may be watching: stdout is a console or there is none (a double-click start)
+// --test-crash KIND (#1526): segv | thread-segv | assert | terminate | fatal | wait (sleeps until killed) | ctrl-c (#1527: a
+// running thread, then Ctrl+C on itself after RAYLIBGAME_TEST_CRASH_DELAY s)
+void Log_TestCrash(const char* kind);
 void Log_SetThreadName(const char* name); // this thread's name in its lines (default t1, t2, ...)
 void Log_Flush();                 // a bug report reads log.txt mid-run (#169)
 void Log_StartupChecks();         // warnings every log should carry (e.g. the debugger's debug heap)

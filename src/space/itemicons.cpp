@@ -586,7 +586,6 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (is({ "quartz", "amethyst", "ruby", "sapphire", "emerald" })) { Gem(cv, c); return; }
     if (is({ "granite", "basalt", "sandstone", "limestone", "marble" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "brick" || ends("_brick")) { Cube(cv, c, Pat::Brick); return; } // fired and dressed stone (#1098)
-    if (is({ "concrete" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "heat_shield_tile") { Cube(cv, c, Pat::Tiles); return; }
     if (id == "farmland") { Cube(cv, { 0.4f, 0.27f, 0.16f }, Pat::Soil); return; }
     if (is({ "sand", "regolith", "dirt", "helium3_dust" })) { Pile(cv, c); return; }
@@ -606,6 +605,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (is({ "oxygen_canister", "hydrogen", "oxygen", "helium3", "oxygen_tank_module" })) { Canister(cv, c); return; }
     if (is({ "power_cell", "battery_pack" })) { Cell(cv, c); return; }
     if (id == "berries") { Berries(cv, c); return; }
+    if (id == "bitterroot") { Root(cv, c); return; } // (#1374)
     if (id == "bread") { Bread(cv, c); return; }
     if (ends("_meat")) { Meat(cv, c); return; }
     if (id == "egg") { Egg(cv, c); return; }
@@ -641,6 +641,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (id == "rebreather") { Module(cv, c, Sym::Drop); return; }
     if (id == "thruster_pack") { Module(cv, c, Sym::Arrow); return; }
     if (id == "thermal_regulator") { Module(cv, c, Sym::Snow); return; }
+    if (id == "cooling_vest") { Module(cv, c, Sym::Drop); return; } // (#1472) coolant
     if (id == "grip_boots") { cv.paint(Poly({ { 20, 10 }, { 36, 10 }, { 36, 40 }, { 54, 44 }, { 54, 54 }, { 18, 54 } }), Lin(c)); cv.paint(Box(36, 55, 19, 2.5f), Flat(kDark), 0.5f); return; }
     // By kind.
     switch (d.kind) {

@@ -1,8 +1,11 @@
 #include "scene.h"
+#include "biomevariants.h"
+#include "envflag.h"
 #include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
 #include "gputimer.h"
+#include "gpucompute.h"
 #include "utils/logger.h"
 #include "profiler.h"
 #include "worldtypes.h"
@@ -54,6 +57,36 @@ static std::string ExpandShaderIncludes(const std::string& path, std::vector<std
     return out;
 }
 
+// (#1769) A raylib Shader around an already linked program (a cached binary): the locations LoadShaderFromMemory sets, the
+// same way (raylib 5.5 rcore.c, its names from config.h, which raylib keeps to itself). The default attributes were bound before
+// the original link and the binary keeps them.
+static Shader ShaderFromProgram(unsigned id) {
+    Shader s{};
+    if (id == 0) return s;
+    s.id = id;
+    s.locs = (int*)RL_CALLOC(RL_MAX_SHADER_LOCATIONS, sizeof(int)); // UnloadShader frees it with RL_FREE
+    for (int i = 0; i < RL_MAX_SHADER_LOCATIONS; i++) s.locs[i] = -1;
+    s.locs[SHADER_LOC_VERTEX_POSITION] = rlGetLocationAttrib(id, "vertexPosition");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD01] = rlGetLocationAttrib(id, "vertexTexCoord");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD02] = rlGetLocationAttrib(id, "vertexTexCoord2");
+    s.locs[SHADER_LOC_VERTEX_NORMAL] = rlGetLocationAttrib(id, "vertexNormal");
+    s.locs[SHADER_LOC_VERTEX_TANGENT] = rlGetLocationAttrib(id, "vertexTangent");
+    s.locs[SHADER_LOC_VERTEX_COLOR] = rlGetLocationAttrib(id, "vertexColor");
+    s.locs[SHADER_LOC_VERTEX_BONEIDS] = rlGetLocationAttrib(id, "vertexBoneIds");
+    s.locs[SHADER_LOC_VERTEX_BONEWEIGHTS] = rlGetLocationAttrib(id, "vertexBoneWeights");
+    s.locs[SHADER_LOC_MATRIX_MVP] = rlGetLocationUniform(id, "mvp");
+    s.locs[SHADER_LOC_MATRIX_VIEW] = rlGetLocationUniform(id, "matView");
+    s.locs[SHADER_LOC_MATRIX_PROJECTION] = rlGetLocationUniform(id, "matProjection");
+    s.locs[SHADER_LOC_MATRIX_MODEL] = rlGetLocationUniform(id, "matModel");
+    s.locs[SHADER_LOC_MATRIX_NORMAL] = rlGetLocationUniform(id, "matNormal");
+    s.locs[SHADER_LOC_BONE_MATRICES] = rlGetLocationUniform(id, "boneMatrices");
+    s.locs[SHADER_LOC_COLOR_DIFFUSE] = rlGetLocationUniform(id, "colDiffuse");
+    s.locs[SHADER_LOC_MAP_DIFFUSE] = rlGetLocationUniform(id, "texture0");
+    s.locs[SHADER_LOC_MAP_SPECULAR] = rlGetLocationUniform(id, "texture1");
+    s.locs[SHADER_LOC_MAP_NORMAL] = rlGetLocationUniform(id, "texture2");
+    return s;
+}
+
 bool HotShader::reloadIfChanged(bool force) {
     // Two file stats per shader cost ~20 us each on Windows: 20 a frame was ~0.35 ms of the main
     // thread. Look at most twice a second (each shader keeps its own clock).
@@ -71,7 +104,18 @@ bool HotShader::reloadIfChanged(bool force) {
     const std::string vsSrc = ExpandShaderIncludes(vsPath, incs), fsSrc = ExpandShaderIncludes(fsPath, incs);
     includes = incs;
     for (const std::string& inc : includes) fsTime = std::max(fsTime, GetFileModTime(inc.c_str()));
-    Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
+    // (#1769) The linked program from an earlier run when there is one (raylib's default vertex shader, used when vsSrc is
+    // empty, is part of the program: its version is in the key).
+    const std::string cacheFile = ProgramCache_Usable() ? ProgramCache_Path(fsPath, std::string(RAYLIB_VERSION) + "\n" + vsSrc + "\n// fragment\n" + fsSrc) : std::string();
+    Shader s{};
+    if (!cacheFile.empty()) s = ShaderFromProgram(ProgramCache_Load(cacheFile));
+    if (s.id == 0) {
+        const double t0 = GetTime();
+        s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
+        // a slow compile stalls its frame and every scenario's start (a cold driver cache)
+        if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Shader %s: compiled and linked in %.0f ms", fsPath.c_str(), ms);
+        if (!cacheFile.empty() && IsShaderValid(s) && s.id != rlGetShaderIdDefault()) ProgramCache_Save(cacheFile, s.id);
+    }
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
         LOG_ERROR("Shader", "Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
@@ -127,6 +171,11 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 static float FarForestOn() {
     static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 0.0f : 1.0f; }();
     return on;
+}
+// #1979: per-tree height, width, lean and leaf hue (trees.vs / trees.fs). On by default; RAYLIBGAME_TREE_VARIATION=0: off (A/B).
+static float TreeVariationOff() {
+    static const float off = [] { const char* e = getenv("RAYLIBGAME_TREE_VARIATION"); return e && e[0] && !EnvFlag("RAYLIBGAME_TREE_VARIATION") ? 1.0f : 0.0f; }();
+    return off;
 }
 
 static int SceneSamples() {
@@ -235,6 +284,7 @@ Scene::Scene(std::string name, bool isActive)
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     if (const char* e = getenv("RAYLIBGAME_WIDE_SHADOWS")) wideShadows = e[0] != '0';
+    if (const char* e = getenv("RAYLIBGAME_WIDE_EVERY")) wideEvery = std::max(1, atoi(e)); // (#1163) A/B: 4 was the old cadence
     if (wideShadows) { shadowWide = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE); terrainMaterial.maps[MATERIAL_MAP_EMISSION].texture = shadowWide.depth; } // #138
     terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
@@ -554,7 +604,7 @@ void Scene::drawScene(int gamestate) {
                     // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
                     tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
                     rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-                    { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+                    { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -594,6 +644,7 @@ void Scene::drawScene(int gamestate) {
         SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
         const float farForest = FarForestOn();
         SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
+        BiomeTint_Bind(s); // (#2032) ground grass and the canopy tint by biome
     }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
@@ -644,7 +695,7 @@ void Scene::drawScene(int gamestate) {
         // come from above; fragSky keeps it out of buried ground). User 2026-11-14: the first strength (1.0) read almost as
         // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
         // scales it (1 = the first strength, 0 = the old nights).
-        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.09f; // (#897: 0.25 read too bright, user 2026-11-18; #1117: 0.12 -> 0.09, nights a little darker, user 2026-11-20)
+        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.06f; // (#1166: 0.09 -> 0.06, user: "could still be darker"; #897: 0.25 read too bright, user 2026-11-18; #1117: 0.12 -> 0.09, nights a little darker, user 2026-11-20)
         effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale * (1.0f - 0.5f * moonLight))); // half of it while the moon lights directly (#224)
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
@@ -652,6 +703,9 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Lerp(effFog, Vector3Scale(grey, atmDensity), weatherCloud * 0.6f);
         effFogDensity += atmDensity * (weatherCloud * weatherCloud / 9000.0f + weatherFog / 60.0f);
         effAmbient = Vector3Add(effAmbient, Vector3Scale(grey, 0.05f * weatherCloud * atmDensity));
+        // (#1162) A lightning flash lifts the sky's ambient for a moment: a cool white, about twice the day sky's ambient at its
+        // peak. The world shaders scale the ambient by the sky they see (fragSky), so caves and interiors stay dark.
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.06f, 0.075f }, std::clamp(lightning, 0.0f, 1.0f) * atmDensity));
         if (alt < 0.0f && IsUnderwater(*this, camera.position)) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // in the sea (not a dry cave below sea level)
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
@@ -666,6 +720,7 @@ void Scene::drawScene(int gamestate) {
     static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
     const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
     SetShaderValue(s, GetShaderLocation(s, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
+    { static const int bounce = (getenv("RAYLIBGAME_BOUNCE") && getenv("RAYLIBGAME_BOUNCE")[0] == '0') ? 0 : 1; SetShaderValue(s, GetShaderLocation(s, "bounceOn"), &bounce, SHADER_UNIFORM_INT); } // (#898) A/B
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
@@ -749,6 +804,8 @@ void Scene::drawScene(int gamestate) {
                 SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
                 SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+                const float bolt[4] = { lightningDir.x, lightningDir.y, lightningDir.z, atmosphere.enabled ? std::clamp(lightning, 0.0f, 1.0f) : 0.0f }; // (#1162)
+                SetShaderValue(as, GetShaderLocation(as, "lightning"), bolt, SHADER_UNIFORM_VEC4);
             }
             {   // #142: the physical sky (the LUT in the dome material's emission slot, as the wide shadow map rides in the terrain's)
                 const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;
@@ -826,7 +883,7 @@ void Scene::drawScene(int gamestate) {
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3); // (#1859 L6: the sun, as their rings; lightDirection is the moon at night)
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -838,6 +895,7 @@ void Scene::drawScene(int gamestate) {
         }
         // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
         auto setFoliageLighting = [&](Shader& sh) {
+            BiomeTint_Bind(sh); // (#2032) the per-biome tints (grass.fs, trees.fs)
             const int slot = 6;
             rlActiveTextureSlot(slot);
             rlEnableTexture(shadowMap.depth.id);
@@ -946,7 +1004,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-            { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+            { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
@@ -1059,6 +1117,28 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         KickGpu();
 
+        // (#1164 part 3) Screen-space reflections on the water: the opaque scene so far, resolved, with this view's
+        // matrix; the water shader marches its reflected ray through the depth and falls back to the sky. Reverse-Z only
+        // (the resolve targets exist there). RAYLIBGAME_WATER_SSR=0: off.
+        {
+            static const bool ssrAllowed = !(getenv("RAYLIBGAME_WATER_SSR") && getenv("RAYLIBGAME_WATER_SSR")[0] == '0');
+            Shader& ws = water.shader;
+            unsigned sc = 0, sd = 0; int sw = 0, sh = 0;
+            const bool ssr = ssrAllowed && revZ && SceneTarget_ResolveOpaque(sc, sd, sw, sh);
+            const int on = ssr ? 1 : 0;
+            SetShaderValue(ws, GetShaderLocation(ws, "ssrOn"), &on, SHADER_UNIFORM_INT);
+            if (ssr) {
+                rlActiveTextureSlot(16); rlEnableTexture(sc); // units 16-17: 13-14 are the local lights (locallights.cpp), 15 the haze LUT
+                rlActiveTextureSlot(17); rlEnableTexture(sd);
+                rlActiveTextureSlot(0);
+                const int u13 = 16, u14 = 17;
+                const float size[2] = { (float)sw, (float)sh };
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrColor"), &u13, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrDepth"), &u14, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrSize"), size, SHADER_UNIFORM_VEC2);
+                SetShaderValueMatrix(ws, GetShaderLocation(ws, "ssrViewProj"), MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            }
+        }
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).
@@ -1184,6 +1264,9 @@ RenderOriginScope::RenderOriginScope(Scene& s, const DVec3& centre) : scene(s), 
     scene.renderOrigin = centre;
     scene.camera.position = Vector3Subtract(scene.camera.position, d);
     scene.camera.target = Vector3Subtract(scene.camera.target, d);
+    // (#1360) the atmosphere's centre is a render-space copy the frame setup took: it moves with the bodies, or code in the
+    // scope (a server's survival step for a remote player) measured the air from the server's origin, not the player's
+    scene.atmosphere.centre = Vector3Subtract(scene.atmosphere.centre, d);
     scene.syncRenderPositions();
 }
 
@@ -1192,6 +1275,7 @@ RenderOriginScope::~RenderOriginScope() {
     scene.renderOrigin = saved;
     scene.camera.position = Vector3Add(scene.camera.position, d);
     scene.camera.target = Vector3Add(scene.camera.target, d);
+    scene.atmosphere.centre = Vector3Add(scene.atmosphere.centre, d); // (#1360)
     scene.syncRenderPositions();
 }
 
@@ -1201,3 +1285,24 @@ void Scene::setCameraWorld(DVec3 position, DVec3 target) {
     camera.target = (target - position).toFloat();
     syncRenderPositions();
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1360): a RenderOriginScope moves every render-space copy with the origin ----
+#include "unit_helpers.h"
+
+// A server steps each remote player in a scope centred on it: the atmosphere's centre (a copy the frame setup took) must
+// be in the scope's frame, so a player 60 km from the planet's centre is in the air wherever the server's own origin is.
+TEST(RenderOriginScope, TheAtmosphereMovesWithTheOrigin) {
+    Scene& world = UnitTest::FieldOnlyScene();
+    world.renderOrigin = DVec3{ 0, 0, 0 };
+    world.atmosphere.centre = { 0, -80000.0f, 0 }; // the server's origin 80 km above the planet's centre (out of the air)
+    const DVec3 player{ 0, -20000.0, 0 };          // a player on the ground, 60 km from the centre
+    {
+        RenderOriginScope frame(world, player);
+        const Vector3 pr = (player - world.renderOrigin).toFloat();
+        EXPECT_NEAR(Vector3Distance(pr, world.atmosphere.centre), 60000.0f, 1.0f) << "the player's own distance to the centre";
+    }
+    EXPECT_NEAR(world.atmosphere.centre.y, -80000.0f, 1.0f) << "restored after the scope";
+    world.atmosphere.centre = { 0, 0, 0 };
+}
+#endif

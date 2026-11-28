@@ -72,6 +72,7 @@ SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only t
     SuitStats s;
     const SuitDef* suit = FindSuit(st.worn);
     if (suit) { s.slots = suit->slots; s.oxygen = suit->oxygen; s.power = suit->power; s.vacuum = suit->vacuum; }
+    int thermal = 0; // (#1472) the thermal regulator's rating with suit power
     for (const std::string& id : st.fitted) {
         const ModuleDef* m = id.empty() ? nullptr : FindModule(id);
         if (!m) continue;
@@ -84,22 +85,20 @@ SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only t
         else if (e == "food") s.food = std::max(0.0f, s.food - m->value);
         else if (e == "underwater") s.underwater = std::min(s.underwater, m->value);
         else if (e == "insulation") s.cold = std::min(s.cold, m->value);
-        else if (e == "thermal") { s.cold = 0.0f; s.heatProof = true; }
+        else if (e == "thermal") { s.cold = 0.0f; thermal = std::max(thermal, (int)m->value); }
+        else if (e == "heat") s.heat = std::max(s.heat, (int)m->value); // (#1472) a cooling vest
         else if (e == "grip") s.grip = true;
         else if (e == "scanner") s.scanner = true;
+        else if (e == "gas") s.gasSensor = true;
         else if (e == "hover") s.hover = true;
     }
+    if (thermal > 0) s.heat = std::max(s.heat, s.powered ? thermal : 1); // (#1472) the regulator needs suit power for its full rating
     return s;
 }
 
 // Fit the slot list to the suit: extra modules go back to the inventory.
 void Resize(int slots) {
-    for (size_t i = slots; i < S().fitted.size(); ++i) if (!S().fitted[i].empty()) inventory.add(S().fitted[i], 1);
-    std::vector<std::string> keep;
-    for (const std::string& id : S().fitted) if (!id.empty() && (int)keep.size() < slots) keep.push_back(id);
-    // Modules past the new count that were packed forward stay fitted; the rest went back above.
-    S().fitted.assign(slots, "");
-    for (size_t i = 0; i < keep.size(); ++i) S().fitted[i] = keep[i];
+    for (const std::string& id : Suit_PackSlots(S().fitted, slots)) inventory.add(id, 1);
 }
 
 void Scan(Scene& world) {
@@ -107,7 +106,7 @@ void Scan(Scene& world) {
     Planetoid* body = player.nearest;
     const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
     if (!pf) return;
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
     const Vector3 up = Vector3Normalize(me);
     Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
     east = Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(east);
@@ -271,6 +270,21 @@ bool Suit_LoadLine(const char* tok, FILE* f) {
     return true;
 }
 SuitStats Suit_StatsOf(const SuitState& st) { return StatsOf(st); } // (#337)
+int Suit_HeatRating(const SuitState& st) { return StatsOf(st).heat; }
+
+std::vector<std::string> Suit_PackSlots(std::vector<std::string>& fitted, int slots) {
+    // One pass (#1840): the old code returned everything past the new count and then also kept it when it packed forward
+    // into a freed slot ({a, "", b} into 2 slots: b both fitted and back in the inventory).
+    std::vector<std::string> keep, spill;
+    for (const std::string& id : fitted) {
+        if (id.empty()) continue;
+        if ((int)keep.size() < slots) keep.push_back(id);
+        else spill.push_back(id);
+    }
+    fitted.assign(std::max(0, slots), "");
+    for (size_t i = 0; i < keep.size(); ++i) fitted[i] = keep[i];
+    return spill;
+}
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
@@ -288,5 +302,41 @@ TEST(SuitStats, NoThrusterPackMeansNoJetpack) { // (#1087: a server's remote pla
     SuitStats unpowered = packed; unpowered.powered = false;
     Suit_ApplyStatsTo(q, unpowered);
     EXPECT_FLOAT_EQ(q.jetpackAccel, 0.0f) << "no power, no jetpack";
+}
+
+// (#1840) A smaller suit packs the modules forward; only the ones that don't fit come out, each once.
+TEST(SuitStats, PackSlotsReturnsEachModuleOnce) {
+    std::vector<std::string> f = { "a", "", "b" };
+    std::vector<std::string> spill = Suit_PackSlots(f, 2);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "b" })) << "b packs forward into the free slot";
+    EXPECT_TRUE(spill.empty()) << "and isn't also given back (the duplicate)";
+    f = { "a", "b", "c", "" };
+    spill = Suit_PackSlots(f, 2);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "b" }));
+    EXPECT_EQ(spill, (std::vector<std::string>{ "c" }));
+    f = { "a" };
+    spill = Suit_PackSlots(f, 3);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "", "" })) << "a bigger suit: free slots after";
+    EXPECT_TRUE(spill.empty());
+    f = { "a", "b" };
+    spill = Suit_PackSlots(f, 0);
+    EXPECT_TRUE(f.empty());
+    EXPECT_EQ(spill.size(), 2u);
+}
+
+// (#1472) The heat rating: the best module wins (no stacking); the regulator needs suit power for its 2.
+TEST(SuitStats, HeatRatingBestModuleWinsAndTheRegulatorNeedsPower) {
+    SuitState s; s.worn = "field_suit"; s.fitted = { "", "", "" };
+    EXPECT_EQ(Suit_HeatRating(s), 0) << "no heat gear";
+    s.fitted = { "cooling_vest", "", "" };
+    EXPECT_EQ(Suit_HeatRating(s), 1) << "a cooling vest";
+    s.fitted = { "cooling_vest", "cooling_vest", "" };
+    EXPECT_EQ(Suit_HeatRating(s), 1) << "two vests don't stack";
+    s.fitted = { "thermal_regulator", "", "" };
+    EXPECT_EQ(Suit_HeatRating(s), 1) << "a regulator without suit power";
+    s.fitted = { "thermal_regulator", "battery_pack", "" };
+    EXPECT_EQ(Suit_HeatRating(s), 2) << "a regulator with a battery pack";
+    s.fitted = { "cooling_vest", "thermal_regulator", "battery_pack" };
+    EXPECT_EQ(Suit_HeatRating(s), 2) << "the best wins";
 }
 #endif

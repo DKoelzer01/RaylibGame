@@ -369,13 +369,16 @@ namespace {
     // thread so the frame doesn't wait for the share.
     std::atomic<bool> shotWanted{ false };
     bool RecordingFrame(bool hud) { return active && !waiting && hud == hudFrames && rendered % every == 0; }
+    std::function<std::string(const Image&)> shotExtra; // (#910) the LOD dump written beside the screenshot
     void TakeShot() {
         Image img = LoadImageFromScreen();
         ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         const std::string d = Resolve("shot-" + Today("%H%M%S"));
-        std::thread([img, d]() {
+        std::string extra = shotExtra ? shotExtra(img) : std::string();
+        std::thread([img, d, extra]() {
             std::error_code ec;
             std::filesystem::create_directories(d, ec);
+            if (!extra.empty()) if (FILE* f = fopen((d + "/lod.txt").c_str(), "wb")) { fwrite(extra.data(), 1, extra.size(), f); fclose(f); }
             const bool ok = ExportImage(img, (d + "/screenshot.png").c_str()) && ExportImage(img, (d + "/sheet.png").c_str());
             UnloadImage(img);
             printf("screenshot: %s %s\n", d.c_str(), ok ? "saved" : "FAILED");
@@ -397,6 +400,8 @@ void Recorder_DrawIndicator() {
     if (fmod(GetTime(), 1.0) < 0.6) DrawCircle(x - 17, y + fs / 2, 7.0f, RED);
     DrawText(text, x, y, fs, RAYWHITE);
 }
+
+void Recorder_SetShotExtra(std::function<std::string(const Image&)> f) { shotExtra = std::move(f); }
 void Recorder_Cue() { cued = true; }
 
 void Recorder_Update(bool worldReady) {

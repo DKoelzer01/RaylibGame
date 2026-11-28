@@ -70,6 +70,17 @@ H() { if [ -n "$list" ]; then listed headless "$@"; elif want headless; then run
 L() { if [ -n "$list" ]; then listed local "$@"; elif want local; then run "$@"; fi; }
 # A tools/test_*.sh script in the multiplayer set (tag, name for --list); the caller runs it when this returns 0.
 script() { if [ -n "$list" ]; then listed "$1" "$2"; return 1; fi; want "$1"; }
+# (#1367) A script that joins over the network: without a GameNetworkingSockets build (no EXE_GNS / build/gns, no GNS=1) it
+# is reported as SKIP with the reason, never left out of the log (the net tests silently did not run for weeks).
+netscript() {
+    script "$@" || return 1
+    if [ "$gexe" = "$exe" ] && [ "${GNS:-0}" != 1 ]; then
+        echo "=== $2" | tee -a "$log"
+        echo "bench: $2 -> SKIP (needs a GameNetworkingSockets build: EXE_GNS, build/gns/bin/game.exe or GNS=1)" | tee -a "$log"
+        return 1
+    fi
+    return 0
+}
 
 # Comments after a test: why it is local (the H tests read game state, not pixels, frames or the clock's speed).
 # "wall clock" marks a headless test whose phases or timeouts run on GetTime(): a much slower machine could change it.
@@ -217,7 +228,8 @@ multiplayer() {
     H --seed 42 --bench 3 --test-time-follow
     H --test-net-interest
     H --test-net-guard # (#349) per-client message limits: a normal client never dropped; floods and garbage kicked
-    exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 H --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap) needs GNS (else SKIP)
+    exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 RAYLIBGAME_HELLO_SECONDS=2 H --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap; #1868 silent connections closed) needs GNS (else SKIP)
+    exe="$gexe"; H --host "$sv" --bench 3 --port 27941 --test-teams; exe="$keep" # (#604, #1921) invite, accept, team chat, kick: the host's JoinTeam/SplitOff; needs GNS (else SKIP)
     H --test-server-admin
     H --seed 42 --bench 3 --test-player-cost 8 # (#768) player cost per update (reported), and determinism: a warm vs a poisoned collision cache stay bit-identical
     # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).
@@ -226,35 +238,47 @@ multiplayer() {
         EXE="$gexe" bash "$here/tools/test_server.sh" 2>&1 | grep "=== test_server" | sed 's/=== test_server: \([A-Z]*\).*/bench: server (#326): config, console, log, stop -> \1/' | tee -a "$log"
     fi
     # Admin end to end (#326 part 2, #345): chat, motd, an op's ban from chat kicks, refusals, the whitelist, the console's kick.
-    if [ "$gexe" != "$exe" ] || [ "${GNS:-0}" = 1 ] || [ -n "$list" ]; then
-        if script headless tools/test_server_admin.sh; then
-            echo "=== tools/test_server_admin.sh" | tee -a "$log"
-            EXE="$gexe" bash "$here/tools/test_server_admin.sh" 2>&1 | grep "=== test_server_admin" | sed 's/=== test_server_admin: \([A-Z]*\).*/bench: server admin end to end (#345): -> \1/' | tee -a "$log"
-        fi
+    if netscript headless tools/test_server_admin.sh; then
+        echo "=== tools/test_server_admin.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_server_admin.sh" 2>&1 | grep "=== test_server_admin" | sed 's/=== test_server_admin: \([A-Z]*\).*/bench: server admin end to end (#345): -> \1/' | tee -a "$log"
     fi
     # --join end to end: a host and two clients as separate processes (#341 core); only with a GNS build.
-    if [ "$gexe" != "$exe" ] || [ "${GNS:-0}" = 1 ] || [ -n "$list" ]; then
-        if script headless tools/test_join.sh; then
-            echo "=== tools/test_join.sh" | tee -a "$log"
-            EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
-        fi
-        if script headless "tools/test_join.sh on a non-default world (#757)"; then
-            echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
-            WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
-        fi
-        # Join-in-progress sync (#776): a client joins a host world with 3000 edits (fingerprints must match), then rejoins from its cache (fetching nothing).
-        if script headless tools/test_join_sync.sh; then
-            echo "=== tools/test_join_sync.sh" | tee -a "$log"
-            EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
-        fi
-        if script headless "tools/test_animals_net.sh (#334)"; then
-            echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
-            EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
-        fi
-        if script headless "tools/test_animals_bite.sh (#334)"; then
-            echo "=== tools/test_animals_bite.sh (#334)" | tee -a "$log"
-            EXE="$gexe" bash "$here/tools/test_animals_bite.sh" 2>&1 | grep "=== test_animals_bite" | sed 's/=== test_animals_bite: \([A-Z]*\).*/bench: an animal bites a remote player through the server (#334): -> \1/' | tee -a "$log"
-        fi
+    if netscript headless tools/test_join.sh; then
+        echo "=== tools/test_join.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+    fi
+    if netscript headless "tools/test_join.sh on a non-default world (#757)"; then
+        echo "=== tools/test_join.sh on a non-default world (#757)" | tee -a "$log"
+        WORLDGEN="ocean 0.4 mountains 1.6 cliffs 0 karst 0 erosion 0" PORT=27952 EXE="$gexe" bash "$here/tools/test_join.sh" 2>&1 | grep "^bench: join (" | tee -a "$log"
+    fi
+    # Join-in-progress sync (#776): a client joins a host world with 3000 edits (fingerprints must match), then rejoins from its cache (fetching nothing).
+    if netscript headless tools/test_join_sync.sh; then
+        echo "=== tools/test_join_sync.sh" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
+    fi
+    # Plants and farming on the server (#335), on the quick old terrain and on the default terrain (#1107: plants near the
+    # spawn of a menu-hosted game couldn't be felled)
+    if netscript headless "tools/test_net_plants.sh (#335)"; then
+        echo "=== tools/test_net_plants.sh (#335)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_net_plants.sh" 2>&1 | grep "=== test_net_plants" | sed 's/=== test_net_plants: \([A-Z]*\).*/bench: plants and farming on the server (#335): -> \1/' | tee -a "$log"
+    fi
+    if netscript headless "tools/test_net_plants.sh on the default terrain (#1107)"; then
+        echo "=== tools/test_net_plants.sh on the default terrain (#1107)" | tee -a "$log"
+        TERRAIN=default PORT=27969 EXE="$gexe" bash "$here/tools/test_net_plants.sh" 2>&1 | grep "=== test_net_plants" | sed 's/=== test_net_plants: \([A-Z]*\).*/bench: plants near the spawn on the default terrain (#1107): -> \1/' | tee -a "$log"
+    fi
+    # A menu-hosted save loaded in single player (#901): the server's record holds where the player left, and single player
+    # puts them there (as the same player)
+    if netscript headless "tools/test_hosted_load.sh (#901)"; then
+        echo "=== tools/test_hosted_load.sh (#901)" | tee -a "$log"
+        PORT=27976 EXE="$gexe" bash "$here/tools/test_hosted_load.sh" 2>&1 | grep "=== test_hosted_load\|  FAIL" | sed 's/=== test_hosted_load: \([A-Z]*\).*/bench: a hosted save loaded in single player keeps the position (#901): -> \1/' | tee -a "$log"
+    fi
+    if netscript headless "tools/test_animals_net.sh (#334)"; then
+        echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
+    fi
+    if netscript headless "tools/test_animals_bite.sh (#334)"; then
+        echo "=== tools/test_animals_bite.sh (#334)" | tee -a "$log"
+        EXE="$gexe" bash "$here/tools/test_animals_bite.sh" 2>&1 | grep "=== test_animals_bite" | sed 's/=== test_animals_bite: \([A-Z]*\).*/bench: an animal bites a remote player through the server (#334): -> \1/' | tee -a "$log"
     fi
 }
 
@@ -267,9 +291,16 @@ case "$set_name" in
     *) echo "usage: $0 [planet|eroded|space|multiplayer|all] [--only headless|local] [--list]"; exit 2 ;;
 esac
 if [ -n "$list" ]; then rm -f "$log"; exit 0; fi
-pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
+# (#1367) A tools/ script that ended without a PASS, FAIL or SKIP line (it crashed, timed out, or its result line changed
+# shape) is a FAIL, not a test that silently did not happen.
+awk '/^=== tools\// { if (cur != "" && !got) print "bench: " cur " -> FAIL (no result line)"; cur = substr($0, 5); got = 0; next }
+     /PASS|FAIL|SKIP/ { got = 1 }
+     END { if (cur != "" && !got) print "bench: " cur " -> FAIL (no result line)" }' "$log" > "$log.missing"
+if [ -s "$log.missing" ]; then tee -a "$log" < "$log.missing"; fi
+rm -f "$log.missing"
+pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log"); skip=$(grep -c "SKIP" "$log")
 what="$set_name${only:+ --only $only}"; [ "$shard_n" -gt 1 ] && what="$what --shard $shard_i/$shard_n"
-echo "=== regression ($what): $pass PASS, $fail FAIL"
+echo "=== regression ($what): $pass PASS, $fail FAIL, $skip SKIP"
 grep "FAIL" "$log"
 rm -f "$log"
 [ "$fail" -eq 0 ]

@@ -1,11 +1,14 @@
 # Loot tables for world structures (#164): table | item min-max [chance] | ...
 # Each entry rolls once: the chance (default 1) to appear, then a count in min-max.
-ruin_common   | coal 2-6 | iron_ingot 1-4 | copper_ingot 1-3 0.7 | rope 1-3 0.6 | torch 2-5 | bread 1-3 0.5 | flax_seeds 2-4 0.4 | quartz 1-2 0.25 | iron_pickaxe 1-1 0.08
+# Magic items (magic_items.txt, #1250) are only known with RAYLIBGAME_MAGIC=1: otherwise they are left out, and they come last in a
+# table so the rolls before them stay the same. A First Sight page only lies in a chest near a ley line (magicdiscovery.cpp).
+ruin_common   | coal 2-6 | iron_ingot 1-4 | copper_ingot 1-3 0.7 | rope 1-3 0.6 | torch 2-5 | bread 1-3 0.5 | flax_seeds 2-4 0.4 | quartz 1-2 0.25 | iron_pickaxe 1-1 0.08 | first_sight_page 1-1 0.12
 crash_tech    | iron_plate 3-8 | copper_wire 2-6 | basic_circuit 1-3 | power_cell 1-2 0.7 | oxygen_canister 1-2 0.6 | glass 2-4 0.5 | advanced_circuit 1-1 0.15 | lamp_upgrade 1-1 0.08
 wonder_gifts  | quartz 2-5 | amethyst 1-2 0.5 | ruby 1-1 0.3 | sapphire 1-1 0.3 | emerald 1-1 0.3 | berries 2-5 0.6
-camp_supplies | rope 1-3 | torch 2-4 | bread 1-3 0.7 | fibre 3-8 | charcoal 2-6 0.6 | flax_seeds 2-4 0.4 | stone_axe 1-1 0.3
+camp_supplies | rope 1-3 | torch 2-4 | bread 1-3 0.7 | fibre 3-8 | charcoal 2-6 0.6 | flax_seeds 2-4 0.4 | stone_axe 1-1 0.3 | first_sight_page 1-1 0.1
 hunter_camp   | hide 2-5 | raw_meat 2-4 | cooked_meat 1-3 0.6 | rope 1-2 0.5 | torch 1-3 0.5 | stone_pickaxe 1-1 0.2
-ruin_rare     | quartz 2-4 | amethyst 1-2 0.5 | ruby 1-1 0.3 | sapphire 1-1 0.3 | emerald 1-1 0.3 | iron_pickaxe 1-1 0.25 | power_cell 1-2 0.4
+ruin_rare     | quartz 2-4 | amethyst 1-2 0.5 | ruby 1-1 0.3 | sapphire 1-1 0.3 | emerald 1-1 0.3 | iron_pickaxe 1-1 0.25 | power_cell 1-2 0.4 | first_sight_page 1-1 0.3
 pod_supplies  | oxygen_canister 1-3 | power_cell 1-2 | bread 2-4 | rope 1-2 0.6 | torch 2-4 0.7 | repair_kit 1-1 0.25
 hauler_cargo  | iron_plate 4-10 | basic_circuit 1-3 0.6 | power_cell 1-3 0.6 | glass 2-6 0.5 | copper_ingot 3-8 0.6
-dungeon_rare  | quartz 2-5 | amethyst 1-2 0.6 | ruby 1-1 0.35 | sapphire 1-1 0.35 | emerald 1-1 0.35 | iron_pickaxe 1-1 0.3 | power_cell 1-3 0.5 | ancient_relic 1-1 0.15
+dungeon_rare  | quartz 2-5 | amethyst 1-2 0.6 | ruby 1-1 0.35 | sapphire 1-1 0.35 | emerald 1-1 0.35 | iron_pickaxe 1-1 0.3 | power_cell 1-3 0.5 | ancient_relic 1-1 0.15 | first_sight_page 1-1 0.3
+dungeon_key   | dungeon_key 1-1 | coal 2-6 | iron_ingot 1-4 | copper_ingot 1-3 0.7 | rope 1-3 0.6 | torch 2-5 | bread 1-3 0.5 | flax_seeds 2-4 0.4 | quartz 1-2 0.25 | iron_pickaxe 1-1 0.08 | first_sight_page 1-1 0.12

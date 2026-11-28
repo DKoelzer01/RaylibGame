@@ -1,4 +1,7 @@
 #include "survival.h"
+#include "uipalette.h"
+#include "magicdiscovery.h" // (#1250) the First Sight page is read like a consumable is used
+#include "potions.h" // (#1254) drunk like a consumable; their effects on the suit's figures
 #include "net.h"
 #include "gamerng.h"
 #include "playerinput.h"
@@ -10,11 +13,15 @@
 #include "player.h"
 #include "ship.h"
 #include "audio.h"
+#include "music.h"
 #include "particles.h"
 #include "gameui.h"
 #include "world.h"
 #include "worldtypes.h"
+#include <cstring>
+#include <string>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
@@ -31,6 +38,7 @@
 #include <unordered_map>
 #include <vector>
 #include "dungeontraps.h"
+#include "cavegas.h"
 
 // (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
@@ -43,7 +51,7 @@ const char* Difficulty_Name(int d) { return d == 0 ? "Peaceful" : d == 2 ? "Hard
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct Food { float value = 0.0f; bool raw = false; };
+    struct Food { float value = 0.0f; bool raw = false; bool cure = false; }; // cure (#1374): cures poison, eaten even when full
     std::unordered_map<std::string, Food> foods;
     bool foodsLoaded = false;
 
@@ -57,8 +65,8 @@ namespace {
             if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
             char id[64] = {}, flag[32] = {};
             float v = 0.0f;
-            // "id | value | raw" (the third column optional)
-            if (sscanf(line, " %63[^ |] | %f | %31[^ |\r\n]", id, &v, flag) >= 2) foods[id] = { v, strcmp(flag, "raw") == 0 };
+            // "id | value | raw/cure" (the third column optional)
+            if (sscanf(line, " %63[^ |] | %f | %31[^ |\r\n]", id, &v, flag) >= 2) foods[id] = { v, strcmp(flag, "raw") == 0, strcmp(flag, "cure") == 0 };
         }
         fclose(f);
     }
@@ -67,13 +75,14 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
+    int hereVariant = -1;           // ...its variant (BiomeVariants() id; -1 none)
     // (#337: for a given player - the local one, or a remote one a server simulates; only the local one sets the HUD's biome)
     float AirTemperature(Scene& world, const Player& player, const SurvivalState& survival, bool isLocal) {
         Planetoid* p = player.nearest;
         if (!p || !world.atmosphere.enabled) return NAN;
         const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
         if (!pf || pf->moon) return NAN;
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         const float d = Vector3Length(local);
         if (d < 1.0f) return NAN;
         const Vector3 up = Vector3Scale(local, 1.0f / d);
@@ -84,7 +93,10 @@ namespace {
         // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
         const float ground = pf->elevation(up);
         const PlanetField::Climate c = pf->climateAt(up, ground);
-        if (isLocal) hereBiome = pf->biomeAt(up, ground);
+        if (isLocal) { // the variant (#1977) and its type
+            hereVariant = pf->variantAt(up, ground);
+            hereBiome = hereVariant >= 0 ? BiomeVariants().defs[hereVariant].type : pf->biomeAt(up, ground);
+        }
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
@@ -92,7 +104,45 @@ namespace {
     }
 }
 
-const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
+const char* Survival_BiomeName() {
+    if (hereBiome == Biome::Count) return "";
+    // "Birch grove (Forest)": the variant, then its type (#1977; the user: variant names show in the UI).
+    const char* v = BiomeVariantName(hereVariant);
+    if (!v[0] || !strcmp(v, BiomeName(hereBiome))) return BiomeName(hereBiome);
+    // A plain char buffer: a thread_local with a destructor breaks the w64devkit link (#2015, as #1802).
+    static thread_local char label[96];
+    snprintf(label, sizeof label, "%s (%s)", v, BiomeName(hereBiome));
+    return label;
+}
+
+// (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
+// the readout flickered between cold and fine at 5 C), and the band the readout shows changes only 1 C past each edge.
+constexpr float kFeelSeconds = 4.0f;            // time constant of the body's temperature
+constexpr float kColdBelow = 5.0f, kHotAbove = 35.0f, kBandHysteresis = 1.0f;
+void Survival_FeelTemperature(SurvivalState& s, float air, float dt) {
+    if (std::isnan(air)) { s.temperature = NAN; s.tempBand = 0; return; }
+    s.temperature = std::isnan(s.temperature) ? air : s.temperature + (air - s.temperature) * (1.0f - expf(-std::max(0.0f, dt) / kFeelSeconds));
+    const float T = s.temperature;
+    if (s.tempBand < 0) { if (T > kColdBelow + kBandHysteresis) s.tempBand = T > kHotAbove + kBandHysteresis ? 1 : 0; }
+    else if (s.tempBand > 0) { if (T < kHotAbove - kBandHysteresis) s.tempBand = T < kColdBelow - kBandHysteresis ? -1 : 0; }
+    else if (T < kColdBelow - kBandHysteresis) s.tempBand = -1;
+    else if (T > kHotAbove + kBandHysteresis) s.tempBand = 1;
+}
+
+// (#1472) Heat with depth: the bands, rates, damage and hot-air levels are the user's (2026-11-27).
+constexpr float kHeatBand1Depth = 250.0f, kHeatBand2Depth = 500.0f; // m under the generated surface
+constexpr float kHotAirLevel2 = 50.0f;                               // C
+constexpr float kHeatFillOneShort = 100.0f / 180.0f, kHeatFillTwoShort = 100.0f / 30.0f, kHeatCool = 100.0f / 90.0f; // per s
+int Survival_HeatLevel(float depth, float airC) {
+    int level = depth >= kHeatBand2Depth ? 2 : depth >= kHeatBand1Depth ? 1 : 0;
+    if (!std::isnan(airC)) level = std::max(level, airC > kHotAirLevel2 ? 2 : airC > kHotAbove ? 1 : 0); // (was: heat damage over 35 C)
+    return level;
+}
+float Survival_HeatStep(float heat, int level, int rating, float dt) {
+    const int shortBy = level - rating;
+    const float rate = shortBy >= 2 ? kHeatFillTwoShort : shortBy == 1 ? kHeatFillOneShort : -kHeatCool;
+    return std::clamp(heat + rate * std::max(0.0f, dt), 0.0f, 100.0f);
+}
 bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
@@ -106,7 +156,7 @@ void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, floa
     // (#919) Athletics XP: a real drop (over 6 m/s: ~3 m on Terra) landed without harm, at most one every 10 s (no hopping).
     static double lastSoft = -1e9;
     if (local && damage <= kGrace && impactSpeed > 6.0f && SimTime() - lastSoft > 10.0 && gSkillEvent) { lastSoft = SimTime(); gSkillEvent("soft_landing", 1.0, Vector3{}); }
-    if (damage <= kGrace || survival.dead) return;
+    if (damage <= kGrace || survival.dead || survival.invulnerable) return; // (#1561: creative)
     survival.health -= damage;
     survival.lastHarm = "fall";
     survival.lastFallSpeed = impactSpeed;
@@ -123,6 +173,7 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
     survival.food = std::max(survival.food, 60.0f);
     survival.sickUntil = 0.0f;
     survival.vacuumTime = 0.0f;
+    survival.heat = 0.0f; survival.heatWarned = false; // (#1472)
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     // Wake on your bed if it still stands (#800), else at the start, at rest with the ground there (spawnOn / placeAt set
@@ -191,13 +242,19 @@ bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vecto
 
 // #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
 // UI, sounds, quests, rocket or ship; the weather and temperature at that player). Single player runs exactly as before.
-void Survival_Update(Scene& world, float dt, const PlayerInput& in) { Survival_StepFor(world, dt, in, survival, player, inventory, Suit_Stats(), true); }
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
+    survival.invulnerable = LocalSession().terrainTool.creative; // (#1561) creative: no damage, no death (a server sets its players')
+    Survival_StepFor(world, dt, in, survival, player, inventory, Potion_Suit(Potion_Local(), Suit_Stats()), true); // (#1254) potions: water breathing, cold resistance
+}
 void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local) {
     (void)inventory;
     if (survival.dead) {
         if (SimTime() - survival.deathTime > 3.0) Survival_RespawnFor(world, survival, player, local);
         return;
     }
+    // (#1561) Creative: whatever this step would take (vacuum, suffocation, hunger, heat, cold, a ship's crash) it gives back,
+    // and the player never dies; hits and falls already pass by (Combat_DamageFor, Survival_OnLandingFor).
+    const float health0 = std::max(survival.health, 1.0f);
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
     survival.breathable = false;
     survival.underwater = false;
@@ -221,7 +278,20 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
-        survival.inGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas pocket
+        const bool ventGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas vent
+        const CaveGasKind caveGas = CaveGas_At(world, player.nearest, head); // (#1472) a cave's gas pocket
+        survival.caveGas = (uint8_t)caveGas;
+        survival.inGas = ventGas || caveGas != CaveGasKind::None;
+        const float gasDrain = ventGas || caveGas == CaveGasKind::CO2 ? 3.0f : caveGas == CaveGasKind::Methane ? 1.5f : 1.0f;
+        // (#1472) A methane blast near this player (the authority's step; clients take the health the host sends).
+        if (Net_IsAuthority()) {
+            if (const float blast = CaveGas_BlastDamage(head, survival.lastGasBlast); blast > 0.0f) {
+                DamageEvent e;
+                e.amount = blast; e.kind = DamageKind::Other; e.knockback = 6.0f;
+                Combat_DamageFor(survival, player, e);
+                survival.lastHarm = "methane blast";
+            }
+        }
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
@@ -233,7 +303,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * (survival.inGas ? 3.0f : 1.0f) / stats.oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * gasDrain / stats.oxygen * dt);
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);
@@ -265,12 +335,13 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     if (survival.oxygen <= 0.0f) { survival.health -= survival.suffocationDamagePerSec * dt; survival.lastHarm = "suffocation"; }
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
-    survival.temperature = AirTemperature(world, player, survival, local);
-    if (!std::isnan(survival.temperature)) { // rain and snow chill the air
-        const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocal((player.position - world.renderOrigin).toFloat())), WorldTime()) : WeatherState{});
-        if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
-        else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
+    float air = AirTemperature(world, player, survival, local);
+    if (!std::isnan(air)) { // rain and snow chill the air
+        const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocalOf(player.position, world.renderOrigin)), WorldTime()) : WeatherState{});
+        if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) air -= 4.0f * w.precipitation;
+        else if (w.kind == WeatherKind::Snow) air -= 3.0f * w.precipitation;
     }
+    Survival_FeelTemperature(survival, air, dt);
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
@@ -282,7 +353,20 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) { survival.health -= survival.starvationDamagePerSec * dt; survival.lastHarm = "starvation"; }
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
-        if (!std::isnan(T) && T > 35.0f && !stats.heatProof) { survival.health -= 0.05f * (T - 35.0f) * dt; survival.lastHarm = "heat"; } // 40 C: 0.25 a second
+    }
+    { // (#1472) Heat: the depth band (and hot air) against the suit's heat rating fills the heat bar; full, it hurts.
+        float depth = 0.0f; // m under the generated surface (negative above it)
+        if (player.nearest) if (const auto* pf = dynamic_cast<const PlanetField*>(player.nearest->field.get())) {
+            const DVec3 p = player.nearest->toLocalD(player.position); // body-local, in doubles (Plan 11)
+            depth = pf->radius + pf->elevation(Vector3Normalize(p.toFloat())) - (float)p.length();
+        }
+        survival.heatLevel = Survival_HeatLevel(depth, survival.temperature);
+        survival.heat = Survival_HeatStep(survival.heat, survival.heatLevel, stats.heat, dt);
+        if (survival.heat >= 100.0f) { survival.health -= kHeatDamagePerSec * dt; survival.lastHarm = "heat"; }
+        if (survival.heat >= 50.0f && !survival.heatWarned) {
+            survival.heatWarned = true;
+            if (local) { GameUI_Toast(survival.heatLevel - stats.heat >= 2 ? "Heat: the suit can't stand this - get higher, fast" : "Heat building up: the suit can't stand this depth"); Audio_Play(Sfx::Error, 0.4f); }
+        } else if (survival.heat < 25.0f) survival.heatWarned = false;
     }
 
     if (in.enabled) {
@@ -297,6 +381,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     }
     // (#337) a client process's player dies only when the server says (Vitals): its own drains here just keep the bars moving
     // between the server's numbers, and never cost the inventory it mirrors.
+    if (survival.invulnerable) survival.health = std::max(survival.health, health0); // (#1561) creative: nothing taken, no death
     if (local && gNetRole == NetRole::Client) survival.health = std::max(survival.health, 0.0f);
     else if (survival.health <= 0.0f) {
         survival.health = 0.0f;
@@ -313,7 +398,7 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
     const int bh = (int)(16 * hudS);
     DrawRectangle(x, y, w, bh, Fade(BLACK, 0.55f));
     const bool flash = warn && fmodf((float)GetTime(), 0.8f) < 0.4f;
-    DrawRectangle(x, y, (int)(w * value / 100.0f), bh, flash ? RED : c);
+    DrawRectangle(x, y, (int)(w * value / 100.0f), bh, flash ? Ui().bad : c);
     DrawRectangleLines(x, y, w, bh, Fade(RAYWHITE, 0.4f));
     DrawText(TextFormat("%s %3.0f", label, value), x + (int)(6 * hudS), y + (int)hudS, (int)(14 * hudS), RAYWHITE);
 }
@@ -331,13 +416,23 @@ void Survival_DrawHUD() {
     Bar(x, y + (int)(44 * s), w260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + (int)(66 * s), w260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // Stamina (#165): spent by blocks; only while it is below full, under the others.
-    if (survival.stamina < 99.9f) Bar(x, y + (int)(88 * s), w260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
+    const bool showSta = survival.stamina < 99.9f;
+    if (showSta) Bar(x, y + (int)(88 * s), w260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
+    // (#1472) Heat: while the suit is short of the heat here or the bar has not cooled yet; it warns from half full.
+    const int heatRating = Suit_Stats().heat;
+    if (survival.heat > 0.5f || survival.heatLevel > heatRating) {
+        const int hy = y + (int)((showSta ? 110 : 88) * s);
+        Bar(x, hy, w260, "HEAT", survival.heat, { 255, 140, 70, 255 }, survival.heat >= 50.0f);
+        const bool shortNow = survival.heatLevel > heatRating;
+        DrawText(shortNow ? TextFormat("heat %d, suit stands %d", survival.heatLevel, heatRating) : "cooling", x + w260 + (int)(10 * s), hy + (int)hudS, (int)(14 * s), shortNow ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.7f));
+    }
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
     const float T = survival.temperature;
     if (!std::isnan(T)) {
-        const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
+        const int band = survival.tempBand; // (#1099: with hysteresis, not the raw 5 C / 35 C edges)
+        const Color tc = band < 0 ? Color{ 130, 190, 255, 255 } : band > 0 ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
-        const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
+        const char* note = band < 0 ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : band > 0 ? (st.heat >= survival.heatLevel ? "  heat: suit rated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + (int)(20 * s), y + (int)(68 * s), (int)(16 * s), tc);
     }
     const int tx = x + std::max(wO2, wPwr) + (int)(20 * s), fs = (int)(16 * s);
@@ -352,7 +447,7 @@ void Survival_DrawHUD() {
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
-        DrawText(msg, GetScreenWidth() / 2 - MeasureText(msg, 40) / 2, GetScreenHeight() / 2 - 30, 40, RED);
+        DrawText(msg, GetScreenWidth() / 2 - MeasureText(msg, 40) / 2, GetScreenHeight() / 2 - 30, 40, Ui().bad);
         DrawText("Respawning...", GetScreenWidth() / 2 - MeasureText("Respawning...", 20) / 2, GetScreenHeight() / 2 + 20, 20, RAYWHITE);
     }
 }
@@ -470,9 +565,21 @@ double QuestBook_CountOf(const std::string& event) { auto it = Q().counts.find(e
 int QuestBook_Tier() { return Q().tier; }
 void QuestBook_SetTier(int t) { Q().tier = std::max(0, t); }
 
+namespace { double clockLast = -1.0; }
+constexpr double kTierClockMaxStep = 5.0; // s: a longer gap between frames is a jump (a load, a skip), not play
+void QuestBook_TickClock(double simTime) {
+    if (simTime < 0.0) { clockLast = -1.0; return; } // (loading: not counted; it starts again after)
+    const double d = simTime - clockLast;
+    if (clockLast >= 0.0 && d > 0.0 && d <= kTierClockMaxStep) Q().tierSeconds[Q().tier] += d;
+    clockLast = simTime;
+}
+double QuestBook_TierSeconds(int tier) { auto it = Q().tierSeconds.find(tier); return it == Q().tierSeconds.end() ? 0.0 : it->second; }
+
 void QuestBook_Reset() {
     LoadTiers();
     Q().tier = 0;
+    Q().tierSeconds.clear();
+    clockLast = -1.0;
     Q().placed.clear();
     Q().visitedBodies.clear();
     Q().reachedOrbit = Q().visitedMoon = Q().visitedRing = false;
@@ -505,7 +612,7 @@ void QuestBook_Update() {
             if (gQuestNews) gQuestNews(news); // (a server: the team hears it)
             else { // (#226) the player's own book: a banner, a fanfare and a burst of golden sparkles round the player
                 GameUI_TierBanner(Q().tier);
-                Audio_Play(Sfx::Fanfare, 0.8f);
+                Audio_Play(Sfx::Fanfare, 0.8f); Music_Event(MusicEvent::Achievement); // (#1245)
                 if (player.nearest) {
                     ParticleBurst b;
                     b.kind = ParticleKind::Spark; b.color = { 255, 214, 110, 255 };
@@ -532,11 +639,14 @@ bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount
 
 void QuestBook_Save(FILE* f) {
     fprintf(f, "quest %d\n", Q().tier);
+    for (const auto& [t, s] : Q().tierSeconds) fprintf(f, "tier_time %d %.0f\n", t, s); // (#1199) the tier clock
     for (size_t i = 0; i < tiers.size(); ++i)
         for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
             if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
     for (const std::string& p : Q().placed) fprintf(f, "placed %s\n", p.c_str());
-    for (const auto& kv : (Q().ownObtained ? Q().obtained : inventory.obtained)) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    // (#1881) by name: the map is unordered, and a save loaded and saved again wrote its lines in another order
+    const auto& got = Q().ownObtained ? Q().obtained : inventory.obtained;
+    for (const auto& kv : std::map<std::string, double>(got.begin(), got.end())) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", Q().reachedOrbit ? 1 : 0, Q().visitedMoon ? 1 : 0, Q().visitedRing ? 1 : 0);
     for (const auto& kv : Q().counts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
     QuestTree_Save(f);
@@ -546,6 +656,7 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
     LoadTiers();
     char id[64] = {};
     if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) Q().tier = std::max(0, t); return true; }
+    if (strcmp(tok, "tier_time") == 0) { int t = 0; double s = 0; if (fscanf(f, " %d %lf", &t, &s) == 2 && t >= 0) Q().tierSeconds[t] = s; return true; } // (#1199)
     if (strcmp(tok, "quest_done") == 0) {
         int i = 0, k = 0;
         if (fscanf(f, " %d %d", &i, &k) == 2 && i >= 0 && i < (int)tiers.size() && k >= 0 && k < (int)tiers[i].tasks.size()) Q().tasksDone.insert({ i, k });
@@ -651,7 +762,7 @@ void Objectives_DrawHUD() {
     layout(true);
 }
 
-bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id) || MagicDiscovery_IsPage(id) || Potion_IsPotion(id); } // (#1254) potions
 
 // #337: using an item - the local player's (a client process asks the server instead: its inventory and vitals are the
 // server's; nothing changes here until the server's deltas come back), or a remote player's on a server (local false: no
@@ -661,6 +772,8 @@ bool Survival_UseItem(const std::string& id) {
     return Survival_UseItemFor(id, survival, inventory, Suit_Stats(), true);
 }
 bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local) {
+    if (MagicDiscovery_IsPage(id)) return local && MagicDiscovery_ReadPage(); // (#1250) the First Sight page: read it (a server's players: with the magic multiplayer step)
+    if (Potion_IsPotion(id)) return local && Potion_UseLocal(id); // (#1254) drink it (a server's players: with the magic multiplayer step)
     if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
         if (local && inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
         return false;
@@ -668,8 +781,14 @@ bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Invento
     if (Survival_IsFood(id)) {
         // Eat: not when full (no waste). Raw meat may make you sick: food drains twice as fast a minute.
         const Food& food = foods[id];
-        if (survival.food < 98.0f && inventory.remove(id, 1)) {
+        // (#1374) A curing herb is eaten even when full while poisoned: the cure is the point.
+        const bool curing = food.cure && survival.status.poison > 0.0f;
+        if ((survival.food < 98.0f || curing) && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
+            if (food.cure) {
+                if (curing && local) GameUI_Toast("The poison fades");
+                Status_CurePoison(survival.status);
+            }
             if (local) { QuestBook_Count("eat"); if (gSkillEvent) gSkillEvent("eat", 1.0, Vector3{}); } // (#919) Survival XP
             if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; if (local) GameUI_Toast("You feel sick: cook your meat"); }
             if (local) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
@@ -694,3 +813,116 @@ bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Invento
     if (local) Audio_Play(Sfx::Error, 0.4f);
     return false;
 }
+
+// (#1199) --tier-report <save>: each quest book's tier clock in a world save (single player: one; a server: one per team).
+int QuestBook_TierReport(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) { printf("tier-report: can't open %s\n", path); return 1; }
+    char tok[128];
+    int books = 0, lastTier = 1 << 30;
+    double total = 0.0;
+    while (fscanf(f, " %127s", tok) == 1) {
+        if (strcmp(tok, "tier_time") != 0) continue;
+        int t = 0; double s = 0.0;
+        if (fscanf(f, " %d %lf", &t, &s) != 2) break;
+        if (t <= lastTier) { if (books) printf("  total: %.2f h\n", total / 3600.0); printf("quest book %d:\n", ++books); total = 0.0; } // (each book saves its tiers in order)
+        lastTier = t; total += s;
+        printf("  tier %d %-28s %7.2f h\n", t, QuestBook_TierName(t), s / 3600.0);
+    }
+    if (books) printf("  total: %.2f h\n", total / 3600.0);
+    else printf("tier-report: no tier clock in %s (saved before #1199?)\n", path);
+    fclose(f);
+    return 0;
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1099): the temperature readout does not flicker at the cold edge ----
+#include "unit_helpers.h"
+
+TEST(Survival, TheFeltTemperatureEasesAndItsBandDoesNotFlickerAtTheEdge) {
+    SurvivalState s;
+    s.temperature = NAN;
+    // The air jitters +-0.8 C around the cold edge (5 C) every frame for a minute, as the sun angle, rain and the position
+    // moved it: the band settles once and stays.
+    uint32_t seed = 1099;
+    int changes = 0, band = 99;
+    for (int f = 0; f < 60 * 60; ++f) {
+        seed = seed * 1664525u + 1013904223u;
+        const float jitter = ((seed >> 8) % 1601) / 1000.0f - 0.8f;
+        Survival_FeelTemperature(s, 5.0f + jitter, 1.0f / 60.0f);
+        if (s.tempBand != band) { ++changes; band = s.tempBand; }
+    }
+    EXPECT_LE(changes, 1) << "the band settled once and did not flicker";
+    EXPECT_NEAR(s.temperature, 5.0f, 0.5f) << "the felt temperature follows the air's mean";
+    // A real change still shows within seconds: 2 C of air goes cold after a few seconds, not at once.
+    Survival_FeelTemperature(s, 2.0f, 0.5f);
+    EXPECT_GT(s.temperature, 3.5f) << "eased, not jumped";
+    for (int f = 0; f < 10 * 60; ++f) Survival_FeelTemperature(s, 2.0f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, -1);
+    EXPECT_NEAR(s.temperature, 2.0f, 0.3f);
+    // Back to 5.5 C: still cold (inside the hysteresis), 6.5 C: fine.
+    for (int f = 0; f < 30 * 60; ++f) Survival_FeelTemperature(s, 5.5f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, -1);
+    for (int f = 0; f < 30 * 60; ++f) Survival_FeelTemperature(s, 6.5f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, 0);
+    // No air (vacuum, above the air): none.
+    Survival_FeelTemperature(s, NAN, 1.0f / 60.0f);
+    EXPECT_TRUE(std::isnan(s.temperature));
+}
+
+// (#1472) Heat with depth: the bands, and the bar's times against the suit's rating (the user's numbers, 2026-11-27).
+TEST(Survival, HeatLevelByDepthAndHotAir) {
+    EXPECT_EQ(Survival_HeatLevel(0.0f, 20.0f), 0);
+    EXPECT_EQ(Survival_HeatLevel(249.0f, NAN), 0);
+    EXPECT_EQ(Survival_HeatLevel(250.0f, NAN), 1);
+    EXPECT_EQ(Survival_HeatLevel(499.0f, 20.0f), 1);
+    EXPECT_EQ(Survival_HeatLevel(500.0f, 20.0f), 2);
+    EXPECT_EQ(Survival_HeatLevel(-30.0f, 40.0f), 1) << "hot surface air (over 35 C) counts as level 1";
+    EXPECT_EQ(Survival_HeatLevel(10.0f, 55.0f), 2);
+    EXPECT_EQ(Survival_HeatLevel(600.0f, 40.0f), 2) << "the deeper of the two";
+}
+TEST(Survival, HeatBarFillsIn3MinOneShortAnd30sTwoShortAndCoolsTwiceAsFast) {
+    auto run = [](float heat, int level, int rating, float seconds) {
+        for (int f = 0; f < (int)(seconds * 60.0f + 0.5f); ++f) heat = Survival_HeatStep(heat, level, rating, 1.0f / 60.0f);
+        return heat;
+    };
+    EXPECT_NEAR(run(0.0f, 1, 0, 90.0f), 50.0f, 0.5f) << "one short: half in 90 s (the HUD's warning)";
+    EXPECT_LT(run(0.0f, 1, 0, 179.0f), 100.0f);
+    EXPECT_EQ(run(0.0f, 1, 0, 181.0f), 100.0f) << "one short: full in 3 min";
+    EXPECT_LT(run(0.0f, 2, 0, 29.5f), 100.0f);
+    EXPECT_EQ(run(0.0f, 2, 0, 30.5f), 100.0f) << "two short: full in 30 s";
+    EXPECT_EQ(run(0.0f, 2, 1, 181.0f), 100.0f) << "a vest in the deep band is one short";
+    EXPECT_EQ(run(0.0f, 2, 2, 600.0f), 0.0f) << "rated: it never fills";
+    EXPECT_EQ(run(0.0f, 0, 0, 600.0f), 0.0f);
+    EXPECT_NEAR(run(100.0f, 0, 0, 45.0f), 50.0f, 0.5f) << "cooling: half in 45 s, twice the one-short fill";
+    EXPECT_EQ(run(100.0f, 1, 1, 91.0f), 0.0f) << "a band the suit stands cools it too";
+}
+
+// (#1374) Bitterroot cures poison and is eaten even when full while poisoned; full and well, it waits like other food.
+TEST(Survival, BitterrootCuresPoisonEvenWhenFull) {
+    UnitTest::EnsureItemDB();
+    ASSERT_TRUE(Survival_IsFood("bitterroot"));
+    EXPECT_GT(Survival_FoodValue("bitterroot"), 0.0f);
+    SurvivalState s;
+    Inventory inv;
+    inv.add("bitterroot", 3);
+    const SuitStats stats{};
+    s.food = 100.0f;
+    EXPECT_FALSE(Survival_UseItemFor("bitterroot", s, inv, stats, false)) << "full and not poisoned: not eaten";
+    EXPECT_EQ(inv.count("bitterroot"), 3);
+    Status_Apply(s.status, StatusKind::Poison);
+    ASSERT_GT(s.status.poison, 0.0f);
+    EXPECT_TRUE(Survival_UseItemFor("bitterroot", s, inv, stats, false)) << "poisoned: eaten even when full";
+    EXPECT_EQ(s.status.poison, 0.0f);
+    EXPECT_EQ(inv.count("bitterroot"), 2);
+    // Hungry: eaten as food, poisoned or not.
+    s.food = 50.0f;
+    EXPECT_TRUE(Survival_UseItemFor("bitterroot", s, inv, stats, false));
+    EXPECT_GT(s.food, 50.0f);
+    // Berries do not cure.
+    Status_Apply(s.status, StatusKind::Poison);
+    inv.add("berries", 1);
+    EXPECT_TRUE(Survival_UseItemFor("berries", s, inv, stats, false));
+    EXPECT_GT(s.status.poison, 0.0f);
+}
+#endif

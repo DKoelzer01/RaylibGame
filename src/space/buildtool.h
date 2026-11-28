@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include "plots.h" // Part, held by value in PartEdit (#1684)
 
 class Scene;
 class Planetoid;
@@ -14,7 +15,7 @@ struct Vector3;
 // Placing parts on build plots (milestone 3). G toggles build mode; the wheel picks the part,
 // R turns it about the plot's up axis and V about its east axis; RMB places (on a part face, or on
 // the ground: snapping to a nearby plot's grid or starting a new plot), LMB removes a part and
-// refunds it. Parts cost concrete or iron plate. A part placed against the ground clears the
+// refunds it. Parts cost their material (bricks, planks, iron plate...). A part placed against the ground clears the
 // terrain inside its cells and fills the ground under them, so it neither floats nor sinks.
 struct BuildToolState {
     bool active = false;
@@ -29,12 +30,21 @@ extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
+// --shot-preview (#1432): after BuildTool_Update, push the preview onto `cell` in `plot` (a built cell: the
+// can't-place ghost). Parts now slide out of the face they're aimed at, so aiming alone no longer gets there.
+class Plot; struct Int3;
+void BuildTool_BenchAimAt(Plot& plot, Int3 cell);
 void BuildTool_Draw3D(Scene& world);
 void BuildTool_ForgetWorld(); // drop the aim's pointers into a world being unloaded (#902)
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 float BuildTool_BreakHold();       // (#919) seconds LMB must be held to take a part down (Building's perks shorten it)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
+bool BuildTool_AimingCampfire();   // (#1103) on a campfire: E lights it or puts it out (not the game window)
+// (#2072) on a part E acts on (a campfire, a ruin cache, a lever, a locked vault door): E is theirs, not the game window's
+bool BuildTool_AimingUsable();
+PartType BuildTool_AimedType();    // tests: the part type aimed at (Count: none)
+int BuildTool_AutoOrient(int partType, Int3 target); // (#196, #1578) the automatic facing: the part's front toward target
 int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
 // The aimed placement for tests (#550/#551): the plot it goes into (null: a new plot at newOrigin, body-local) and its
 // origin cell.
@@ -45,6 +55,14 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
 void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part); // (#919) Building XP once the part has stood 5 min
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
+// (#1167) Many parts at once (a blueprint): between Begin and End the foundations' terrain edits are gathered and applied in
+// one batch at End (each part's own batch re-dirtied the same chunks again and again: a freeze on a big blueprint).
+void BuildTool_BeginFoundationBatch();
+void BuildTool_EndFoundationBatch(Planetoid& body);
+// (#1183) Foundations queued by a placement land over the next frames: each frame applies them within budgetMs (0: all
+// now, e.g. before a save). BuildTool_PendingFoundations: how many wait.
+void BuildTool_ApplyPendingFoundations(double budgetMs);
+int BuildTool_PendingFoundations();
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,
 // in the server's order, so the plots and their part indices stay the same everywhere): beams as cubes, the foundation.
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
@@ -53,8 +71,22 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
 #include <functional>
 using BuildToolNetEdit = std::function<void(Planetoid& body, Plot* plot, Vector3 newOrigin, const Part& part, bool remove, int partIndex)>;
 extern BuildToolNetEdit gBuildToolNetEdit;
+// (#1684) A dungeon's vault unlock and lever pull, one edit for solo, the host's own player and the host acting for a client:
+// each part change is recorded (remove an index, or place a part, in order) so a host can send them to every client.
+struct PartEdit { bool remove = false; int index = -1; Part part{}; };
+// A locked vault door (and its other half: same column, within 2 cells) opens: material 0. Returns the gates opened (0: not a vault door).
+int Dungeon_UnlockVault(Plot& plot, int partIndex, std::vector<PartEdit>* edits = nullptr);
+// A lever goes down (material 1) and every portcullis within 12 m of it opens. Returns the portcullises opened, or -1 when the
+// part is not a lever or is already down.
+int Dungeon_PullLever(Plot& plot, int partIndex, std::vector<PartEdit>* edits = nullptr);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
+// (#1716) An aimed chest, machine, campfire, bed, pump, crank, lever or vault door takes the RMB click: the held item's RMB
+// (telescope, bucket, food, torch, shield block, ground placing) fires only when nothing like that is aimed. A press made on
+// empty space keeps working while held; one made on an interactable does nothing until released. Before Machine_Update runs
+// in a frame it answers from the aim of the frame before, after it from this frame's.
+bool Interact_RmbConsumed();
+PlayerInput Interact_FilterRmb(const PlayerInput& in); // `in` without RMB when it is consumed: what the held item's handlers get
 void Machine_DrawHUD();
 // A ", "-separated item list wrapped into lines of at most maxW px, capped at maxLines ("+N more", #567).
 std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines);
