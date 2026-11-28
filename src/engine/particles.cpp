@@ -1,5 +1,6 @@
 #include "particles.h"
 #include "gpumem.h"
+#include "locallights.h"
 #include "scene.h"
 #include "worldtypes.h"
 #include <raymath.h>
@@ -17,10 +18,10 @@ struct Particle {
     uint64_t body = 0;
     Vector3 pos{}, vel{};          // body-local
     float age = 0, life = 0, size = 0, groundR = 0, seed = 0;
+    float sky = 1.0f;              // 1 open to the sky .. 0 buried (caves), sampled where its burst was emitted (#2087)
     Color color = WHITE;
     ParticleKind kind = ParticleKind::Dust;
     bool bounced = false;
-    bool selfLit = false; // (ParticleBurst::selfLit)
     bool alive() const { return age < life; }
 };
 
@@ -49,6 +50,29 @@ const KindInfo kInfo[(int)ParticleKind::Count] = {
     { 0.0f, 1.5f, true },     // Firefly
 };
 
+// (#2087) Particles take the terrain's sky rule (materialSky: depth under the surface, cave mouths) and the local lights
+// (headlamp, held torch, point lights, the light grid) through particles.vs/.fs. RAYLIBGAME_PARTICLE_LIGHT=0: the old
+// sun-angle shading only (A/B).
+bool LightOn() { static const bool on = !(getenv("RAYLIBGAME_PARTICLE_LIGHT") && getenv("RAYLIBGAME_PARTICLE_LIGHT")[0] == '0'); return on; }
+HotShader litShader{ "resources/particles.vs", "resources/particles.fs" };
+
+// The sky a burst sees, once per burst (a field sample costs microseconds; rain emits many a frame), cached by 2 m cell:
+// the base field is immutable, so a cell's sky never changes. Cleared when it grows past a few thousand cells.
+float SkyAt(const Planetoid& body, Vector3 local) {
+    if (!LightOn() || !body.field) return 1.0f;
+    static std::unordered_map<uint64_t, float> cache;
+    const auto q = [](float v) { return (uint64_t)(uint32_t)(int32_t)floorf(v * 0.5f) & 0x1FFFFF; };
+    const uint64_t key = ((q(local.x) << 42) | (q(local.y) << 21) | q(local.z)) ^ (body.id * 0x9E3779B97F4A7C15ull);
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (cache.size() > 8192) cache.clear();
+    const float len = Vector3Length(local);
+    float sky = 1.0f;
+    if (len > 1.0f) body.field->materialSky(local, 1.0f, 1.0f, Vector3Scale(local, 1.0f / len), sky); // as machines (#284)
+    sky = std::clamp(sky, 0.0f, 1.0f);
+    cache.emplace(key, sky);
+    return sky;
+}
+
 Particle& Slot() {
     if (pool.size() < kMax) { pool.emplace_back(); return pool.back(); }
     // Reuse a dead slot near the cursor, else replace the oldest-placed one.
@@ -67,6 +91,7 @@ void Particles_Emit(const Planetoid& body, Vector3 local, const ParticleBurst& b
     const float r = Vector3Length(local);
     const Vector3 up = r > 1e-3f ? Vector3Scale(local, 1.0f / r) : Vector3{ 0, 1, 0 };
     const Vector3 dir = Vector3LengthSqr(b.dir) > 1e-8f ? Vector3Normalize(b.dir) : up;
+    const float sky = kInfo[(int)b.kind].additive ? 1.0f : SkyAt(body, local); // glowing kinds light themselves
     for (int i = 0; i < b.count; ++i) {
         Particle& p = Slot();
         p.body = body.id;
@@ -79,8 +104,8 @@ void Particles_Emit(const Planetoid& body, Vector3 local, const ParticleBurst& b
         p.size = b.size * RandRange(0.75f, 1.25f);
         p.groundR = r - 0.08f;
         p.seed = Rand01();
+        p.sky = sky;
         p.bounced = false;
-        p.selfLit = b.selfLit;
         // A little variation in colour, as real smoke and dust have.
         const float k = RandRange(0.88f, 1.08f);
         p.color = { (unsigned char)std::min(255.0f, b.color.r * k), (unsigned char)std::min(255.0f, b.color.g * k), (unsigned char)std::min(255.0f, b.color.b * k), b.color.a };
@@ -131,7 +156,12 @@ void Particles_Update(Scene&, float dt) {
     }
 }
 
+namespace { bool lastDrawLit = false; }
+float Particles_SkyAt(const Planetoid& body, Vector3 local) { return SkyAt(body, local); }
+bool Particles_LastDrawLit() { return lastDrawLit; }
+
 void Particles_Draw(Scene& world) {
+    lastDrawLit = false;
     if (pool.empty()) return;
     if (sprite.id == 0) {
         Image img = GenImageGradientRadial(32, 32, 0.0f, WHITE, BLANK);
@@ -179,6 +209,9 @@ void Particles_Draw(Scene& world) {
 
     std::sort(alpha.begin(), alpha.end(), [](const Item& a, const Item& b) { return a.d2 > b.d2; }); // far first
 
+    // The lit path (#2087): the day light k goes to the shader in the normal (rlNormal3f normalizes, so as (k, sqrt(1-k^2), 0))
+    // and the shader adds the local lights; the glow kinds (additive) keep the default shader, their colour as given.
+    bool lit = false;
     auto quads = [&](const std::vector<Item>& items) {
         rlSetTexture(sprite.id);
         rlBegin(RL_QUADS);
@@ -204,9 +237,15 @@ void Particles_Draw(Scene& world) {
             }
             a *= Particles_NearFade(sqrtf(it.d2), it.size); // (#1126) dust drifting into the eye fades out
             if (a <= 0.0f) continue;
-            float k = kInfo[(int)p.kind].additive || p.selfLit ? 1.0f : it.light;
+            float k = kInfo[(int)p.kind].additive ? 1.0f : it.light;
             if (!kInfo[(int)p.kind].additive && p.kind != ParticleKind::Debris) k = std::max(k, 0.2f);
-            rlColor4ub((unsigned char)(c.r * k), (unsigned char)(c.g * k), (unsigned char)(c.b * k), (unsigned char)std::clamp(a * c.a, 0.0f, 255.0f));
+            k *= p.sky; // under rock the sun's angle says nothing: caves stay dark but for their lights
+            if (lit) {
+                rlNormal3f(k, sqrtf(std::max(0.0f, 1.0f - k * k)), 0.0f);
+                rlColor4ub(c.r, c.g, c.b, (unsigned char)std::clamp(a * c.a, 0.0f, 255.0f));
+            } else {
+                rlColor4ub((unsigned char)(c.r * k), (unsigned char)(c.g * k), (unsigned char)(c.b * k), (unsigned char)std::clamp(a * c.a, 0.0f, 255.0f));
+            }
             const float h = it.size * 0.5f;
             const Vector3 r = Vector3Scale(right, h), u = Vector3Scale(camUp, h), q = it.at;
             rlTexCoord2f(0, 0); rlVertex3f(q.x - r.x + u.x, q.y - r.y + u.y, q.z - r.z + u.z);
@@ -220,7 +259,21 @@ void Particles_Draw(Scene& world) {
     rlDrawRenderBatchActive();
     rlDisableDepthMask();
     rlDisableBackfaceCulling();
-    if (!alpha.empty()) quads(alpha);
+    if (!alpha.empty()) {
+        if (LightOn()) { litShader.reloadIfChanged(); lit = litShader.shader.id > 0; }
+        if (lit) {
+            const unsigned int id = litShader.shader.id;
+            BeginShaderMode(litShader.shader);
+            rlEnableShader(id); // uniforms go to the bound program (the batch binds it only when it draws)
+            LocalLights_Bind(litShader.shader);
+            if (world.frameLighting) world.frameLighting(litShader.shader); // headlamp, held torch (and the shadow maps, unused)
+            rlEnableShader(id);
+            rlSetUniform(rlGetLocationUniform(id, "viewPos"), &cam.position, RL_SHADER_UNIFORM_VEC3, 1);
+            rlActiveTextureSlot(0);
+        }
+        quads(alpha);
+        if (lit) { rlDrawRenderBatchActive(); EndShaderMode(); lastDrawLit = true; lit = false; }
+    }
     if (!glow.empty()) { rlDrawRenderBatchActive(); BeginBlendMode(BLEND_ADDITIVE); quads(glow); rlDrawRenderBatchActive(); EndBlendMode(); }
     rlDrawRenderBatchActive();
     rlEnableBackfaceCulling();
@@ -229,7 +282,7 @@ void Particles_Draw(Scene& world) {
 
 void Particles_Clear() { pool.clear(); nextSlot = 0; }
 int Particles_Count() { int n = 0; for (const Particle& p : pool) n += p.alive() ? 1 : 0; return n; }
-void Particles_Unload() { Particles_Clear(); if (sprite.id > 0) UnloadTexture(sprite); sprite = Texture2D{}; }
+void Particles_Unload() { Particles_Clear(); if (sprite.id > 0) UnloadTexture(sprite); sprite = Texture2D{}; litShader.unload(); }
 
 float Particles_NearFade(float dist, float size) {
     static const bool on = !(getenv("RAYLIBGAME_PARTICLE_NEAR_FADE") && getenv("RAYLIBGAME_PARTICLE_NEAR_FADE")[0] == '0');
