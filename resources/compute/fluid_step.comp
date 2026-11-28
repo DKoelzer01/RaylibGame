@@ -39,8 +39,10 @@ layout(std430, binding = 7) buffer Flux { int flux[]; };
 // N: this substep's flows and carries (x: x y, y: z w) and the momentum flows alone (z: x y).
 layout(std430, binding = 8) buffer FacesP { uvec2 faceP[]; };
 layout(std430, binding = 9) buffer FacesN { uvec4 faceN[]; };
+// Every store rounds with halfRN / packHalfRN (#2116), never packHalf2x16 alone: its rounding is the driver's.
+#include "half_rn.glsl"
 vec4 loadP(int g) { uvec2 u = faceP[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
-void storeP(int g, vec4 v) { faceP[g] = uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw)); }
+void storeP(int g, vec4 v) { faceP[g] = uvec2(packHalfRN(v.xy), packHalfRN(v.zw)); }
 vec4 loadN(int g) { uvec4 u = faceN[g]; return vec4(unpackHalf2x16(u.x), unpackHalf2x16(u.y)); }
 vec2 loadM(int g) { return unpackHalf2x16(faceN[g].z); }
 uniform uint count;        // processed slots
@@ -651,7 +653,7 @@ void main() {
             col[g].code01 = code[0] | (code[1] << 16);
             col[g].code23 = code[2] | (code[3] << 16);
         }
-        faceN[g] = uvec4(packHalf2x16(Q.xy), packHalf2x16(Q.zw), uint(U[0]) | (uint(U[1]) << 16), uint(U[2]) | (uint(U[3]) << 16));
+        faceN[g] = uvec4(packHalfRN(Q.xy), packHalfRN(Q.zw), uint(U[0]) | (uint(U[1]) << 16), uint(U[2]) | (uint(U[3]) << 16));
         return;
     }
     if (pass == 3) {
@@ -678,10 +680,10 @@ void main() {
             if (inD > rm) units = min(units, planned * rm / inD);
             if (units < planned) {
                 precise float sc = divRN(float(units), float(planned));
-                if (k == 0) Q.x = unpackHalf2x16(packHalf2x16(vec2(Q.x * sc, 0.0))).x;
-                else if (k == 1) Q.y = unpackHalf2x16(packHalf2x16(vec2(Q.y * sc, 0.0))).x;
-                else if (k == 2) Q.z = unpackHalf2x16(packHalf2x16(vec2(Q.z * sc, 0.0))).x;
-                else Q.w = unpackHalf2x16(packHalf2x16(vec2(Q.w * sc, 0.0))).x;
+                if (k == 0) Q.x = halfRN(Q.x * sc);
+                else if (k == 1) Q.y = halfRN(Q.y * sc);
+                else if (k == 2) Q.z = halfRN(Q.z * sc);
+                else Q.w = halfRN(Q.w * sc);
             }
             if (units <= 0) continue;
             atomicAdd(col[giver].delta, -units);
@@ -695,7 +697,7 @@ void main() {
                 if (w >= 0) atomicAdd(flux[(uint(w) * 4096u + uint(cell) % 4096u) * 4u + uint(k & 1)], along);
             }
         }
-        faceN[g] = uvec4(packHalf2x16(Q.xy), packHalf2x16(Q.zw), n4.z, n4.w);
+        faceN[g] = uvec4(packHalfRN(Q.xy), packHalfRN(Q.zw), n4.z, n4.w);
         return;
     }
     if (pass == 1) {
@@ -713,7 +715,7 @@ void main() {
             if (k == 0) { N.x = q; N.z = sign(P.z) == sign(q) ? P.z : 0.0; M.x = qm; }
             else { N.y = q; N.w = sign(P.w) == sign(q) ? P.w : 0.0; M.y = qm; }
         }
-        faceN[g] = uvec4(packHalf2x16(N.xy), packHalf2x16(N.zw), packHalf2x16(M.xy), 0u);
+        faceN[g] = uvec4(packHalfRN(N.xy), packHalfRN(N.zw), packHalfRN(M.xy), 0u);
         return;
     }
     if ((fl & SOLID) != 0u) { outC[g] = c; if (pass == 2) faceP[g] = uvec2(0u); return; }
