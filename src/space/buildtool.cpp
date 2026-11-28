@@ -27,6 +27,7 @@
 #include "net.h"
 #include "hostserver.h" // (#1684) Host_BroadcastPartEdits
 #include "ruincache.h"  // (#2072)
+#include "teamstore.h"  // (#2072) a joined client's team: its alternate recipes
 #include "navigation.h" // (#2072) Nav_MinimapRect: the cache panel keeps clear of the minimap
 #include "combat.h"     // (#2072) Combat_Drop: a cache's overflow
 #include "playersession.h"
@@ -209,6 +210,14 @@ static int LocalTeam() {
     int team = Teams_Of(PlayerId_Local());
     if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
     return team;
+}
+// (#2072) A machine type's alternate recipes that the local player's team has (a joined client: its team's, from the host).
+static std::vector<std::string> TeamAltsFor(PartType type) {
+    std::vector<std::string> out;
+    if (!IsMachine(type)) return out;
+    const int team = MachineAct_Remote() ? TeamStore_LocalTeam() : LocalTeam();
+    for (const std::string& id : Factory::AltsOf(type)) if (Caches_TeamHasAlt(team, id)) out.push_back(id);
+    return out;
 }
 static void RefreshLocalClaims() {
     if (gNetRole == NetRole::Client) return;
@@ -705,6 +714,7 @@ bool BuildTool_AimingUsable() {
     if (machineAim.part < 0) return false;
     const PartType t = machineAim.type;
     if (t == PartType::Campfire || t == PartType::RuinCache || t == PartType::Lever) return true;
+    if (!TeamAltsFor(t).empty()) return true; // (#2072) E picks its next alternate recipe
     if (t != PartType::Gate) return false; // E acts on a gate only while it is a locked vault door (a fence gate: the inventory)
     Planetoid* gb = Planetoid::find(machineAim.body);
     Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
@@ -876,6 +886,18 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
             GameUI_Toast(burning ? "Campfire put out" : "Campfire lit");
         } else GameUI_Toast("The campfire needs fuel to light");
         return;
+    }
+    if (in.hit(Act::Use)) { // (#2072) E on a machine with alternate recipes the team has: the next one (then the base recipes)
+        const std::vector<std::string> alts = TeamAltsFor(machineAim.type);
+        if (!alts.empty()) {
+            const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
+            const auto at = std::find(alts.begin(), alts.end(), v.alt);
+            const std::string next = at == alts.end() ? alts[0] : at + 1 == alts.end() ? std::string() : *(at + 1);
+            MachineAct_SetAlt(machineAim.body, machineAim.plot, machineAim.part, next);
+            const CacheAlt* a = next.empty() ? nullptr : Caches_FindAlt(next);
+            GameUI_Toast(a ? TextFormat("Alternate recipe: %s", a->name.c_str()) : "Base recipes");
+            return;
+        }
     }
     if (machineAim.type == PartType::Bed) {
         // A bed (#800): RMB (outside build mode) makes it your spawn; in a joined game the server sets it.
@@ -1049,7 +1071,14 @@ void Machine_DrawHUD() {
     const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
     const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
     const std::string runLine = Alchemy_IsVessel(machineAim.type) ? Alchemy_PanelLine(machineAim.body, machineAim.plot, machineAim.part) : std::string(); // (#1254)
-    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1);
+    // (#2072) its alternate recipe, when the team has any for it (E cycles them)
+    std::string altLine;
+    if (!v.alt.empty() || !TeamAltsFor(machineAim.type).empty()) {
+        const CacheAlt* a = v.alt.empty() ? nullptr : Caches_FindAlt(v.alt);
+        const std::string name = a ? a->name.substr(0, a->name.find(" (")) : v.alt.empty() ? "base" : v.alt; // (the short name: the panel's width; the toast says the rest)
+        altLine = TextFormat("recipe: %s  (E: next alternate)", name.c_str());
+    }
+    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1) + (altLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
@@ -1065,6 +1094,7 @@ void Machine_DrawHUD() {
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
+    if (!altLine.empty()) { DrawText(altLine.c_str(), x, ty, 16, Color{ 150, 230, 170, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }

@@ -51,8 +51,14 @@ parts 9 rare     | ev_hull 1-1 | superconductor 4-8
 # tier n on (deep caches: one tier early). More presets come with their layouts.
 blueprint starter_rocket | tier 7 | Starter rocket
 #
-# alt <id> | tier <n> | <shown name>: an alternate recipe (the factory's recipe flagged with that id) the team unlocks.
-# None yet: they come with their recipes (#2072 slice 2b).
+# alt <id> | tier <n> | <shown name>: an alternate recipe the team unlocks (its rows: machine_recipes.txt, "alt <id>").
+# A player then chooses it for a machine (E on the machine). The ladder's (LV assembler, wiremill) come with its machines.
+alt bulk_charcoal  | tier 1 | Bulk charcoal (kiln: 3 charcoal from 2 logs)
+alt rich_bronze    | tier 1 | Rich bronze (kiln: 5 bronze from crushed copper and tin)
+alt quartz_glass   | tier 1 | Quartz glass (kiln: 2 glass from 1 quartz)
+alt packed_coke    | tier 3 | Packed coke (coke oven: 3 coke from 5 coal)
+alt dust_steel     | tier 3 | Dust steel (blast furnace: steel from iron dust, faster)
+alt bauxite_direct | tier 5 | Direct bauxite (electrolyzer: aluminium from raw bauxite)
 #
 # boost | share <percent> | min <units>: research units added straight into a node the team could start now (its tier at
 # most T, deep caches T+1; the tier's core nodes weigh twice).

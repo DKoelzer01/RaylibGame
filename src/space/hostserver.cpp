@@ -736,6 +736,10 @@ namespace {
                 if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
                 Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
                 break;
+            case kMachineActChooseAlt: // (#2072) an alternate recipe the requester's team has from a ruin cache ("" none)
+                if (!a.item.empty() && !Caches_TeamHasAlt(TeamOfSession(session), a.item)) { refuse("Your team hasn't found that recipe"); return; }
+                if (!Factory::SetAlt(b->id, plot->id, a.part, a.item)) { refuse("That machine has no such recipe"); return; }
+                break;
             default: return;
         }
         SendChangedItems(conn, inv, before);

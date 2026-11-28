@@ -15,6 +15,7 @@
 57 | staging         | #1886 | TeamStore: the team's progression store (research, map, blueprints) to its members
 60 | staging         | #2072 | the ruin cache part type in NetPart; MachineAction 13 opens a cache
 65 | staging         | #1886 | MapPin and ResearchQueue: a client's map pins and research queue changes, for its team (58 before staging passed it; 61-64 are open PRs')
+66 | staging         | #2072 | a machine's alternate recipe in MachineView; MachineAction 14 chooses it (64 was its number before #1886 took 65; 61-63: #2103, ladder #2071)
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion

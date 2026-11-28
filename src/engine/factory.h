@@ -59,6 +59,7 @@ struct MachineView {             // published per machine each tick
     float rpm = 0.0f;
     int speedPercent = 100, stressPercent = 0;
     const char* rotStatus = "";     // "Running", "Slowed", "Too slow", "Stopped", "Jammed"
+    std::string alt;                // (#2072) the alternate recipe chosen for it ("" the base recipes)
     bool valid = false;
 };
 
@@ -144,6 +145,11 @@ namespace Factory {
     // item names start with `prefix` taken out (the game counts them). False / empty: not simulated (yet).
     bool SetVariant(uint64_t bodyId, uint32_t plotId, int part, const std::string& item);
     std::vector<std::pair<std::string, int>> DrainOutputs(uint64_t bodyId, uint32_t plotId, int part, const std::string& prefix);
+    // (#2072) Ruin caches' alternate recipes (machine_recipes.txt rows flagged "alt <id>"): the one a machine tries first
+    // ("" none; false: not simulated, or not an alternate of that machine), and the ids a machine type has. The team check
+    // (Caches_TeamHasAlt) is the caller's.
+    bool SetAlt(uint64_t bodyId, uint32_t plotId, int part, const std::string& id);
+    std::vector<std::string> AltsOf(PartType type);
     // (#1103) Light a campfire (lit = true) or put it out; other machines ignore it.
     void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
     // (#2072) A sealed ruin cache with a power opener (cache_openers.txt) is a consumer on its plot: a cable or a battery bank
