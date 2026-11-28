@@ -103,7 +103,8 @@ static void BuildLongFall(ScenarioDef& s) {
             if (survival.dead) {
                 if (!st.deadSeen) {
                     const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-                    const float vGround = Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
+                    // (grounded, or on the frame path, the velocity is against the ground already)
+                    const float vGround = Vector3Length(Frames_On() || player.grounded ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
                     c.note(std::string(d.name) + TextFormat(": died (%s, fall speed %.1f m/s) at %.2f s, %.2f m from the drop point, grounded %d, "
                                                             "falling %d, speed against the ground %.2f m/s; revived",
                                                             survival.lastHarm, survival.lastFallSpeed, c.t, (b.toLocalD(player.position) - st.startLocal).length(),
