@@ -1857,12 +1857,23 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
 
 // Segments of the cells within reach of a box (body-local), whose capsule (radius x 1.3 for the wall roughness) comes
 // within `reach` of it. (seed: fieldSeed; the cells by the box corners' sea-level projections, +-kCaveCellReach.)
+// (#2070) A segment is kept only if its capsule's radial range (distance from the body centre, +- the same bound rr) meets
+// the box's: the axis-aligned box test alone lets a slanted passage at 150 m reach blocks 250-600 m down (its box spans a
+// wide range of depths), and on the CPU path every listed segment costs a block ~20 ms (caves/block-cost). Such a segment
+// is out of reach of every sample anyway, so the density is unchanged (--cave-stats R D hashes match with
+// RAYLIBGAME_CAVE_RADIAL_CULL=0, the A/B).
+static const bool gCaveRadialCull = !(getenv("RAYLIBGAME_CAVE_RADIAL_CULL") && getenv("RAYLIBGAME_CAVE_RADIAL_CULL")[0] == '0');
 static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vector3 hi, float reach, std::vector<float>& out) {
     out.clear();
     int clo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, chi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    // The box's radial range: the nearest point of the box to the centre (it never holds the centre) and the farthest corner.
+    const Vector3 near = { std::clamp(0.0f, lo.x, hi.x), std::clamp(0.0f, lo.y, hi.y), std::clamp(0.0f, lo.z, hi.z) };
+    const float boxRlo = Vector3Length(near);
+    float boxRhi = 0.0f;
     for (int k = 0; k < 8; ++k) {
         const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
         const float d = Vector3Length(q);
+        boxRhi = std::max(boxRhi, d);
         if (d < 1.0f) return;
         const Vector3 s = Vector3Scale(q, f.radius / d);
         const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
@@ -1879,6 +1890,15 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
                     const float rr = 3.0f * rmax + 2.0f + reach + std::max(0.0f, 0.8f * rmax - 6.4f); // (#1058: big chambers keep the single-sample bound)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
+                    if (gCaveRadialCull) {
+                        // The segment's radial range: its point nearest the centre, and its farther end.
+                        const Vector3 ab = Vector3Subtract(s.b, s.a);
+                        const float abLen2 = Vector3DotProduct(ab, ab);
+                        const float t = abLen2 > 1e-6f ? std::clamp(-Vector3DotProduct(s.a, ab) / abLen2, 0.0f, 1.0f) : 0.0f;
+                        const float segRlo = Vector3Length(Vector3Add(s.a, Vector3Scale(ab, t)));
+                        const float segRhi = std::max(Vector3Length(s.a), Vector3Length(s.b));
+                        if (segRlo - rr > boxRhi || segRhi + rr < boxRlo) continue;
+                    }
                     Vector3 side = Vector3CrossProduct(s.up, Vector3Subtract(s.b, s.a));     // across the passage, level
                     const float sl = Vector3Length(side);
                     side = sl > 1e-4f ? Vector3Scale(side, 1.0f / sl) : Vector3{ 0, 0, 0 };

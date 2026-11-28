@@ -2,25 +2,23 @@
 # Don't re-diagnose these; read the issue. Remove a line when its issue is fixed.
 #   <extended regex matched against the failure line> | <issue> | <note>
 # No '|' inside a pattern: the line is split on it (one line per alternative instead).
-join: creature \(                      | #1421 | clients spend the join sync while the creature lives (fix in review)
-bench: join \([a-z]+, session          | #1421 | each session's verdict includes the creature check above
-join: team \(                          | #1421 | the creature killed a player, who respawned far from the other (the fix keeps them alive)
-parity fluid/                          | #968  | CPU vs GPU fluid paths part by a unit (diagnostic, informational)
-bench: half:                           | #968  | the exact-halfway rounding check (diagnostic)
-factory/stats                          | #1406 | the EU window on the slow runner (fix in review)
-farm/till-rmb                          | #1176 | no RMB stroke runs on the runner (#1178)
-fluid/flow-meter                       | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
-fluid/pond                             | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
-bench: flow: reached the channel end   | #1512 | --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
-fluid/u-bend -> FAIL                   | #1168 | the two pits stand 1.77 m apart (want < 0.15); the same on the m84 tip (e5715641) without #1664
-fluid/u-bend-cpu -> FAIL               | #1168 | the CPU twin of fluid/u-bend, same check
-frames/build-hold(-pose)? -> FAIL         | #1759 | 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
-frames/long-fall(-pose)? -> FAIL          | #2038 | the 100 m equator drop barely falls in some runner runs (long-fall 16/20, -pose 18/20 recent runs pass); Water owns the fix
-light/torch-room -> FAIL                  | #1829 | 1 check fails in ~30% of runs (14/20), on m84 and ladder alike; flaky, to be diagnosed
-perf/creatures-crowd -> FAIL: step .settle.  | #1821 | settle times out on the slow runner (26 of its 30 s on the sandbox); not -200
-light/torch-room -> FAIL                | #1829 | 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
-caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
-net/late-join-lag -> FAIL               | #1972 | the sim runs ahead of the wall-clock join (step deadline, or bob not in yet) (12/20 recent runs pass)
-caves/islands -> FAIL                    | #2025 | floating rock over budget (825 > 760 m^3) since staging's terrain work reached ladder: a real change, not a flake
-fluid/spring -> FAIL                    | #1910 | "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
-space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; fixed on staging by #2020, drop this line when that reaches ladder
+join: creature \(                      | #1421 | [UI/UX, until 2026-12-05] clients spend the join sync while the creature lives (fix in review)
+bench: join \([a-z]+, session          | #1421 | [UI/UX, until 2026-12-05] each session's verdict includes the creature check above
+join: team \(                          | #1421 | [UI/UX, until 2026-12-05] the creature killed a player, who respawned far from the other (the fix keeps them alive)
+parity fluid/                          | #968  | [Water, until never] CPU vs GPU fluid paths part by a unit (diagnostic, informational)
+bench: half:                           | #968  | [Water, until never] the exact-halfway rounding check (diagnostic)
+fluid/flow-meter                       | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
+fluid/pond                             | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
+bench: flow: reached the channel end   | #1512 | [Water, until 2026-12-05] --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
+fluid/u-bend -> FAIL                   | #1168 | [Water, until 2026-12-05] the two pits stand 1.77 m apart (want < 0.15); the same on the m84 tip (e5715641) without #1664
+fluid/u-bend-cpu -> FAIL               | #1168 | [Water, until 2026-12-05] the CPU twin of fluid/u-bend, same check
+frames/build-hold(-pose)? -> FAIL         | #1759 | [Water, until 2026-12-05] 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
+frames/long-fall(-pose)? -> FAIL          | #2038 | [Water, until 2026-12-05] the 100 m equator drop barely falls in some runner runs (long-fall 16/20, -pose 18/20 recent runs pass); Water owns the fix
+light/torch-room -> FAIL                  | #1829 | [L&G, until 2026-12-05] 1 check fails in ~30% of runs (14/20), on m84 and ladder alike; flaky, to be diagnosed
+light/torch-room -> FAIL                | #1829 | [L&G, until 2026-12-05] 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
+net/late-join-lag -> FAIL               | #1972 | [Tools, until 2026-12-05] the sim runs ahead of the wall-clock join (step deadline, or bob not in yet) (12/20 recent runs pass)
+caves/islands -> FAIL                    | #2025 | [L&G, until 2026-12-05] floating rock over budget (825 > 760 m^3) since staging's terrain work reached ladder: a real change, not a flake
+fluid/spring -> FAIL                    | #1910 | [Water, until 2026-12-05] "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
+space/luna-walk -> FAIL                 | #2000 | [Space, until 2026-12-05] the player leaves Luna on a jump; fixed on staging by #2020, drop this line when that reaches ladder
+world/spawn-by-water -> FAIL            | #2002 | [Tools, until 2026-12-05] the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
+determinism/state-hash -> FAIL: 1 of 5 checks failed | #2183 | [Water, until 2026-12-01] the "flowing water" hash intermittently has a third value on the runner (16/20); the line names no check, so this matches exactly one failed check: two or more failed hashes still show as NEW
