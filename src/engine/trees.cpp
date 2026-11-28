@@ -3,6 +3,7 @@
 #include "envflag.h"
 #include "gpumem.h"
 #include "jobsystem.h"
+#include "profiler.h"
 #include "worldtypes.h"
 #include "world.h"
 
@@ -696,31 +697,81 @@ void Stones(VariantMesh& m, unsigned int seed, int cls) {
     m.trunkHeight = 0.0f;
 }
 
-// Far meshes: the same silhouette from a few prisms (trunk + crown; trunk + two cones; one block).
+// A triangle facing away from `centre` (Quad's rule, for the lathe's caps).
+void Tri(VariantMesh& m, Vector3 a, Vector3 b, Vector3 c, Vector3 centre, bool leaf, unsigned char shade) {
+    Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
+    const Vector3 mid = Vector3Scale(Vector3Add(Vector3Add(a, b), c), 1.0f / 3.0f);
+    if (Vector3DotProduct(n, Vector3Subtract(mid, centre)) < 0.0f) { n = Vector3Negate(n); std::swap(b, c); }
+    Emit(m, a, n, leaf, shade); Emit(m, b, n, leaf, shade); Emit(m, c, n, leaf, shade);
+}
+
+// (#1995 phase 4) A six-sided crown turned about the vertical through `c`: rings at heights y0 + (y1 - y0) * prof[k][0]
+// with radius R * prof[k][1], capped top and bottom. Six sides read round at a distance where the old four-sided
+// blocks read as boxes.
+void Lathe(VariantMesh& m, Vector3 c, const float (*prof)[2], int n, float y0, float y1, float R, float twist, bool leaf, unsigned char shade) {
+    constexpr int S = 6;
+    auto at = [&](int k, int s) {
+        const float a = twist + 6.2831853f * s / S, r = R * prof[k][1];
+        return Vector3{ c.x + cosf(a) * r, y0 + (y1 - y0) * prof[k][0], c.z + sinf(a) * r };
+    };
+    const Vector3 centre = { c.x, (y0 + y1) * 0.5f, c.z };
+    for (int k = 0; k + 1 < n; ++k)
+        for (int s = 0; s < S; ++s) Quad(m, at(k, s), at(k, s + 1), at(k + 1, s + 1), at(k + 1, s), centre, leaf, shade);
+    for (int end : { 0, n - 1 }) {
+        if (prof[end][1] < 0.02f) continue; // a point: no cap
+        const Vector3 hub = { c.x, y0 + (y1 - y0) * prof[end][0], c.z };
+        for (int s = 0; s < S; ++s) Tri(m, hub, at(end, s), at(end, s + 1), centre, leaf, shade);
+    }
+}
+
+// Far meshes (past kTreeNearDistance): the full mesh's silhouette from a trunk and a crown shaped by its kind (#1995
+// phase 4; it was one four-sided block for every broadleaf and every bush, so palms, willows and acacias all read as
+// boxes). The crown's spread is the 90th percentile of the leaves' distance from its axis, not their bounding box, so a
+// few long branches don't blow it up.
 void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
     for (size_t k = 0; k + 2 < full.pos.size(); k += 3)
         if (full.col[(k / 3) * 4] > 128) // leaf vertices: the crown's extent
             for (int a = 0; a < 3; ++a) { lo[a] = std::min(lo[a], full.pos[k + a]); hi[a] = std::max(hi[a], full.pos[k + a]); }
-    const float w = std::max(hi[0] - lo[0], hi[2] - lo[2]) * 0.8f;
-    const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
     const unsigned char shade = 160;
-    if (lo[1] > hi[1]) { // leafless (snags): the trunk alone
-        Prism(m, { 0, -0.4f, 0 }, { 0, full.trunkHeight, 0 }, full.trunkRadius * 2.0f, full.trunkRadius, 0.0f, false, shade);
-        m.trunkRadius = full.trunkRadius;
-        m.trunkHeight = full.trunkHeight;
-        return;
-    }
-    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
-    if (v < kFirstBush && WoodSpeciesInfo(SpeciesOfVariant(v)).conifer) {
-        const float mid = lo[1] + (hi[1] - lo[1]) * 0.55f;
-        Prism(m, { c.x, lo[1], c.z }, { c.x, mid, c.z }, w, w * 0.6f, 0.785f, true, shade);
-        Prism(m, { c.x, mid, c.z }, { c.x, hi[1], c.z }, w * 0.6f, 0.15f, 0.0f, true, shade);
-    } else {
-        Prism(m, { c.x, lo[1], c.z }, { c.x, hi[1], c.z }, w, w * 0.8f, 0.4f, true, shade);
-    }
     m.trunkRadius = full.trunkRadius;
     m.trunkHeight = full.trunkHeight;
+    if (lo[1] > hi[1]) { // leafless (snags): the trunk alone
+        Prism(m, { 0, -0.4f, 0 }, { 0, full.trunkHeight, 0 }, full.trunkRadius * 2.0f, full.trunkRadius, 0.0f, false, shade);
+        return;
+    }
+    const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
+    std::vector<float> spread;
+    for (size_t k = 0; k + 2 < full.pos.size(); k += 3)
+        if (full.col[(k / 3) * 4] > 128) spread.push_back(sqrtf((full.pos[k] - c.x) * (full.pos[k] - c.x) + (full.pos[k + 2] - c.z) * (full.pos[k + 2] - c.z)));
+    std::nth_element(spread.begin(), spread.begin() + spread.size() * 9 / 10, spread.end());
+    const float R = std::max(spread[spread.size() * 9 / 10], 0.3f);
+    const float H = hi[1] - lo[1];
+    const WoodSpecies sp = v < kFirstBush ? SpeciesOfVariant(v) : WoodSpecies::Count;
+    const bool fronds = sp == WoodSpecies::Palm || sp == WoodSpecies::TreeFern;
+    // The trunk: to the crown's foot, or for fronds to their hub (the crown's top third).
+    const float hub = lo[1] + H * 0.7f;
+    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, fronds ? hub : std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
+    if (fronds) {
+        // Five flat fronds from the hub, rising a little and drooping to the crown's foot at its spread.
+        for (int k = 0; k < 5; ++k) {
+            const float a = 1.2566371f * k + 0.3f;
+            const Vector3 tip = { c.x + cosf(a) * R * 1.1f, lo[1] + H * 0.25f, c.z + sinf(a) * R * 1.1f };
+            Prism(m, { c.x, hub, c.z }, tip, R * 0.45f, R * 0.12f, 0.0f, true, shade, 0.2f);
+        }
+        static const float kTuft[2][2] = { { 0.0f, 0.25f }, { 1.0f, 0.02f } };
+        Lathe(m, c, kTuft, 2, hub, hi[1], R * 0.6f, 0.0f, true, shade);
+        return;
+    }
+    // Crown profiles: { height fraction, radius fraction } from the crown's foot to its top.
+    static const float kRound[4][2] = { { 0.0f, 0.5f }, { 0.35f, 1.0f }, { 0.75f, 0.85f }, { 1.0f, 0.35f } };     // broadleaf, bushes
+    static const float kCone[4][2] = { { 0.0f, 0.95f }, { 0.5f, 0.6f }, { 0.55f, 0.75f }, { 1.0f, 0.03f } };     // conifers: two tiers
+    static const float kUmbrella[3][2] = { { 0.0f, 0.55f }, { 0.55f, 1.0f }, { 1.0f, 0.8f } };                   // acacia, baobab
+    static const float kWeeping[4][2] = { { 0.0f, 0.85f }, { 0.55f, 1.0f }, { 0.85f, 0.75f }, { 1.0f, 0.3f } };   // willow: a dome and its skirt
+    if (sp != WoodSpecies::Count && WoodSpeciesInfo(sp).conifer) Lathe(m, c, kCone, 4, lo[1], hi[1], R, 0.4f, true, shade);
+    else if (sp == WoodSpecies::Acacia || sp == WoodSpecies::Baobab) Lathe(m, c, kUmbrella, 3, lo[1], hi[1], R, 0.4f, true, shade);
+    else if (sp == WoodSpecies::Willow) Lathe(m, c, kWeeping, 4, lo[1], hi[1], R, 0.4f, true, shade);
+    else Lathe(m, c, kRound, 4, lo[1], hi[1], R, 0.4f, true, shade);
 }
 
 void BuildVariants() {
@@ -931,6 +982,7 @@ uint64_t PlantId(const TreeTileKey& k, int cell) {
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
 void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out, TreeScatterStats* st = nullptr) {
+    PROFILE_SCOPE("trees: build tile"); // (#1995 phase 4) the cost of a farther tree distance
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -1297,6 +1349,7 @@ int TreeSystem::readyTilesNear(Vector3 local, float range) const {
 }
 
 void TreeSystem::rebuildBatches(Vector3 camLocal) {
+    PROFILE_SCOPE("trees: rebuild batches");
     lastBatch = GetTime();
     batchDirty = false;
     anchor = DVec3(camLocal);
@@ -1327,7 +1380,9 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 const float x = (float)(t.inst[mesh][k] - anchor.x), y = (float)(t.inst[mesh][k + 1] - anchor.y), z = (float)(t.inst[mesh][k + 2] - anchor.z);
                 const float d2 = x * x + y * y + z * z;
                 if (d2 > reach * reach) continue;
-                const int lod = d2 < kTreeNearDistance * kTreeNearDistance ? 0 : 1;
+                // RAYLIBGAME_TREE_NEAR=<m>: the switch distance for A/Bs (0: every tree far, to judge the far meshes up close).
+                static const float nearD = [] { const char* e = getenv("RAYLIBGAME_TREE_NEAR"); return e && *e ? (float)atof(e) : kTreeNearDistance; }();
+                const int lod = d2 < nearD * nearD ? 0 : 1;
                 const float inst[8] = { x, y, z, t.inst[mesh][k + 3], t.inst[mesh][k + 4], t.inst[mesh][k + 5], t.inst[mesh][k + 6], t.inst[mesh][k + 7] };
                 // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
                 // without a sun direction yet, by distance from the camera.
@@ -1749,6 +1804,31 @@ TEST(Trees, FormsAndSizeClasses) {
             EXPECT_GT(h, prev) << WoodSpeciesInfo((WoodSpecies)sp).name << " class " << cls;
             prev = h;
         }
+    }
+}
+
+// (#1995 phase 4) Every far mesh stands in for its full mesh: cheap (at most 250 vertices, and fewer than the full
+// mesh), as tall as it (top within 15%), and no wider (reach within 115%: fronds and lathes overshoot the 90th
+// percentile a little).
+TEST(Trees, FarMeshesFitTheirTree) {
+    auto extent = [](const VariantMesh& m, float& top, float& reach) {
+        top = -1e9f; reach = 0.0f;
+        for (size_t i = 0; i + 2 < m.pos.size(); i += 3) {
+            top = std::max(top, m.pos[i + 1]);
+            reach = std::max(reach, sqrtf(m.pos[i] * m.pos[i] + m.pos[i + 2] * m.pos[i + 2]));
+        }
+    };
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+        const int v = VariantOfTreeMesh(mesh);
+        if (IsStoneVariant(v)) continue; // the stones' far mesh is their full one
+        const VariantMesh &full = Variant(mesh, 0), &far = Variant(mesh, 1);
+        float fullTop, fullReach, farTop, farReach;
+        extent(full, fullTop, fullReach);
+        extent(far, farTop, farReach);
+        EXPECT_LE(far.vertexCount, 250) << "mesh " << mesh;
+        EXPECT_LT(far.vertexCount, full.vertexCount) << "mesh " << mesh;
+        EXPECT_NEAR(farTop, fullTop, 0.15f * fullTop) << "mesh " << mesh;
+        EXPECT_LE(farReach, 1.15f * fullReach) << "mesh " << mesh;
     }
 }
 
