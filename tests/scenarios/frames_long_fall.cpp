@@ -97,13 +97,18 @@ static void BuildLongFall(ScenarioDef& s) {
                 st.peakSpeed = std::max(st.peakSpeed, (double)Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet))));
                 st.lowAir = std::min(st.lowAir, b.toLocalD(player.position).length() - st.groundR);
             }
-            // (#2038) Every landing here is fatal (100 m: ~33 m/s into the floor). A dead player is not updated, so `grounded`
-            // stays as the death left it: when that was in the air (a bounce, a clip rescue), the touchdown below never came
-            // and the respawn 3 s later carried the player to the start, 29 km away. Revived on the tick the death is seen.
+            // (#2038) Every landing here is fatal (100 m: ~33 m/s into the floor), and the step revived the player only once it
+            // saw the touchdown. On the runner a death came before it (cause unknown; the player is not updated while dead) and
+            // the respawn 3 s later carried them to the start, 29 km away. Revived on the tick any death is seen, and noted.
             if (survival.dead) {
-                if (!st.deadSeen)
-                    c.note(std::string(d.name) + TextFormat(": died at %.2f s, %.2f m from the drop point, grounded %d, falling %d; revived",
-                                                            c.t, (b.toLocalD(player.position) - st.startLocal).length(), (int)player.grounded, (int)st.falling));
+                if (!st.deadSeen) {
+                    const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
+                    const float vGround = Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
+                    c.note(std::string(d.name) + TextFormat(": died (%s, fall speed %.1f m/s) at %.2f s, %.2f m from the drop point, grounded %d, "
+                                                            "falling %d, speed against the ground %.2f m/s; revived",
+                                                            survival.lastHarm, survival.lastFallSpeed, c.t, (b.toLocalD(player.position) - st.startLocal).length(),
+                                                            (int)player.grounded, (int)st.falling, vGround));
+                }
                 survival.dead = false; survival.health = 100.0f;
                 st.deadSeen = true;
             }
