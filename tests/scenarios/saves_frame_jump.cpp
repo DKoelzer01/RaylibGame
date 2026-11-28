@@ -55,11 +55,11 @@ SCENARIO("saves/frame-jump") {
         c.check("the same frame after the load", a.frame == st.before.frame);
         c.lt("frame position moved by the load (m)", (a.pos - st.before.pos).length(), 1e-6);
         c.lt("frame velocity changed by the load (m/s)", (a.vel - st.before.vel).length(), 1e-6);
-        // The global position also goes through the body's pose, whose saved "rot" is %f (1e-6 rad: up to 6 cm at 60 km);
-        // F7b takes poses from the clock and tightens this to 1e-6 m.
+        // The global position also goes through the body's pose: its angle and the clock are saved in double (F7b, #2082;
+        // the float angle put it 0.29 mm off here).
         const double moved = (player.position - st.globalBefore).length();
         c.metric("global position moved by the load", moved, "m");
-        c.lt("global position moved by the load (m; the body's rot line rounds)", moved, 0.06);
+        c.lt("global position moved by the load (m)", moved, 1e-6);
         c.check("airborne after the load", !player.grounded);
         st.t0 = c.T;
         return true;
