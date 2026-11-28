@@ -43,11 +43,19 @@ class Planetoid;
 struct RenderContext;
 
 // Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules), in
-// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then 3 bushes and the loose stones.
+// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then the small flora (#1995 phase 3): 3 bush
+// kinds x 4 size classes, then the loose stones x 4 size classes (pebbles, stones, a rock, a boulder).
 constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
 constexpr int kFirstBush = kWoodSpecies * kTreeClasses;
-constexpr int kStoneVariant = kFirstBush + 3; // loose stones on the ground: picked up for stone (the first stone tools)
-constexpr int kTreeVariants = kStoneVariant + 1;
+constexpr int kBushKinds = 3;                // a round shrub, a low spreading mat, an upright clump
+constexpr int kSmallFloraClasses = 4;        // small, medium, large, extra large (a thicket; a boulder)
+constexpr int kFirstStone = kFirstBush + kBushKinds * kSmallFloraClasses; // loose stones: picked up for stone (the first stone tools)
+constexpr int kTreeVariants = kFirstStone + kSmallFloraClasses;
+inline bool IsStoneVariant(int v) { return v >= kFirstStone && v < kTreeVariants; }
+inline int BushVariant(int kind, int cls) { return kFirstBush + kind * kSmallFloraClasses + cls; }
+inline int BushKindOfVariant(int v) { return (v - kFirstBush) / kSmallFloraClasses; }   // bushes only
+inline int SmallFloraClassOfVariant(int v) { return (v - kFirstBush) % kSmallFloraClasses; } // bushes and stones: 0 small .. 3 extra large
+constexpr int kBoulderClass = 3;             // a stone of this class blocks the way (a trunk to collide with) and takes hits to break
 // (#1995) Each variant comes as kTreeForms seeded meshes (its own branching), so a stand of one species and size is not
 // made of clones. Tiles and draws key on the mesh (TreeMeshOf); plants, logs and picking keep the variant.
 // RAYLIBGAME_TREE_FORMS=0: form 0 only, with the shapes as before #1995 (A/B).
@@ -102,7 +110,8 @@ struct Plant {
     float scale;
     int variant;
     bool tree() const { return variant < kFirstBush; }
-    bool stone() const { return variant == kStoneVariant; }
+    bool stone() const { return IsStoneVariant(variant); }
+    int smallClass() const { return tree() ? -1 : SmallFloraClassOfVariant(variant); } // bushes and stones (#1995): 0..3
     // A tree trunk's volume relative to a medium broadleaf at scale 1 (0.3 m radius, ~5.2 m): chop hits and logs (#274).
     float trunkVolume() const { return tree() ? radius * radius * height / (0.09f * 5.2f) : 0.0f; }
     // Chop work and yield grow a little slower than the volume (volume^0.7): a medium oak ~14 hits / 5 logs, a giant ~55 / 26.

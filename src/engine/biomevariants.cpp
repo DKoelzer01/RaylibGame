@@ -107,6 +107,22 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             for (int i = 0; i < 4; ++i)
                 if (!Bound(v[i], 1.0f, *dst[i]) || *dst[i] < 0.0f) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (numbers >= 0 or - for 1)");
             if (!extra.empty() || !(d.size > 0.0f)) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (size > 0)");
+        } else if (key == "sizes") { // (#1995 phase 3)
+            std::string v[3], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float* dst[3] = { &d.bushSize, &d.stoneSize, &d.grassSize };
+            for (int i = 0; i < 3; ++i)
+                if (!Bound(v[i], 0.0f, *dst[i]) || *dst[i] < -2.0f || *dst[i] > 2.0f) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (numbers -2..2, or - for 0)");
+            if (!extra.empty()) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (three values)");
+        } else if (key == "shrubs") { // (#1995 phase 3)
+            std::string v[BiomeVariantDef::kShrubKinds], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float total = 0.0f;
+            for (int i = 0; i < BiomeVariantDef::kShrubKinds; ++i) {
+                if (!Bound(v[i], 0.0f, d.shrubs[i]) || v[i] == "-" || d.shrubs[i] < 0.0f) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights (numbers >= 0)");
+                total += d.shrubs[i];
+            }
+            if (!extra.empty() || !(total > 0.0f)) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights, at least one > 0");
         } else if (key == "rubber") { // (#2012)
             std::string extra;
             if (!(ls >> d.rubber) || (ls >> extra) || d.rubber < 0 || d.rubber > 100) return fail(lineNo, "rubber takes one whole percent 0..100");
@@ -194,6 +210,39 @@ bool BiomeVariants_RubberRoll(int percent, uint64_t plantId) {
     uint64_t h = plantId * 0x9E3779B97F4A7C15ull; // a mix of the id: plant ids are spatial hashes, neighbours alike in their low bits
     h ^= h >> 31;
     return (int)(h % 100) < percent;
+}
+
+SmallFloraSizes SmallFloraSizesOf(int variant, Biome fallback) {
+    const BiomeVariantTable& t = BiomeVariants();
+    const BiomeVariantDef* d = variant >= 0 && variant < (int)t.defs.size() ? &t.defs[variant] : nullptr;
+    // The types' own (GUESS, #1995 phase 3): the jungle's undergrowth is rank, the savanna's and meadow's grass tall, the
+    // tundra's scrub and grass stunted, the mountains and badlands strewn with rocks and boulders, the desert with stones.
+    SmallFloraSizes s;
+    switch (d ? d->type : fallback) {
+        case Biome::Jungle:   s = { 0.6f, 0.0f, 0.4f }; break;
+        case Biome::Savanna:  s = { 0.0f, 0.2f, 0.9f }; break;
+        case Biome::Desert:   s = { -0.5f, 0.3f, -0.5f }; break;
+        case Biome::Badlands: s = { -0.3f, 0.6f, -0.3f }; break;
+        case Biome::Meadow:   s = { 0.0f, -0.3f, 0.4f }; break;
+        case Biome::Swamp:    s = { 0.3f, -0.5f, 0.6f }; break;
+        case Biome::Taiga:    s = { -0.2f, 0.3f, -0.2f }; break;
+        case Biome::Tundra:   s = { -0.7f, 0.3f, -0.7f }; break;
+        case Biome::Alpine:   s = { -0.5f, 0.7f, -0.5f }; break;
+        default: break; // forest: the mid mix
+    }
+    if (d) { s.bush += d->bushSize; s.stone += d->stoneSize; s.grass += d->grassSize; }
+    return s;
+}
+
+int SmallFloraSizeClass(float shift, float patch, float u) {
+    // Base shares 30 / 42 / 21 / 7 %, tilted by exp(t * (class - 1.5)): t > 0 moves weight to the big classes.
+    static const float kBase[4] = { 0.30f, 0.42f, 0.21f, 0.07f };
+    const float t = std::clamp(shift + 1.4f * (patch - 0.5f), -2.5f, 2.5f);
+    float w[4], total = 0.0f;
+    for (int k = 0; k < 4; ++k) total += (w[k] = kBase[k] * expf(t * ((float)k - 1.5f)));
+    float at = u * total;
+    for (int k = 0; k < 3; ++k) if ((at -= w[k]) < 0.0f) return k;
+    return 3;
 }
 
 float BiomeClimateCode(float tempC, float moist, int variant) {

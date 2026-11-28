@@ -22,6 +22,12 @@ struct BiomeVariantDef {
     static constexpr int kSpecies = kWoodSpecies;
     float trees = 1.0f, bushes = 1.0f, stones = 1.0f, size = 1.0f, cover = -1.0f;
     float species[kSpecies] = {};
+    // (#1995 phase 3) Small-flora size classes: shifts (-1 mostly small .. +1 mostly large and extra large) added to the
+    // type's own for bushes, loose stones and grass; bush kind weights (round shrub, spreading mat, upright clump; all 0 =
+    // the type's mix).
+    static constexpr int kShrubKinds = 3;
+    float bushSize = 0.0f, stoneSize = 0.0f, grassSize = 0.0f;
+    float shrubs[kShrubKinds] = {};
     // (#2012) Rubber: the percent of its felled trees that give one rubber (deterministic per tree:
     // BiomeVariants_RubberRoll). The jungle type gives it from every tree whatever this says.
     int rubber = 0;
@@ -54,6 +60,14 @@ const char* BiomeVariantName(int id); // its display name; "" for an unknown id
 // (#2012) Whether the plant with this id is among a percent of trees: a hash of the id, so a host and its clients agree
 // and a tree gives the same answer however often it is asked.
 bool BiomeVariants_RubberRoll(int percent, uint64_t plantId);
+
+// (#1995 phase 3) Small-flora size classes. The shifts for a variant id (its type's own, plus the variant's `sizes`);
+// an unknown id (-1) uses `fallback`'s type defaults.
+struct SmallFloraSizes { float bush = 0.0f, stone = 0.0f, grass = 0.0f; };
+SmallFloraSizes SmallFloraSizesOf(int variant, Biome fallback);
+// The class (0 small, 1 medium, 2 large, 3 extra large) from a shift, a patch noise 0..1 (so sizes form stands) and a
+// per-plant uniform 0..1. Shift 0 at a mid patch: about 30 / 42 / 21 / 7 %.
+int SmallFloraSizeClass(float shift, float patch, float u);
 
 // (#2032) Per-biome tints. The climate code the mesher puts in terrain vertices (and grass and trees carry in their up
 // vector's length): 2 + the temperature step (0-62 over -30..40 C) + 64 x the variant id (-1 = none: 0) + moisture as
