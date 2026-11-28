@@ -46,7 +46,7 @@ int Team() { int t = Teams_Of(PlayerId_Local()); return t ? t : Teams_CreateSolo
 SCENARIO("factory/alt-recipe") {
     s.tags = { "factory", "machines", "adventure" };
     s.world = ScenarioWorld::Sandbox;
-    s.args = { "--day" };
+    s.args = { "--day", "--record-hud", "1" }; // the recording shows the machine panel's recipe line
     s.timeout = 90.0;
     s.step("a coke oven on the ground, the player on foot before it", 20.0, [](ScenarioCtx& c) {
         c.waitingFor("1 s of play and an idle world");
