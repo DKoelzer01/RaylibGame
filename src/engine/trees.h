@@ -132,14 +132,20 @@ struct Trunk {
     float height, radius;
 };
 
+// A tile's instances by mesh. Immutable once built and shared (#2133): the batch sort reads it on a job while the main
+// thread goes on; a change (a plant removed) makes a new copy.
+struct TreeTileInstances {
+    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
+    std::vector<uint16_t> meshes;              // the meshes with any instances (the sort skips the empty ~200 of 216)
+};
 struct TreeTile {
     bool ready = false;
     uint32_t version = 0;
     Vector3 centre{};                          // body-local, on the surface
-    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::shared_ptr<const TreeTileInstances> draw = std::make_shared<TreeTileInstances>();
     std::vector<Trunk> trunks;
     std::vector<Plant> plants;                 // every tree and bush (picking)
-    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
     bool regrowing = false;                    // has saplings: rebuild now and then as they grow
     double builtAt = 0.0;                      // world time the build used
     bool pending = false;                      // a rebuild is queued
@@ -194,6 +200,8 @@ public:
     // Tests: trees per species in loaded tiles within `range` of a body-local point.
     void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes = nullptr) const; // classes: kTreeClasses counts (#274)
 
+    struct BatchWork;                          // (#2133) a batch sort in flight on a job (trees.cpp)
+
 private:
     struct Shared;                             // results queue shared with worker jobs
     std::shared_ptr<Shared> shared;
@@ -212,9 +220,11 @@ private:
     // Two detail levels: [0..kTreeMeshes) full meshes near the camera, then simple far meshes.
     unsigned int vao[kTreeSets][2 * kTreeMeshes] = {}, vbo[kTreeSets][2 * kTreeMeshes] = {};
     int count[kTreeSets][2 * kTreeMeshes] = {};
+    int capacity[kTreeSets][2 * kTreeMeshes] = {}; // (#2133) instances each vbo has room for (kept between rebuilds)
     Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeMeshes] = {}, culledVbo[2 * kTreeMeshes] = {}, cmdBuf = 0;
+    int culledCapacity[2 * kTreeMeshes] = {};
     // (#2141) The main view's placement in the frame it was drawn (the Hi-Z pyramid's frame, next frame): model and anchor.
     Matrix hizModel{};
     DVec3 hizAnchor{};
@@ -223,8 +233,13 @@ private:
     std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;
 
+    // (#2133) The batch rebuild: startBatch snapshots the tiles and sorts them on a job; finishBatch uploads the result.
+    std::shared_ptr<BatchWork> batchWork;
+    bool batchInFlight = false;
+
     void request(const TreeTileKey& key, TreeTile& tile, float priority);
-    void rebuildBatches(Vector3 camLocal);
+    void startBatch(Vector3 camLocal);
+    void finishBatch();
 };
 
 // Tile helpers (exposed for tests).

@@ -239,7 +239,7 @@ SCENARIO("perf/horizon-view") {
             const int tiles = c.body->trees ? c.body->trees->loadedTiles() : 0;
             c.metric(tag + ": tree tiles added", (double)(tiles - h.tiles0), "");
             c.metric(tag + ": tree tile build (one job)", std::max(0.0, Profiler_ZoneMeanMs("trees: build tile")), "ms");
-            c.metric(tag + ": tree batch rebuild", std::max(0.0, Profiler_ZoneMeanMs("trees: rebuild batches")), "ms");
+            c.metric(tag + ": tree batch rebuild (main thread)", std::max(0.0, Profiler_ZoneMeanMs("trees: batch start")) + std::max(0.0, Profiler_ZoneMeanMs("trees: batch upload")), "ms");
             Profiler_Reset();
             return true;
         });
@@ -267,6 +267,29 @@ SCENARIO("perf/horizon-view") {
             return true;
         });
     }
+    // (#2133) Flying: 200 m up at 100 m/s for 10 s along the view (the tree batches rebuild every 40 m of camera movement;
+    // tiles stream in ahead). Frame p95/p99/max and the batch rebuild's parts.
+    s.step("fly 200 m", 20.0, [](ScenarioCtx& c) {
+        static Timing t;
+        static Vector3 start{};
+        if (c.t < 0.02) { t = Timing(); Profiler_Reset(); start = Vector3Scale(h.fv.up, h.fv.ground + 200.0f); }
+        const Vector3 eye = Vector3Add(start, Vector3Scale(h.fv.ax, 100.0f * (float)c.t));
+        const Vector3 up = Vector3Normalize(eye);
+        c.camera(Vector3Scale(up, h.fv.ground + 200.0f), Vector3Add(Vector3Scale(up, h.fv.ground + 150.0f), Vector3Scale(h.fv.ax, 1000.0f)), up);
+        t.frame();
+        c.waitingFor("the flight");
+        if (c.t <= 10.0) return false;
+        std::vector<double> s = t.ms;
+        std::sort(s.begin(), s.end());
+        auto pct = [&](double q) { return s.empty() ? 0.0 : s[std::min(s.size() - 1, (size_t)(q * s.size()))]; };
+        c.metric("fly: frame p50", pct(0.5), "ms");
+        c.metric("fly: frame p95", pct(0.95), "ms");
+        c.metric("fly: frame p99", pct(0.99), "ms");
+        c.metric("fly: frame max", s.empty() ? 0.0 : s.back(), "ms");
+        for (const char* z : { "trees: batch start", "trees: batch sort", "trees: batch upload" })
+            c.metric(std::string("fly: ") + z, std::max(0.0, Profiler_ZoneMeanMs(z)), "ms");
+        return true;
+    });
 }
 
 // (#2141) A view where a hill hides a forest: a ridge crest near FindForestView's patch with the most trees 300-1500 m
