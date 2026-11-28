@@ -391,8 +391,8 @@ bool BeltTool_Update(Scene& world, const PlayerInput& in) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Drawing: the run being dragged (green, or red with crosses), the belts already laid (outlined, so build mode shows them
-// until belts are drawn, #2053), the one under the crosshair (orange: LMB takes it up), and the flow arrows on each.
+// Drawing: the run being dragged (green, or red with crosses) and the laid belt under the crosshair (orange: LMB takes it
+// up), with flow arrows on each. Laid belts draw themselves (beltmodels, #2053).
 // ---------------------------------------------------------------------------------------------
 
 namespace {
@@ -461,14 +461,10 @@ void BeltTool_Draw3D(Scene& world) {
         rlPopMatrix();
     };
     const Plot* hovered = hover.on ? hover.plot : nullptr;
-    for (const auto& pl : body->plots->plots) {
-        if (pl->belts.empty()) continue;
-        under(*pl, [&] {
-            for (const ConduitRun& r : pl->belts) {
-                const bool aimed = pl.get() == hovered && r.id == hover.belt && !drag.on;
-                DrawRun(r, aimed ? Fade(ORANGE, 0.35f) : Fade(SKYBLUE, 0.18f), aimed ? ORANGE : Fade(SKYBLUE, 0.8f), false);
-            }
-        });
+    // Laid belts draw themselves (#2053); only the one under the crosshair gets a box: LMB takes it up.
+    if (hovered && hover.belt && !drag.on) {
+        for (const ConduitRun& r : hovered->belts)
+            if (r.id == hover.belt) under(*hovered, [&] { DrawRun(r, Fade(ORANGE, 0.35f), ORANGE, false); });
     }
     if (drag.on && planPlot && planned.points.size() >= 2) {
         const bool ok = plannedCheck.ok;
