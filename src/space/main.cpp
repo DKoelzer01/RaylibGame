@@ -1508,6 +1508,12 @@ int main(int argc, char** argv)
         if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1);
         if (worldDifficulty == 0) inventory.add("berries", 6);
     });
+    GameSave_SetServerSpawnHook([&world] { // (#2157) a dedicated server's player: at the start, as on a new world
+        Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        if (start) player.spawnOn(world, *start, StartSpawnDir(*start));
+    });
 
     bool windowKeepAlive = true;
 
