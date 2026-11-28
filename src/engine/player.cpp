@@ -75,7 +75,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // world terms then, so the frame path converts it again instead of restoring the last flight's stored frame velocity.
     // A spawn or placeAt anchors the player (anchorTo sets lastEndPosition), so the spawn count tells those apart: missed, the
     // Fixed path rebuilt the last flight's velocity after a teleport mid-flight (F8b-2, #2113).
-    movedOutside = (position - lastEndPosition).length() > 1e-6 || spawns != updateSpawns;
+    movedOutside = (position - lastEndPosition).length() > 1e-6;
     if (movedOutside) { fxActive = false; fcActive = false; fcBody = 0; airVelBody = 0; viewBody = 0; }
     // (#1562) In creative, a double-tap of Space toggles flying as F does: the first tap still jumps (or, in flight, rises); a
     // second within kDoubleTapFly toggles; a third starts a new pair.
