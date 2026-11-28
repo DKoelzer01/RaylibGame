@@ -293,6 +293,14 @@ int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
 static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
 bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.25; } // (#937: 0.25 s, so one slow frame does not blink the readout)
+static constexpr float kMiniSize = 200.0f, kMiniRim = 4.0f; // the minimap's diameter and its dark rim, px
+static Vector2 MinimapCentre() { return { GetScreenWidth() - kMiniSize * 0.5f - 20.0f, 150.0f + kMiniSize * 0.5f }; }
+Rectangle Nav_MinimapRect() {
+    if (!Nav_MinimapShown()) return { 0, 0, 0, 0 };
+    const Vector2 c = MinimapCentre();
+    const float r = kMiniSize * 0.5f + kMiniRim;
+    return { c.x - r, c.y - r, 2.0f * r, 2.0f * r };
+}
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
@@ -463,8 +471,8 @@ void Nav_DrawHUD(Scene& world) {
     if (!HasMap() || !minimap.tex.id || !minimap.shown || minimapBody != h.body->name) return;
     minimapDrawnAt = GetTime();
     const MapImage& m = *minimap.shown;
-    const float size = 200.0f, rad = size * 0.5f;
-    const Vector2 c = { sw - rad - 20.0f, 150.0f + rad };
+    const float size = kMiniSize, rad = size * 0.5f;
+    const Vector2 c = MinimapCentre();
     const float rot = heading >= 0.0f ? -heading : 0.0f;
     DrawCircleV(c, rad + 4.0f, Fade(BLACK, 0.55f));
     // The image is centred where it was rendered and wider than the circle; shift it by how far the
