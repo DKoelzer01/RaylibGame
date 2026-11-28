@@ -52,14 +52,24 @@ SCENARIO("hazards/cave-gas") {
         player.spawnOn(c.world, *c.body, c.spawnDirWorld());
         return true;
     });
-    s.step("a CO2 pocket 12 m ahead", 5.0, [](ScenarioCtx& c) {
+    // (#2109) The settle step's spawn raises the loading screen, which holds the gas update until the terrain round the
+    // spawn is built: on the hosted null-GL loop that takes longer than the walk's deadline in sim time. So the walk
+    // starts only once the update sees the pocket (12 m away, inside the 40 m near range).
+    s.step("a CO2 pocket 12 m ahead", 30.0, [](ScenarioCtx& c) {
         if (c.t < 0.5) return false;
-        CaveGas_Reset();
-        S.start = FeetLocal(c); S.up = Vector3Normalize(c.body->dirToLocal(player.up)); // (the sandbox's ground isn't radial)
-        const Vector3 f = c.body->dirToLocal(player.forward);
-        S.ahead = Vector3Normalize(Vector3Subtract(f, Vector3Scale(S.up, Vector3DotProduct(f, S.up))));
-        // r 6 m, its centre 1 m over the ground: the gas reaches 2.8 m up, over the head (1.6 m).
-        AddPocket(CaveGasKind::CO2, 12.0f, 1.0f, 6.0f);
+        auto place = [&] {
+            CaveGas_Reset();
+            S.start = FeetLocal(c); S.up = Vector3Normalize(c.body->dirToLocal(player.up)); // (the sandbox's ground isn't radial)
+            const Vector3 f = c.body->dirToLocal(player.forward);
+            S.ahead = Vector3Normalize(Vector3Subtract(f, Vector3Scale(S.up, Vector3DotProduct(f, S.up))));
+            // r 6 m, its centre 1 m over the ground: the gas reaches 2.8 m up, over the head (1.6 m).
+            AddPocket(CaveGasKind::CO2, 12.0f, 1.0f, 6.0f);
+        };
+        static bool added = false;
+        if (!added) { added = true; place(); }
+        c.waitingFor("the gas update to see the pocket (the spawn's loading screen holds it)");
+        if (CaveGas_Stats().pockets == 0) return false;
+        place(); // again from where the player stands now the world runs (the spawn may have settled them meanwhile)
         survival.oxygen = 100.0f; survival.health = 100.0f;
         S.health0 = survival.health;
         c.check("clean air at the start", !survival.inGas && survival.breathable);
