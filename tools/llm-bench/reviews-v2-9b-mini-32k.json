@@ -1,0 +1,4 @@
+{"weather-seed": {"verdict": "correct", "note": ""}, "noise-seed": {"verdict": "correct", "note": ""}, "ship-turn": {"verdict": "correct", "note": "M_PI; normalize on its own line."},
+ "creature-chase-v2": {"verdict": "correct", "note": "Matches the reference."}, "trees-clearing-v2": {"verdict": "correct", "note": "Any non-zero component, as specified."},
+ "fluid-cellkey": {"verdict": "correct", "note": ""}, "catalog-slots": {"verdict": "minor", "note": "Correct code; its comments cite a made-up issue number (#1252)."},
+ "site-query": {"verdict": "correct", "note": ""}}

@@ -1,0 +1,19 @@
+diff --git a/src/engine/fluid.cpp b/src/engine/fluid.cpp
+index 44155f25..c4f5a3cd 100644
+--- a/src/engine/fluid.cpp
++++ b/src/engine/fluid.cpp
+@@ -3129,3 +3132,14 @@ bool Fluid::GeneratedWaterValid(uint64_t body, Vector3 local) {
+     const int f = WaterField::CellFill(*WaterField::Current(), body, local, 0);
+     return f < 0 || f > 0;
+ }
++
++#ifdef RAYLIBGAME_UNIT_TESTS
++#include <gtest/gtest.h>
++// #1855 M9: cells past +-1024 (a 256 m site of 0.25 m cells reaches them) kept apart by their keys; brick keys merged them.
++TEST(Fluid, CellKeysStayApartPastTheBrickKeysRange) {
++    EXPECT_EQ(Key(0, 0, 1030), Key(0, 1, -1018)) << "the old collision (the reason for CellKey)";
++    EXPECT_NE(CellKey(0, 0, 1030), CellKey(0, 1, -1018));
++    EXPECT_NE(CellKey(-1100, 1100, 0), CellKey(-1100, 1099, 0));
++    EXPECT_NE(CellKey(5000, -5000, 2000), CellKey(5000, -5000, -2000));
++}
++#endif

@@ -1,0 +1,16 @@
+{
+  "id": "ship-turn",
+  "commit": "0823ee3440d287fa8f8fcf73e14a5843b857f8c6",
+  "base": "9f68a008b6bb11ef8ebe34388665da33ee97c05c",
+  "subject": "Ship: the autopilot turns toward a target dead behind (a half turn about up), its orientation kept unit (#1856 M22)",
+  "kind": "unit",
+  "difficulty": "medium",
+  "files": [
+    "src/space/ship.cpp"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=Ship.TurnsTowardATargetDeadBehind",
+  "ref_lines_changed": 25,
+  "file_tokens_k": {
+    "src/space/ship.cpp": 3.3
+  }
+}

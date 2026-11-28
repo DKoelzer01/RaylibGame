@@ -1,0 +1,16 @@
+{
+  "id": "weather-seed",
+  "commit": "ea2b64b5c45ff90300ee684172b5103e2439e29c",
+  "base": "7df80619ee515a41cd672f1e182f43f84277d644",
+  "subject": "Weather: the noise fields follow the world seed (a second world kept the first one's weather) (#1845)",
+  "kind": "unit",
+  "difficulty": "easy",
+  "files": [
+    "src/space/weather.cpp"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=Weather.FieldsFollowTheWorldSeed",
+  "ref_lines_changed": 16,
+  "file_tokens_k": {
+    "src/space/weather.cpp": 4.1
+  }
+}

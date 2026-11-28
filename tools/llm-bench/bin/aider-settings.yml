@@ -1,0 +1,10 @@
+- name: openai/local
+  edit_format: diff
+  use_repo_map: true
+  use_temperature: 0.2
+  streaming: false
+  extra_params:
+    max_tokens: 8192
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false

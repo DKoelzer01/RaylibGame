@@ -1,0 +1,58 @@
+diff --git a/tests/scenarios/world_site_query_range.cpp b/tests/scenarios/world_site_query_range.cpp
+new file mode 100644
+index 00000000..63b3d494
+--- /dev/null
++++ b/tests/scenarios/world_site_query_range.cpp
+@@ -0,0 +1,52 @@
++// world/site-query-range (#1854, bug hunt 2026-11-26): Structures_SitesNear / NearestSite stepped half a tile per sample
++// but counted the samples by whole tiles, so a query saw about half its range (3 km asked, ~1.8 km scanned): /locate, music
++// and animals missed sites. On the planet (seed 42), from the start: every site a 6 km query finds within 3 km, a 3 km query
++// finds too, and NearestSite agrees with the nearest of them. The 12 km query /locate makes is timed (a metric).
++#include "scenario.h"
++#include "structures.h"
++#include "world.h"
++#include <raymath.h>
++#include <chrono>
++#include <vector>
++
++SCENARIO("world/site-query-range") {
++    s.tags = { "world" };
++    s.world = ScenarioWorld::Planet;
++    s.args = { "--day" };
++    s.timeout = 240.0;
++    s.step("a 3 km site query sees every site within 3 km", 200.0, [](ScenarioCtx& c) {
++        c.waitingFor("1 s of play and an idle world");
++        if (c.T < 1.0 || !WorldIdle()) return false;
++        const Vector3 home = c.spawnDirLocal();
++        const Vector3 here = Vector3Scale(home, c.field->radius + c.field->elevation(home));
++        std::vector<SiteInfo> wide, near;
++        Structures_SitesNear(*c.body, here, 6000.0f, wide);
++        Structures_SitesNear(*c.body, here, 3000.0f, near);
++        int within = 0, missed = 0, farthest = 0;
++        for (const SiteInfo& w : wide) {
++            if (w.distance > 3000.0f) continue;
++            ++within;
++            bool found = false;
++            for (const SiteInfo& n : near) found = found || Vector3Distance(n.at, w.at) < 1.0f;
++            if (!found) { ++missed; c.note(TextFormat("missed: %s at %.0f m", w.set.c_str(), w.distance)); }
++            else farthest = std::max(farthest, (int)w.distance);
++        }
++        c.note(TextFormat("%d sites within 3 km (6 km query), %d from the 3 km query, the farthest found %d m", within, (int)near.size(), farthest));
++        c.gt("sites within 3 km", within, 2.0);
++        c.eq("sites within 3 km the 3 km query missed", missed, 0.0);
++        bool band = false; // a site 2-3 km out (the bug's scan stopped at ~1.8 km)
++        for (const SiteInfo& w : wide) band = band || (w.distance > 2000.0f && w.distance <= 3000.0f);
++        if (band) c.gt("the farthest site the 3 km query found (m)", farthest, 2000.0);
++        else c.note("no site 2-3 km out: the far-band check is skipped");
++        Vector3 at{}; std::string set;
++        const bool any = Structures_NearestSite(*c.body, here, 3000.0f, at, set);
++        c.check("NearestSite finds one within 3 km", any);
++        if (any && !near.empty()) c.lt("NearestSite: metres from the nearest listed", Vector3Distance(at, near[0].at), 1.0);
++        const auto t0 = std::chrono::steady_clock::now();
++        std::vector<SiteInfo> locate;
++        Structures_SitesNear(*c.body, here, 12000.0f, locate);
++        c.metric("a 12 km site query (/locate)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), "ms");
++        c.note(TextFormat("12 km: %d sites", (int)locate.size()));
++        return true;
++    });
++}

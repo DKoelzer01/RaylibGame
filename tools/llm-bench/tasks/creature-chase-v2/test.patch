@@ -1,0 +1,32 @@
+diff --git a/src/space/creatures.cpp b/src/space/creatures.cpp
+index 63428700..f23d155e 100644
+--- a/src/space/creatures.cpp
++++ b/src/space/creatures.cpp
+@@ -506,6 +506,27 @@ TEST(Creatures, ThornbackAsBefore) {
+     EXPECT_EQ(Step(r, c, 0.0, { Player(3.0f) }, true, 0.3f).mood, Mood::Retreat);
+ }
+ 
++// (#1851) A target taken within the range is chased out to the chase range: it gave up at the range.
++TEST(Creatures, ChaseKeptToChaseRange) {
++    if (Faction_Player() < 0 || Factions().find("beast") < 0) GTEST_SKIP() << "factions.txt not found (run from the repo root)";
++    for (const char* aggro : { "predator", "territorial" }) {
++        CreatureSpec c; std::string err;
++        ASSERT_TRUE(Creatures_ParseLine(std::string("stalker | beast | aggro=") + aggro + " range=12 chase=30 sight=1000 darksight=1 damage=8 reach=1.8", c, &err)) << err;
++        c.factionIdx = Factions().find(c.faction);
++        BrainState s;
++        EXPECT_EQ(Step(s, c, 0.0, { Player(13.0f) }).mood, Mood::Idle) << aggro;  // not taken past its range
++        EXPECT_EQ(Step(s, c, 0.1, { Player(11.0f) }).mood, Mood::Chase) << aggro; // taken
++        EXPECT_EQ(Step(s, c, 0.2, { Player(13.0f) }).mood, Mood::Chase) << aggro; // kept past the range
++        EXPECT_EQ(Step(s, c, 0.3, { Player(29.0f) }).mood, Mood::Chase) << aggro;
++        EXPECT_EQ(Step(s, c, 0.4, { Player(31.0f) }).mood, Mood::Idle) << aggro;  // given up past the chase range
++        EXPECT_EQ(Step(s, c, 0.5, { Player(20.0f) }).mood, Mood::Idle) << aggro;  // and not taken again from there
++        // (v2) a player in range it neither sees nor hears is not taken (territorial creatures included)
++        BrainState u;
++        Percept unseen = Player(11.0f); unseen.seen = false; unseen.heard = false;
++        EXPECT_NE(Step(u, c, 1.0, { unseen }).mood, Mood::Chase) << aggro << ": neither seen nor heard";
++    }
++}
++
+ TEST(Creatures, NightHunterFireAndDay) {
+     if (Faction_Player() < 0) GTEST_SKIP() << "factions.txt not found";
+     CreatureSpec c; std::string err;

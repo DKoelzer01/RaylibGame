@@ -1,0 +1,3 @@
+{"weather-seed": {"verdict": "correct", "note": ""}, "noise-seed": {"verdict": "correct", "note": ""}, "ship-turn": {"verdict": "correct", "note": ""},
+ "creature-chase-v2": {"verdict": "defect", "note": "want = ... || isCurrentTarget outside the hostility and seen/heard tests: a creature keeps chasing a target it can no longer see or hear, and defensive creatures chase too. The v2 test starts without a target, so it can't see this."},
+ "trees-clearing-v2": {"verdict": "correct", "note": ""}, "fluid-cellkey": {"verdict": "correct", "note": ""}}

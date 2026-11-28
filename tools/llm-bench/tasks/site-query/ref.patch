@@ -1,0 +1,22 @@
+diff --git a/src/space/structures.cpp b/src/space/structures.cpp
+index f8cd32c9..2106782d 100644
+--- a/src/space/structures.cpp
++++ b/src/space/structures.cpp
+@@ -1230,7 +1230,7 @@ bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, V
+     const Vector3 t2 = Vector3CrossProduct(t1, up);
+     float best = range; bool found = false;
+     std::unordered_set<uint64_t> seen;
+-    const int R = (int)ceilf(range / kTile) + 1;
++    const int R = (int)ceilf(range / (kTile * 0.5f)) + 1; // (#1854) samples are half a tile apart: by whole tiles it saw half the range
+     for (int a = -R; a <= R; ++a)
+         for (int b = -R; b <= R; ++b) {
+             Vector3 centre;
+@@ -1271,7 +1271,7 @@ int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std:
+         const bool dungeon = S.dungeon > 0.0f && DungeonsOn() && Unit(dh) < S.dungeon; // (as Build's roll)
+         out.push_back({ p, S.name, S.kind, dungeon, d });
+     };
+-    const int R = (int)ceilf(range / kTile) + 1;
++    const int R = (int)ceilf(range / (kTile * 0.5f)) + 1; // (#1854) half-tile samples, as NearestSite
+     for (int a = -R; a <= R; ++a)
+         for (int b = -R; b <= R; ++b) {
+             Vector3 centre;

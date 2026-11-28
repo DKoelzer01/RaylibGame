@@ -1,0 +1,19 @@
+diff --git a/src/space/weather.cpp b/src/space/weather.cpp
+index 5ee64530..bfb5388e 100644
+--- a/src/space/weather.cpp
++++ b/src/space/weather.cpp
+@@ -262,3 +263,14 @@ void Weather_Draw3D(Scene& world) {
+ void Weather_DrawHUD() {
+     // (#1162) Nothing: lightning lights the sky and the open ground in the 3D scene instead of a white overlay.
+ }
++
++#ifdef RAYLIBGAME_UNIT_TESTS
++#include <gtest/gtest.h>
++// (#1845) A second world loaded in the session gets its own weather, not the first one's; the same seed again, the same.
++TEST(Weather, FieldsFollowTheWorldSeed) {
++    auto cloudAt = [](unsigned int seed) { Init(seed); return fields.cloud.fractal(4, 1234.0f, 56000.0f, 789.0f); };
++    const float a = cloudAt(1), b = cloudAt(2), a2 = cloudAt(1);
++    EXPECT_NE(a, b);
++    EXPECT_EQ(a, a2);
++}
++#endif

@@ -1,0 +1,16 @@
+{
+  "id": "site-query",
+  "commit": "4af4f2191d70b6ed63f050289fad635798cb2f98",
+  "base": "ea2b64b5c45ff90300ee684172b5103e2439e29c",
+  "subject": "Structures: site queries scan their whole range (half-tile samples counted by whole tiles saw half) (#1854)",
+  "kind": "scenario",
+  "difficulty": "medium",
+  "files": [
+    "src/space/structures.cpp"
+  ],
+  "test_cmd": "$GAME --scenario world/site-query-range --scenario-no-record --scenario-out /run/scenario-out",
+  "ref_lines_changed": 4,
+  "file_tokens_k": {
+    "src/space/structures.cpp": 27.0
+  }
+}

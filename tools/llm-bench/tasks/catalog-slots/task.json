@@ -1,0 +1,18 @@
+{
+  "id": "catalog-slots",
+  "commit": "372b867df3d28150bd08e64cdefb128ca50825b5",
+  "base": "19ac60c6ef7aef1b9c627ae267d7f082973e75cb",
+  "subject": "The Catalog's slots are the Inventory's size (#887)",
+  "kind": "scenario",
+  "difficulty": "easy",
+  "files": [
+    "src/space/gameui.cpp",
+    "src/space/gameui.h"
+  ],
+  "test_cmd": "$GAME --scenario ui/catalog-slots --scenario-no-record --scenario-out /run/scenario-out",
+  "ref_lines_changed": 9,
+  "file_tokens_k": {
+    "src/space/gameui.cpp": 40.7,
+    "src/space/gameui.h": 0.9
+  }
+}

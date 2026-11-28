@@ -1,0 +1,18 @@
+{
+  "id": "trees-clearing-v2",
+  "commit": "9f68a008b6bb11ef8ebe34388665da33ee97c05c",
+  "base": "100b69b0fdd6951c0646d98977d953a885cdb88e",
+  "subject": "Trees: a clearing reaches tiles still building too (their trees grew inside it) (#1856 M20)",
+  "kind": "unit",
+  "difficulty": "hard",
+  "files": [
+    "src/engine/trees.cpp",
+    "src/engine/trees.h"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=Trees.ClearingReachesATileStillBuilding",
+  "ref_lines_changed": 26,
+  "file_tokens_k": {
+    "src/engine/trees.cpp": 16.2,
+    "src/engine/trees.h": 3.0
+  }
+}

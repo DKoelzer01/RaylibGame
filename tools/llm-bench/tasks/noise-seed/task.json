@@ -1,0 +1,16 @@
+{
+  "id": "noise-seed",
+  "commit": "dd0cc4ba24ecc8dc2285e1979c2d1dc96b51eaba",
+  "base": "d0487e4ff4d728852704d93c2328917b685cc198",
+  "subject": "Noise: the 1D and 2D fractals take the seed, as the 3D one (no caller uses them yet: nothing changes) (#1856 M13)",
+  "kind": "unit",
+  "difficulty": "easy",
+  "files": [
+    "src/engine/SimplexNoise.cpp"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=SimplexNoise.LowerDimensionFractalsAreSeeded",
+  "ref_lines_changed": 12,
+  "file_tokens_k": {
+    "src/engine/SimplexNoise.cpp": 6.6
+  }
+}
