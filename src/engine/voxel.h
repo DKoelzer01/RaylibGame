@@ -80,6 +80,7 @@ enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, S
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
+inline int gSpawnVariant = -1; // ...or of this biome variant (--bench-biome forest.birch_grove; #1977)
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
 // Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
@@ -199,6 +200,7 @@ public:
     WorldGenParams gen;           // the world's generation parameters (#504): defaults = the terrain as before
     uint32_t caveEpoch = 0;       // #1055: unique per field and land (renewed by setGenParams / setSandbox): part of the cave cells' key
     bool caveBaked() const;       // #1055: whether the erosion bake is visible here (part of the cave cells' key)
+    uint64_t erosionHash() const; // #1882: the bake's hash (PlanetErosion::hash), 0 without a bake (worldgen/metrics)
     // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
     void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
@@ -210,6 +212,8 @@ public:
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter, caveMouths;
+    SimplexNoise variantNoise;      // biome variants (#1977): not in gpuNoiseParams (CPU only so far)
+    float variantQ[65] = {};        // ...its quantiles over the sphere (variantU maps through them to an even 0..1)
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -256,6 +260,9 @@ public:
     // Rock strata (#587): the column here (from region-scale fields, as the erosion bake sees it) and the rock at a
     // body-local point (its layer at the point's height, in the bake's simulation heights).
     StrataColumn strataColumn(Vector3 dir) const;
+    // #1990: the erosion bake's column: strataColumn + the biome's bake multipliers (biomes.txt `bake`), from a bake-free
+    // estimate at the input land height h0 (m): biomeOf/variantAt on climateAt(dir, h0), never elevation() or the bake.
+    StrataColumn bakeStrataColumn(Vector3 dir, float h0) const;
     RockType rockTypeAt(Vector3 p) const;
     // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
     // give the noise terrain the GPU point kernel ports (it has no bake).
@@ -268,6 +275,7 @@ public:
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres
     float karstWeight(Vector3 s) const { return gen.karst ? Strata_KarstWeight(s, fieldSeed) : 0.0f; } // #592: 0..1
+    unsigned int terrainSeed() const { return fieldSeed; } // #1248: the mana field is seeded from it
     float volcanoWeight(Vector3 s) const { float w = 0.0f; if (gen.volcanoes) Strata_Volcano(s, radius, fieldSeed, &w); return w; } // #1063: 0..1 toward a vent (0 off volcanoes)
     // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
     float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
@@ -282,6 +290,14 @@ public:
     WaterSource waterSourceAt(Vector3 dir) const;
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
+    // Tests (#1965): what becomes of the bake's ponds - each through the same rules as the terrain (bakePond). Counts by
+    // outcome; within: the ones kept whose centre lies within `within` m (surface arc) of `dir`; nearest: m to the closest
+    // kept one (-1: none); smallest: the least radius kept (m).
+    // nearWater = inLake (in a lake's water; lakeIsPond of those at the pond's own level) + lakeBank + river.
+    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, inLake = 0, lakeIsPond = 0, lakeCellsMax = 0, lakeBank = 0, river = 0,
+                        low = 0, depth = 0, within = 0, wet = 0; float nearest = -1.0f, smallest = -1.0f;
+                        float nearestWet = -1.0f; Vector3 nearestWetDir{ 0, 1, 0 }; }; // the nearest hollow showing water (any rule)
+    PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -293,6 +309,19 @@ public:
     Climate climateAt(Vector3 dir, float elev) const;
     Biome biomeAt(Vector3 dir, float elev) const;
     Biome biomeOf(const Climate& c, float elev) const;
+    // Biome variants (#1977, biomevariants.h): a ~2.5 km variant noise, mapped to an even 0..1 over the planet
+    // (variantU), split into each type's weighted bands; a gated variant passes the point to its type's next band.
+    // variantAt returns an id into BiomeVariants().defs (its .type == biomeAt's biome). CPU only: nothing on the
+    // GPU path reads it yet (#1985 adds it to terrain.glsl when a variant changes the 3D density).
+    float variantU(Vector3 dir) const;
+    int variantOf(Biome type, const Climate& c, float elev, float u) const;
+    int variantAt(Vector3 dir, float elev) const;
+    // ...with the variant noise read at uDir (a point near dir): the flora dithers its variant borders this way (#1978).
+    int variantAt(Vector3 dir, float elev, Vector3 uDir) const;
+    // ...with climateAt(dir, elev) already in hand (the mesher, #2032): the same answer without computing it again.
+    int variantAt(Vector3 dir, float elev, Vector3 uDir, Climate atDir) const;
+    Vector3 nearestVariantDir(Vector3 home, int variant) const; // as nearestBiomeDir, for --bench-biome <type>.<id>
+    Vector3 nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const; // ...is(dir, elev) 200 m out on four sides
     // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
     // mesas (flat tops on steep risers), swamps flattened toward the water table.
     float biomeShape(Vector3 dir, float h, float fp) const;
@@ -321,7 +350,7 @@ public:
     // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
     // 3D terrain: metres the surface is raised (+) or carved (-) here by the 3D noise band (0 outside it).
-    struct Column3D { float mask = 0.0f, f = 0.0f, wet = 0.0f; }; // the 3D band's per-column strength (Plan 5 C). (The cliff lip over a column went with the terraces, #543.) // wet (#971): caveWetColumn, the cave roofs' keeper
+    struct Column3D { float mask = 0.0f, f = 0.0f, wet = 0.0f, river = 0.0f; }; // river (#1438): riverChannel, 1 in a river channel and its bank, fading to 0; // the 3D band's per-column strength (Plan 5 C). (The cliff lip over a column went with the terraces, #543.) // wet (#971): caveWetColumn, the cave roofs' keeper
     // With the height-map elevation and 3D-band column at p already known (gridSurface, from the chunk's block grid):
     // chunk meshing (#148) skips re-evaluating the height map at every vertex (~80% of the per-vertex cost).
     VoxelMaterial materialSkyHinted(Vector3 p, float base, float footprint, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const;
@@ -329,6 +358,9 @@ public:
     // (#971) 0..1: a wet lowland (swamp, or a river's floodplain), where cave roofs never collapse into trenches (#549's mouths
     // stay closed). Once per height-map grid node (cached with the column) and for single samples in a mouth region only.
     float caveWetColumn(Vector3 dir, float elev) const;
+    // (#1438) 1 in a river's channel and 3 m beyond its edge, fading to 0 by 15 m: the density's detail noise and rock features
+    // fade out there, so they don't refill the channel over its water (rivers seen as dry sand).
+    float riverChannel(Vector3 dir) const;
     // (#615 step 1) All the caves in one place: metres from p to the nearest cave wall (< 0 inside a cave; 1e9 where no cave
     // reaches). densityNear carves where it is under its meshing reach; terrain.glsl's caveDistance is the same, bit-exact.
     // hit (tools: --cave-stats): what made the distance.
@@ -343,9 +375,16 @@ public:
     // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
     // outward (downhill) direction, body-local. Tests and captures.
     bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind = -1) const; // kind: -1 any entrance, 0 hillside, 1 karst sink, 2 resurgence (#1052), 3 a chamber centre (#1058)
+    void caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const; // #1116: the entries of one kind within range (tests)
     struct CaveShaft { Vector3 top, up; float radius, depth; };          // #1067: a shaft open to the sky (karst sink, tube skylight)
     void shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const; // those whose shaft can reach the box [lo, hi]
     int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
+    // (#1223) For creature spawning: the cave segments (axis a-b, radii, the up of their floor, kind: 0 passage, 1 mouth, 2 rubble
+    // (solid), 3 chamber or lava tube, 4 slot) and the entrances (kind as nearestCaveMouth's) whose axis passes through the box.
+    struct CaveSpan { Vector3 a, b, up; float ra, rb; int kind; };
+    struct CaveEntrance { Vector3 at, out; int kind; };
+    void caveSpansNear(Vector3 lo, Vector3 hi, std::vector<CaveSpan>& out) const;
+    void caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntrance>& out) const;
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 
@@ -387,6 +426,8 @@ public:
     // shared with the workers.
     void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
     float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
+    float testBroadLand(Vector3 dir, float footprint) const { return broadLand(land(dir, footprint), dir, footprint); } // (#1856 M11 tests) rivers' smooth land
+    float testBakeInputHeight(Vector3 dir, float footprint) const { tBakeInput = true; const float h = land(dir, footprint).h; tBakeInput = false; return h; } // (#1905 tests) the erosion bake's input
     // Base density (no edits) at p, |p| = d, in a column whose surface elevation and Column3D are known (a block grid's):
     // skips the height map. The sky probe's up ray uses it (#387).
     float densityInColumn(Vector3 p, float d, float elev, float footprint, const Column3D* col) const { return densityNear(p, d, radius + elev, footprint, col); }
@@ -398,6 +439,8 @@ private:
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
+    // A bake pond through the terrain's rules (#360): reason 0 kept, 1 by a lake or river, 2 level too low, 3 bowl depth.
+    Pond bakePond(int index, int& reason) const;
     float riverWeight(const Land& l) const;
     // A river here: its weight (0: none), water level (smooth: from the land without its fine hills
     // and detail, so it does not follow every bump) and width factor (wider toward the sea).
@@ -461,6 +504,10 @@ struct ChunkWaterCache {
 long long ChunkWaterCacheBytes();
 // Water mesh phase times (ns, summed over workers): sampling, marching cubes, shore clip, vertex output (#381),
 void ChunkWaterPhases(long long out[6]); // + exact density samples, all samples
+// (#1773) Test probe: water builds on `body` record their triangles (3 body-local corners each) with a corner inside [lo, hi];
+// Take hands over (and clears) what they recorded since. Scenarios check the drawn water mesh with it.
+void WaterTriangleProbe_Set(uint64_t body, Vector3 lo, Vector3 hi);
+void WaterTriangleProbe_Take(std::vector<Vector3>& out);
 void ChunkWaterFlowStats(long long out[3]); // moving simulated water vertices: all, steep, steep drawn running down their surface (#677)
 constexpr long long kChunkWaterCacheCap = 128ll << 20;
 

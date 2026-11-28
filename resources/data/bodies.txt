@@ -18,12 +18,14 @@
 # The first single body is the start body (planets: the player starts on temperate grassland).
 # Planets and moons use planet terrain (PlanetField). The old asteroid start system is
 # resources/data/bodies_asteroids.txt (game.exe --bodies resources/data/bodies_asteroids.txt).
+# Planets and moons: radius, gravity and what the world is like come from resources/data/worlds/<name>.txt (#1274,
+# #1298); radius= or gravity= on a line here overrides the world file. Saves keep the resolved values.
 
-# 60 km home planet, 60-minute day (equator ~105 m/s). Gravity auto: 9.81 * 60 / 100 = 5.9 m/s^2.
-planet terra radius=60000 position=0,0,0 day=3600
+# Home planet (worlds/terra.txt: 60 km, gravity 5.9 m/s^2), 60-minute day (equator ~105 m/s).
+planet terra position=0,0,0 day=3600
 
-# 10 km moon 500 km above the surface on a circular orbit (~5 h, ~195 m/s). Gravity auto: 0.98 m/s^2.
-moon   luna  radius=10000 orbit=terra,500000,30 day=86400
+# Moon (worlds/luna.txt: 10 km, 0.98 m/s^2) 500 km above the surface on a circular orbit (~5 h, ~195 m/s).
+moon   luna  orbit=terra,500000,30 day=86400
 
 # Asteroid ring 50 km up (~26 min orbits, ~440 m/s; just above the air at 35 km): 60,000 rocks in a band 3 km wide and 60 m thick
 # (ring.h). Sizes 5-50 m across (radius x size), about 1% five times bigger. Far away they are

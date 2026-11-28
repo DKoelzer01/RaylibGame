@@ -1,6 +1,7 @@
 #include "rivers.h"
 #include "envflag.h"
 #include "erosion.h"
+#include "detmath.h"
 #include <unordered_map>
 
 #include <raymath.h>
@@ -49,7 +50,7 @@ int RiverNetwork::cellOf(Vector3 d) const {
     int face = 0; float best = -2.0f;
     for (int f = 0; f < 6; ++f) { const float v = Vector3DotProduct(d, kN[f]); if (v > best) { best = v; face = f; } }
     const float da = 0.5f * PI / n;
-    const float a = atanf(Vector3DotProduct(d, kU[face]) / best), b = atanf(Vector3DotProduct(d, kV[face]) / best);
+    const float a = det::Atanf(Vector3DotProduct(d, kU[face]) / best), b = det::Atanf(Vector3DotProduct(d, kV[face]) / best);
     const int i = std::clamp((int)floorf((a + 0.25f * PI) / da), 0, n - 1), j = std::clamp((int)floorf((b + 0.25f * PI) / da), 0, n - 1);
     return (face * n + i) * n + j;
 }
@@ -58,7 +59,7 @@ Vector3 RiverNetwork::centre(int c) const {
     const int face = c / (n * n), i = (c / n) % n, j = c % n;
     const float da = 0.5f * PI / n;
     const float a = -0.25f * PI + (i + 0.5f) * da, b = -0.25f * PI + (j + 0.5f) * da;
-    return Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], tanf(a)), Vector3Scale(kV[face], tanf(b)))));
+    return Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], det::Tanf(a)), Vector3Scale(kV[face], det::Tanf(b)))));
 }
 
 void RiverNetwork::neighbours(int c, int out[8]) const {
@@ -69,7 +70,7 @@ void RiverNetwork::neighbours(int c, int out[8]) const {
         for (int dj = -1; dj <= 1; ++dj) {
             if (di == 0 && dj == 0) continue;
             const float a = -0.25f * PI + (i + di + 0.5f) * da, b = -0.25f * PI + (j + dj + 0.5f) * da;
-            const Vector3 d = Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], tanf(a)), Vector3Scale(kV[face], tanf(b)))));
+            const Vector3 d = Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], det::Tanf(a)), Vector3Scale(kV[face], det::Tanf(b)))));
             const int m = cellOf(d);
             out[k++] = m == c ? -1 : m;
         }
@@ -251,7 +252,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             const Vector3 up = Vector3Normalize(q2);
             const Vector3 tan = Vector3Subtract(CatmullRom(P0, P1, P2, P3, std::min(1.0f, t + 0.01f)), CatmullRom(P0, P1, P2, P3, std::max(0.0f, t - 0.01f)));
             const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, tan));
-            q2 = Vector3Add(q2, Vector3Scale(side, amp * sinf(PI * t)));
+            q2 = Vector3Add(q2, Vector3Scale(side, amp * det::Sinf(PI * t)));
             curvePts.push_back(Vector3Scale(Vector3Normalize(q2), R));
         }
     }
@@ -414,8 +415,11 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     // The nearest piece - unless the point lies inside more than one channel (a tributary running beside the main river
     // in one canyon, two reaches across a bend): then the lowest of those levels, as the higher water would spill into the
     // lower one (on the strata's cliff bands the nearest one rose 8 m walking down the longest river).
-    Hit inside;
-    inside.level = 1e30f;
+    // Only a piece's span counts for that: a point in its round end cap (past a joint) belongs to the neighbour whose span
+    // holds it. With valley-wide rivers a 19 m cap reached up the next piece and its joint level stood as a step across
+    // the water (#637). Caps still hold points no span does (the outside of a bend, a head, a mouth).
+    Hit inside, insideCap;
+    inside.level = insideCap.level = 1e30f;
     auto fill = [&](Hit& h, const Piece& pc, float d, float t, int i) {
         h.dist = d;
         h.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
@@ -427,7 +431,7 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         // Less flow than its natural (#656): a lower, narrower river; none, the water at its bed (drawn as nothing: a dry bed).
         if (flowAny.load(std::memory_order_relaxed) && flowCur && !tNatural) {
             const float f = flowCur[i].load(std::memory_order_relaxed);
-            if (f < 0.999f) { h.level -= h.depth * (1.0f - powf(std::max(f, 0.0f), 0.4f)) + 0.3f * (1.0f - std::min(1.0f, f * 10.0f)); h.halfWidth *= sqrtf(std::max(f, 0.0f)); h.depth *= powf(std::max(f, 0.0f), 0.4f); }
+            if (f < 0.999f) { h.level -= h.depth * (1.0f - det::Powf(std::max(f, 0.0f), 0.4f)) + 0.3f * (1.0f - std::min(1.0f, f * 10.0f)); h.halfWidth *= sqrtf(std::max(f, 0.0f)); h.depth *= det::Powf(std::max(f, 0.0f), 0.4f); }
         }
     };
     for (int i : list) {
@@ -442,10 +446,12 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         if (d < pc.wa + (pc.wb - pc.wa) * t) {
             Hit h;
             fill(h, pc, d, t, i);
-            if (h.level < inside.level) inside = h;
+            Hit& best = t > 0.0f && t < 1.0f ? inside : insideCap;
+            if (h.level < best.level) best = h;
         }
     }
     if (inside.level < 1e29f) hit = inside;
+    else if (insideCap.level < 1e29f) hit = insideCap;
     hit.found = hit.dist < reach;
     return hit;
 }
@@ -456,7 +462,7 @@ float RiverNetwork::distToCell(Vector3 d, int c) const {
     const float dn = Vector3DotProduct(d, kN[face]);
     if (dn < 0.2f) return 1e30f;
     const float da = 0.5f * PI / n;
-    const float a = atanf(Vector3DotProduct(d, kU[face]) / dn), b = atanf(Vector3DotProduct(d, kV[face]) / dn);
+    const float a = det::Atanf(Vector3DotProduct(d, kU[face]) / dn), b = det::Atanf(Vector3DotProduct(d, kV[face]) / dn);
     const float a0 = -0.25f * PI + i * da, b0 = -0.25f * PI + j * da;
     const float ea = std::max({ a0 - a, 0.0f, a - (a0 + da) }), eb = std::max({ b0 - b, 0.0f, b - (b0 + da) });
     return sqrtf(ea * ea + eb * eb) * R;
@@ -507,13 +513,19 @@ int RiverNetwork::checkDownstream(float& worstRise, float& worstShrink) const {
         worstRise = std::max(worstRise, L[parent[c]] - L[c]);
         worstShrink = std::max(worstShrink, hw[c] - hw[parent[c]]);
     }
-    for (const Piece& pc : pieces) { worstRise = std::max(worstRise, pc.lb - pc.la); worstShrink = std::max(worstShrink, pc.wa - pc.wb); }
+    for (const Piece& pc : pieces) {
+        worstRise = std::max(worstRise, pc.lb - pc.la);
+        if (!bake) worstShrink = std::max(worstShrink, pc.wa - pc.wb);
+    }
     if (bake) { // bake-native: every node draining into another, and junctions continuous (#607): each piece ends at its outlet's level
         for (int k = 0; k < (int)nodeParent.size(); ++k) {
             const int p = nodeParent[k];
             if (p < 0) continue;
             ++links;
             worstRise = std::max(worstRise, fabsf(pieces[nodePiece[k]].lb - pieces[nodePiece[p]].la)); // a step at the junction
+            // The discharge's width never shrinks downstream; the drawn width may (#637: a river fills ~0.8 of the valley floor
+            // it wore, and narrows where the valley does, into a gorge).
+            worstShrink = std::max(worstShrink, nodeDisc[k] - nodeDisc[p]);
         }
     }
     return links;
@@ -694,6 +706,9 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
+    // #1988 (option B): the meander. Every node moves along the bake's noise field, so the links wind off the 50 m grid
+    // path (lake nodes stay: the lake is the bake's); the valley carve follows the moved line.
+    if (params.meanderShift) for (int k = 0; k < M; ++k) if (!fineLake.count(nodeCell[k])) pos[k] = params.meanderShift(pos[k], area[k]);
     // Widths and depths by drainage. A head's trickle is at least 2 m wide and 0.5 m deep (#631: a 1.6 m x 0.3 m one showed
     // as an empty trench - the water mesh draws nothing under 0.15 m, and coarser terrain never resolved the channel).
     // Discharge (#637, user: most rivers 10-20 m wide, the big ones where several join 30-50 m and several metres deep): each
@@ -716,7 +731,42 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         for (int k : topo) { wetArea[k] = acc[k]; if (nodeParent[k] >= 0) acc[nodeParent[k]] += acc[k]; }
     }
     auto sOf = [&](int k) { return sqrtf(wetArea[k] / 7.06e6f); };
-    auto widthOf = [&](int k) { return std::max(1.0f, std::min(3.0f + 4.0f * sOf(k), 30.0f) * headRamp(area[k])); }; // half width
+    // (#637) The valley floor each river wore: from the node, out both ways across its link in 2 m steps to 60 m, while the
+    // ground beside it stays within 0.5 m of the water's level; the narrower side is the floor's half width. A river fills
+    // ~0.8 of it (x valleyFill, from the water cycle): the discharge width alone left 2-5 m streams in 30-50 m worn sand
+    // valleys, which read as dry beds (#1438's slides).
+    std::vector<float> floorHalf(M, 0.0f);
+    if (params.bankHeight && params.valleyFill > 0.0f) {
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] {
+                for (int k = t; k < M; k += T) {
+                    if (fillLevel.count(nodeCell[k])) continue; // lakes keep their own shores
+                    const Vector3 P = Vector3Scale(pos[k], R);
+                    const Vector3 Q = nodeParent[k] >= 0 ? Vector3Scale(pos[nodeParent[k]], R) : P;
+                    const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
+                                         : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
+                    float reach[2] = { 0.0f, 0.0f };
+                    for (int s = 0; s < 2; ++s)
+                        for (float off = 2.0f; off <= 60.0f; off += 2.0f) {
+                            if (params.bankHeight(Vector3Normalize(Vector3Add(P, Vector3Scale(side, (s ? 1.0f : -1.0f) * off)))) > own[k] + 0.5f) break;
+                            reach[s] = off;
+                        }
+                    floorHalf[k] = std::min(reach[0], reach[1]);
+                }
+            });
+        for (auto& th : pool) th.join();
+    }
+    auto discOf = [&](int k) { return std::min(3.0f + 4.0f * sOf(k), 30.0f); };
+    auto widthOf = [&](int k) { // half width: the discharge's, or the valley floor's share when wider
+        const float valley = std::min(0.8f * floorHalf[k], 30.0f) * params.valleyFill;
+        return std::max(1.0f, std::max(discOf(k), valley) * headRamp(area[k]));
+    };
+    // The bank hold's half width: the discharge's alone, so the levels don't move with the valley fill (#637: sampling the
+    // banks at the filled width read other ground and stepped neighbouring pieces' levels apart by up to 1 m).
+    auto discWidthOf = [&](int k) { return std::max(1.0f, discOf(k) * headRamp(area[k])); };
     auto depthOf = [&](int k) { return std::max(0.5f, std::min(1.0f + 0.7f * sOf(k), 6.0f) * headRamp(area[k])); };
     // Banks (#640): the bake's level stood over the real ground beside a third of the rivers (the runtime adds detail the
     // bake's 50 m cells average away), and the water ended there as a wall. Each node's level is held 0.3 m under the bank
@@ -725,6 +775,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // samples a node.
     if (params.bankHeight) {
         constexpr float kMaxLower = 3.0f;
+        const bool perchedOld = EnvFlag("RAYLIBGAME_RIVER_PERCHED_OLD"); // (#1520) A/B: =1 the 3 m limit everywhere
         const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t)
@@ -736,16 +787,21 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
                     const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
                                          : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                     const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
-                    const float half = widthOf(k);
-                    float cap = 1e30f;
+                    const float half = discWidthOf(k);
+                    float capS[2] = { 1e30f, 1e30f }; // per side
                     const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
                     for (int a = 0; a < 2; ++a)
                         for (float off : { half + 2.0f, half + 6.0f }) {
                             if (a == 1 && off > half + 2.0f) continue;
-                            for (int s = -1; s <= 1; s += 2)
-                                cap = std::min(cap, params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, s * off)))) - 0.3f);
+                            for (int s = 0; s < 2; ++s)
+                                capS[s] = std::min(capS[s], params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, (s ? 1.0f : -1.0f) * off)))) - 0.3f);
                         }
-                    own[k] = std::max(std::min(own[k], cap), own[k] - kMaxLower);
+                    const float cap = std::min(capS[0], capS[1]);
+                    // (#1520) Both banks far under the level is water perched over falling ground (rapids on gullied slopes stood
+                    // 6-9 m over the ground on both sides, a tilted floating slab): no slope to run along, so it goes all the way
+                    // down to where it would spill. One high bank keeps the limit (a river along a slope: no trench into it).
+                    const bool perched = capS[0] < own[k] - kMaxLower && capS[1] < own[k] - kMaxLower && !perchedOld;
+                    own[k] = perched ? std::min(own[k], cap) : std::max(std::min(own[k], cap), own[k] - kMaxLower);
                 }
             });
         for (auto& th : pool) th.join();
@@ -789,6 +845,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // every piece at its natural flow (node k's piece is piece k).
     nodeQ.assign(area.begin(), area.end());
     nodeChildQ.assign(nodeQ.size(), 0.0f);
+    nodeDisc.resize(M);
+    for (int k = 0; k < M; ++k) nodeDisc[k] = discWidthOf(k);
     for (int k = 0; k < M; ++k) if (nodeParent[k] >= 0) nodeChildQ[nodeParent[k]] += std::max(nodeQ[k], 1.0f);
     nodeTopo = topo;
     flowCur.reset(new std::atomic<float>[pieces.size()]);
@@ -895,6 +953,19 @@ bool RiverNetwork::nearestHead(Vector3 dir, float minLevel, Vector3& head, Vecto
     return true;
 }
 
+void RiverNetwork::forEachPieceNear(Vector3 dir, float reach, const std::function<void(float, float, float)>& fn) const {
+    const auto& list = index[cellOf(dir)];
+    const Vector3 p = Vector3Scale(dir, R);
+    for (int i : list) {
+        const Piece& pc = pieces[i];
+        if (pc.inLake || Vector3Distance(p, pc.mid) - pc.halfLen >= reach) continue;
+        float t;
+        const float d = SegDist(p, pc.a, pc.b, t);
+        if (d >= reach) continue;
+        fn(d, pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb, pc.wa + (pc.wb - pc.wa) * t);
+    }
+}
+
 float RiverNetwork::carve(Vector3 dir, float h) const {
     const auto& list = index[cellOf(dir)];
     if (list.empty()) return h;
@@ -910,7 +981,10 @@ float RiverNetwork::carve(Vector3 dir, float h) const {
         if (d >= half + kBankReach) continue;
         const float level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb;
         const float depth = pc.da + (pc.db - pc.da) * t;
-        const float dep = std::min(depth, 1.0f); // light: deeper water only where the worn ground is lower (#609)
+        // light: deeper water only where the worn ground is lower (#609). At least 0.8 m (#637, the user's choice for river
+        // heads): a head's 0.5 m left 7 cm over most of its narrow bed, under one fluid cell, so nothing showed; 0.8 m holds
+        // ~0.3 m out to 0.7 of the half width, a visible trickle in the crease.
+        const float dep = std::clamp(depth, 0.8f, 1.0f);
         const float bed = d < half ? level + 0.3f - (dep + 0.3f) * (1.0f - (d / half) * (d / half)) : level + 0.3f + (d - half) * kBank;
         h = std::min(h, bed);
     }
@@ -996,8 +1070,9 @@ void RiverNetwork::setFlowState(const std::vector<std::pair<int, float>>& cur, c
 }
 
 int RiverNetwork::pieceBeyond(int piece, Vector3 centre, float dist) const {
-    if (piece < 0 || piece >= (int)pieces.size()) return -1;
-    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
+    // Legacy (non-bake) networks never fill nodeParent: no downstream chain to walk (#1673).
+    if (!bake || piece < 0 || piece >= (int)pieces.size() || piece >= (int)nodeParent.size()) return -1;
+    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && k < (int)nodeParent.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
         if (Vector3Distance(pieces[k].a, centre) > dist) return k;
     return -1;
 }

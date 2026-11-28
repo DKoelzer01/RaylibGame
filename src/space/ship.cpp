@@ -8,6 +8,13 @@
 
 Ship ship;
 
+// (#1856 M22) The rotation taking unit `from` to unit `to`. raymath's is all zeros for opposite vectors (a target dead
+// behind): the autopilot never turned and the orientation decayed. Then it is a half turn about `axis` (the ship's up).
+Quaternion TurnBetween(Vector3 from, Vector3 to, Vector3 axis) {
+    if (Vector3DotProduct(from, to) < -0.9999f) return QuaternionFromAxisAngle(axis, PI);
+    return QuaternionFromVector3ToVector3(from, to);
+}
+
 Vector3 Ship::renderPos(const Scene& world) const { return (position - world.renderOrigin).toFloat(); }
 
 void Ship::parkNear(Scene& world, Vector3 point, Vector3 surfaceUp) {
@@ -92,7 +99,7 @@ void Ship::update(Scene& world, const PlayerInput& in, float dt) {
             const Vector3 away = Vector3Normalize(Vector3Subtract(renderPos(world), block.planetoid->position));
             want = Vector3Normalize(Vector3Add(Vector3Scale(away, 1.0f), Vector3Scale(want, 0.35f)));
         }
-        orientation = QuaternionSlerp(orientation, QuaternionMultiply(QuaternionFromVector3ToVector3(forward(), want), orientation), std::min(1.0f, 2.0f * dt));
+        orientation = QuaternionNormalize(QuaternionSlerp(orientation, QuaternionMultiply(TurnBetween(forward(), want, up()), orientation), std::min(1.0f, 2.0f * dt)));
         const float speed = Vector3Length(velocity);
         const float stopDist = speed * speed / (2.0f * thrust) + 25.0f;
         // Same energy rule as manual flight: no energy, no thrust.
@@ -239,3 +246,19 @@ void Ship::draw(const Scene& world) const {
     // Life-support field hint when the player is outside.
     if (!piloted) DrawSphereWires(p, lifeSupportRadius, 6, 12, Fade(SKYBLUE, 0.15f));
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// (#1856 M22) A target dead behind: a real half turn (unit length), not raymath's all-zero quaternion.
+TEST(Ship, TurnsTowardATargetDeadBehind) {
+    const Vector3 fwd{ 0, 0, 1 }, back{ 0, 0, -1 }, up{ 0, 1, 0 };
+    const Quaternion q = TurnBetween(fwd, back, up);
+    EXPECT_NEAR(sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w), 1.0f, 1e-5f);
+    const Vector3 r = Vector3RotateByQuaternion(fwd, q);
+    EXPECT_NEAR(r.z, -1.0f, 1e-4f);
+    const Vector3 u = Vector3RotateByQuaternion(up, q);
+    EXPECT_NEAR(u.y, 1.0f, 1e-4f); // about the up axis: up stays up
+    const Vector3 side = Vector3RotateByQuaternion(fwd, TurnBetween(fwd, { 1, 0, 0 }, up)); // an ordinary turn as before
+    EXPECT_NEAR(side.x, 1.0f, 1e-4f);
+}
+#endif

@@ -25,14 +25,20 @@
 #include "navigation.h"
 #include "farming.h"
 #include "animals.h"
+#include "flares.h"
 #include "particles.h"
 #include "ambience.h"
 #include "suit.h"
 #include "toolwear.h"
 #include "playersession.h"
 #include "skills.h"
+#include "magic.h"      // (#1249) Magic_Enabled
+#include "magicsight.h"
+#include "potions.h" // (#1254)
 #include "recipebook.h"
 #include "station.h"
+#include "saveversion.h"
+#include "savemigrate.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -42,26 +48,28 @@
 
 // Save format 13 (#346): the world file's extras hold the world (ids, the RNG, farms, animals, structures, graves, events,
 // rockets, stations, difficulty, teams with their quest books); the player's own state goes to their record,
-// <save>.players/<uuid>.player. Format 12 saves had the player's lines in the extras: they still load (the player lines are
-// read wherever they are), and the next save writes 13.
-static int savedCols = 9;          // the loading save's inventory width (inv_cols; older saves: 9) (#495)
-static bool playerLoaded = false;  // the load found the player's lines (a record, or a format 12 save's)
+// <save>.players/<uuid>.player. Saves from before 13 are refused (#1693); a record has its own number and migration chain.
+static int savedCols = 9;          // the loading save's inventory width (inv_cols; a record without the line: 9) (#495)
+static bool playerLoaded = false;  // the load found the player's record
 static double recordFirstSeen = 0.0, recordPlayTime = 0.0, recordLoadedAt = 0.0;
 static std::function<void()> newPlayerHook;
-static std::string legacyOwner;   // a server that loaded a format 12 save: the id its player is saved under as the owner
 static bool bodyFramed = false;  // the record being read gave a player_body line (its up and velocity are rebuilt)
 // Body-frame positions read during a world load (#901): the records are read in the save's extras, before the load puts the
 // bodies back in their saved rotation, so the conversion to world space waits for loadDoneHook. Outside a load (a record
 // read for a joining player) the bodies are as they are and the conversion at once is right.
-struct PendingFrame { Player* p; unsigned long long body; DVec3 local; };
+struct PendingFrame { Player* p; unsigned long long body; DVec3 local; bool framed = false; FramePos fp{}; }; // framed: a player_frame line (F7a)
 static std::vector<PendingFrame> pendingFrames;
 static bool inWorldLoad = false;
 static bool loadedFrameSet = false; // the local player's frame from the last load, for the loading screen's hold (once)
 static unsigned long long loadedFrameBody = 0;
 static DVec3 loadedFrameLocal{};
-bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local) {
+static bool loadedFramePosSet = false; // (F7a) and its frame state, when the record had a player_frame line
+static FramePos loadedFramePos{};
+bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local, FramePos* framePos) {
     if (!loadedFrameSet) return false;
     loadedFrameSet = false; bodyNetId = loadedFrameBody; local = loadedFrameLocal;
+    if (framePos) { if (loadedFramePosSet) *framePos = loadedFramePos; else framePos->frame.body = 0; }
+    loadedFramePosSet = false;
     return true;
 }
 
@@ -86,6 +94,13 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
     }
     fprintf(f, "player_up %f %f %f\n", t.p.up.x, t.p.up.y, t.p.up.z);
     fprintf(f, "player_vel %f %f %f\n", t.p.velocity.x, t.p.velocity.y, t.p.velocity.z);
+    // (Plan 11 F7a, #2074) With RAYLIBGAME_FRAMES=1, the state physics runs on: its frame (F Fixed, C Centred), position and
+    // velocity in it, in double. After the lines above, so a load that reads it takes it over them (mid-jump keeps its speed).
+    if (Frames_On() && t.p.frame.frame.body != 0 && !t.p.flyMode) {
+        const FramePos& fp = t.p.frame;
+        fprintf(f, "player_frame %llu %c %.9f %.9f %.9f %.9f %.9f %.9f\n", (unsigned long long)fp.frame.body, fp.frame.kind == FrameKind::Fixed ? 'F' : 'C',
+                fp.pos.x, fp.pos.y, fp.pos.z, fp.vel.x, fp.vel.y, fp.vel.z);
+    }
     fprintf(f, "inv_cols %d\n", Inventory::kCols); // before the slots: older saves (no line) had 9 columns (#495)
     for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
         const InvSlot& s = t.inv.grid()[i];
@@ -101,6 +116,8 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         ToolWear_Save(f);
         QuestBook_SavePins(f); // (#825) the player's pinned quests
         fputs(Skills_SaveText(LocalSession().skills).c_str(), f); // (#883) XP and perks
+        if (Magic_Enabled() || LocalSession().magic.sight) fputs(MagicSight_SaveText(LocalSession().magic).c_str(), f); // (#1249)
+        if (Magic_Enabled()) fputs(Potion_SaveText(Potion_Local()).c_str(), f); // (#1254) potions running, the cleansing draught's day
     } else {
         fputs(t.kept.c_str(), f);
         if (t.skills) fputs(Skills_SaveText(*t.skills).c_str(), f); // (#920) a server's remote player's XP and perks
@@ -110,7 +127,7 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
     if (t.sv.hasBed) fprintf(f, "bed %s %u %d %d %d\n", t.sv.bedBody.c_str(), t.sv.bedPlot, t.sv.bedCell[0], t.sv.bedCell[1], t.sv.bedCell[2]); // #800: the player's spawn bed
 }
 
-// One of the player's lines (a record's, or a format 12 save's extras): true if it was one.
+// One of the player's lines (a record's): true if it was one.
 bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
     if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) t.sv.food = std::clamp(v, 0.0f, 100.0f); return true; }
     if (strcmp(tok, "bed") == 0) { // #800: the spawn bed
@@ -136,6 +153,11 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
             if (fgets(rest, sizeof(rest), f)) Skills_LoadLine(LocalSession().skills, (std::string(tok) + rest).c_str());
             return true;
         }
+        if (strncmp(tok, "magic_", 6) == 0) { // (#1249) magic sight, the pool, studies
+            char rest[256] = {};
+            if (fgets(rest, sizeof(rest), f)) { const std::string l = std::string(tok) + rest; if (!Potion_LoadLine(Potion_Local(), l.c_str())) MagicSight_LoadLine(LocalSession().magic, l.c_str()); } // (#1254) potion lines too
+            return true;
+        }
     }
     if (strcmp(tok, "player") == 0) {
         int fly = 0;
@@ -158,6 +180,16 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
             }
         return true;
     }
+    if (strcmp(tok, "player_frame") == 0) { // (F7a, #2074) read only on the frame path (else player_body's spot stands)
+        unsigned long long id = 0; char kind = 'F'; FramePos fp;
+        if (fscanf(f, " %llu %c %lf %lf %lf %lf %lf %lf", &id, &kind, &fp.pos.x, &fp.pos.y, &fp.pos.z, &fp.vel.x, &fp.vel.y, &fp.vel.z) == 8 &&
+            Frames_On() && (kind == 'F' || kind == 'C')) {
+            fp.frame = FrameRef{ id, kind == 'F' ? FrameKind::Fixed : FrameKind::Centred };
+            if (inWorldLoad) pendingFrames.push_back({ &t.p, id, {}, true, fp }); // with the bodies in their saved state
+            else t.p.restoreFrame(fp);
+        }
+        return true;
+    }
     if (strcmp(tok, "player_up") == 0) { Vector3 u{}; fscanf(f, " %f %f %f", &u.x, &u.y, &u.z); if (!bodyFramed) t.p.up = u; return true; } // (with player_body: rebuilt from the body)
     if (strcmp(tok, "player_vel") == 0) { fscanf(f, " %f %f %f", &t.p.velocity.x, &t.p.velocity.y, &t.p.velocity.z); if (bodyFramed) t.p.velocity = { 0, 0, 0 }; return true; } // older saves: stays zero
     if (strcmp(tok, "survival") == 0) {
@@ -171,6 +203,7 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         int i = 0;
         long long c = 0;
         const bool read = fscanf(f, " %d %63s %lld", &i, id, &c) == 3;
+        if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
         i = Inventory::SavedCell(i, savedCols); // a 9-wide save: its hotbar and off hand move up (#495)
         if (read && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
             InvSlot& s = t.inv.grid()[i];
@@ -186,7 +219,7 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
     if (strcmp(tok, "item") == 0) {
         char id[64] = {};
         int n = 0;
-        if (fscanf(f, " %63s %d", id, &n) == 2) { ++t.inv.muted; t.inv.add(id, n); --t.inv.muted; }
+        if (fscanf(f, " %63s %d", id, &n) == 2) { if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); ++t.inv.muted; t.inv.add(id, n); --t.inv.muted; }
         return true;
     }
     return false;
@@ -197,6 +230,27 @@ bool ReadRecordInto(const std::string& path, RecordTarget t, PlayerRecordMeta& m
     if (!f) return false;
     int version = 0;
     if (fscanf(f, " RAYLIBGAME_PLAYER %d", &version) != 1 || version < 1) { fclose(f); return false; }
+    if (version > kPlayerRecordVersion) { // (#1693) a newer build's record: not read (the next save keeps it as a .bak)
+        fclose(f);
+        TraceLog(LOG_ERROR, "save: %s is a player record from a newer build (version %d; this build reads up to %d)", path.c_str(), version, kPlayerRecordVersion);
+        return false;
+    }
+    std::string migrated;
+    if (version < kPlayerRecordVersion) { // (#1693) through the record's chain, in memory, into a temporary file read below
+        fclose(f);
+        std::vector<std::string> lines;
+        MigrateContext ctx;
+        std::string error;
+        migrated = path + ".migrating";
+        if (!Save_ReadLines(path, lines) || !PlayerRecord_Migrate(version, lines, ctx, error) || !Save_WriteLines(migrated, lines) || !(f = fopen(migrated.c_str(), "r"))) {
+            TraceLog(LOG_ERROR, "save: could not upgrade the player record %s from version %d: %s", path.c_str(), version, error.c_str());
+            std::error_code ec;
+            std::filesystem::remove(migrated, ec);
+            return false;
+        }
+        int upgraded = 0;
+        if (fscanf(f, " RAYLIBGAME_PLAYER %d", &upgraded) != 1) { fclose(f); std::error_code ec; std::filesystem::remove(migrated, ec); return false; }
+    }
     savedCols = 9;
     bodyFramed = false;
     char tok[64] = {};
@@ -214,6 +268,7 @@ bool ReadRecordInto(const std::string& path, RecordTarget t, PlayerRecordMeta& m
         if (!t.local) t.kept += std::string(tok) + rest; // another game's line (hotbar, pins, ...): kept as it was
     }
     fclose(f);
+    if (!migrated.empty()) { std::error_code ec; std::filesystem::remove(migrated, ec); }
     return true;
 }
 
@@ -222,7 +277,7 @@ bool WriteRecordFrom(const std::string& path, RecordTarget t, const PlayerRecord
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     const double now = (double)time(nullptr);
     return Save_WriteAtomic(path, [&](FILE* f) {
-        fprintf(f, "RAYLIBGAME_PLAYER 1\n");
+        fprintf(f, "RAYLIBGAME_PLAYER %d\n", kPlayerRecordVersion);
         fprintf(f, "uuid %s\n", m.uuid.c_str());
         fprintf(f, "name %s\n", m.name.empty() ? "player" : m.name.c_str()); // (shown only; Steam's later)
         fprintf(f, "team %d\n", Teams_Of(m.uuid));
@@ -341,9 +396,8 @@ void GameSave_Register() {
         fprintf(f, "xp_rate %g\n", worldXpRate); // (#883)
         // Teams and their quest books (#346: quests and tiers are a team's); this game's player is in one (a team of one to
         // start with), and the world's owner is whoever saved it first.
-        // A server that loaded a format 12 save writes its player as the owner (a new id), so nothing is lost: single player
-        // opening the world again continues as that owner.
-        const std::string me = LocalPlayer() ? PlayerId_Local() : legacyOwner;
+        // A server has no player of its own: no team join, no record here.
+        const std::string me = LocalPlayer() ? PlayerId_Local() : std::string();
         if (!me.empty()) {
             Teams_Join(me, settings.mpName.empty() ? "player" : settings.mpName, settings.mpSuit);
             if (Teams_Owner().empty()) Teams_SetOwner(me);
@@ -353,9 +407,17 @@ void GameSave_Register() {
         if (!me.empty() && !WriteRecord(me)) TraceLog(LOG_WARNING, "save: could not write the player record %s", PlayerRecord_Path(me).c_str());
     };
     loadDoneHook = [] { // (#901) body-frame positions back to world space with the bodies in their saved state
+        loadedFramePosSet = false;
         for (const PendingFrame& pf : pendingFrames)
-            if (const Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
+            if (pf.framed) { // (F7a) after the player_body entry: the frame state wins
+                if (pf.p->restoreFrame(pf.fp) && pf.p == &player) {
+                    loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = player.nearest->toLocalD(player.position);
+                    loadedFramePosSet = true; loadedFramePos = pf.fp;
+                }
+            } else if (Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
                 pf.p->position = b->toWorldD(pf.local);
+                pf.p->nearest = b; // (#1881) a save before the next update wrote no player_body line without it
+
                 if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
             }
         pendingFrames.clear();
@@ -371,6 +433,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Flares_Clear(); // (#2062) flares are not saved: none survive into the loaded world
         Fishing_Reset(); // (#902) a line cast in the old world held its body
         Particles_Clear();
         Ambience_Reset();
@@ -378,6 +441,7 @@ void GameSave_Register() {
         Suit_Reset();
         ToolWear_Reset();
         LocalSession().skills = SkillState{}; // (#883)
+        LocalSession().magic = MagicPlayerState{}; Potion_Local() = PotionState{}; // (#1249)
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Blueprint_ResetGhosts(); // (#1018) and the ghosts
@@ -385,7 +449,7 @@ void GameSave_Register() {
         Teams_Reset();
         QuestBook_ClearPins(); // (#825) the record's pins come back with it
         TeamQuests_Reset(); // (#338) the server's team books load from the teams as they are used
-        survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
+        survival.hasBed = false; // #800: the record's bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         worldXpRate = 1.0f; // (#883) likewise: 1x
@@ -401,7 +465,7 @@ void GameSave_Register() {
             if (NetId_LoadLine(tok, f)) continue;
             if (GameRng_LoadLine(tok, f)) continue;
             if (Teams_LoadLine(tok, f, me)) continue;
-            if (QuestBook_LoadLine(tok, f)) continue; // (format 12: the quest book was the save's own)
+            if (QuestBook_LoadLine(tok, f)) continue;
             if (Farm_LoadLine(tok, f)) continue;
             if (Animals_LoadLine(tok, f)) continue;
             if (Structures_LoadLine(tok, f)) continue;
@@ -414,16 +478,8 @@ void GameSave_Register() {
             if (Station_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
             if (strcmp(tok, "xp_rate") == 0) { float x = 1.0f; if (fscanf(f, " %f", &x) == 1) worldXpRate = std::clamp(x, 0.5f, 5.0f); continue; } // (#883)
-            if (ReadPlayerLine(tok, f, LocalTarget())) continue; // format 12: the player's lines were the save's own
-            if (strcmp(tok, "ship") == 0) { // old saves: the placeholder ship is gone (its line is read and dropped)
-                char rest[512]; if (!fgets(rest, sizeof(rest), f)) break;
-                ship.piloted = false; ship.spawned = false; ship.velocity = { 0, 0, 0 };
-                continue;
-            }
-            if (strcmp(tok, "ship_vel") == 0) { char rest[512]; if (!fgets(rest, sizeof(rest), f)) break; continue; }
         }
-        legacyOwner.clear();
-        if (!local) { if (Headless() && playerLoaded && Teams_Owner().empty()) legacyOwner = PlayerId_New(); return; } // a server: a format 12 save's player, kept
+        if (!local) return; // a server: it has no player of its own (the records are its clients')
 
         // The player's record: ours; else (a world made on another PC, opened here) its owner's, which we continue as.
         std::string from = PlayerRecord_Path(me);
@@ -432,20 +488,7 @@ void GameSave_Register() {
             from = PlayerRecord_Path(own);
             Teams_ReplaceMember(own, me);
         }
-        // (#1110) A format 12 save gave its own player lines, but an id-keyed record exists too (the world was opened by another
-        // game since): the newer one wins. The record, when newer, is read over the old lines; when older, the next save backs
-        // it up before writing (KeepRecordBeforeWrite: this session didn't read it).
-        if (playerLoaded && FileExists(from.c_str())) {
-            namespace fs = std::filesystem;
-            std::error_code e1, e2;
-            const auto recT = fs::last_write_time(from, e1), worldT = fs::last_write_time(WorldSavePath(), e2);
-            if (!e1 && !e2 && recT > worldT) {
-                printf("load: the player record %s is newer than the world file's own player lines: it is used\n", from.c_str());
-                inventory.clear(); // (the record's slots only, none left over from the old lines)
-                if (ReadRecord(from)) recordReadFrom = from;
-            }
-        }
-        if (!playerLoaded && FileExists(from.c_str())) { if (ReadRecord(from)) recordReadFrom = from; } // (a format 12 save already gave its lines)
+        if (FileExists(from.c_str())) { if (ReadRecord(from)) recordReadFrom = from; }
         if (!playerLoaded && newPlayerHook) newPlayerHook(); // nobody's player here for us: start at the world's start
     };
 }
@@ -453,7 +496,7 @@ void GameSave_Register() {
 // --test-save-split (#346): the world and the player's record, saved and loaded back four ways.
 // 1 a save: format 13, the world file without the player's lines, the team (with its quest book) in it, the record beside it;
 //   loaded back: the inventory, vitals, position and quests as they were;
-// 2 a format 12 save (the player's lines in the world file, no record): loads the same; its next save writes 13 and a record;
+// (#1693: the format 12 cases are gone; saves from before 13 are refused, see case 5.)
 // 3 a world made on another PC (its owner's record, not ours): we continue as its owner;
 // 4 no record at all: a new player at the start with the starting kit, the world's quests kept.
 bool GameSave_TestSplit(Scene& world) {
@@ -490,27 +533,6 @@ bool GameSave_TestSplit(Scene& world) {
           lines(rec, "slot ") >= 1 && lines(rec, "survival ") == 1 && lines(rec, "quest") == 0 && !fs::exists(save + ".tmp");
     scramble();
     ok1 = LoadWorldSave(world) && GameSave_PlayerLoaded() && same("saved and loaded") && ok1;
-    // 2: the same save as format 12 would have had it: the record's lines in the extras, no teams, no record.
-    std::string v12 = w;
-    v12.replace(0, strlen("RAYLIBGAME_SAVE 13"), "RAYLIBGAME_SAVE 12");
-    { // the team lines out, the quest block's lines kept in place (format 12 had them in the extras)
-        std::string out; size_t at = 0;
-        while (at < v12.size()) {
-            const size_t e = v12.find('\n', at), end = e == std::string::npos ? v12.size() : e + 1;
-            const std::string l = v12.substr(at, end - at);
-            if (l.rfind("team", 0) != 0 && l.rfind("owner ", 0) != 0) out += l;
-            at = end;
-        }
-        v12 = out;
-    }
-    std::string body;
-    { size_t a = rec.find("first_seen"); a = rec.find('\n', rec.find("play_time")) + 1; body = rec.substr(a, rec.find("end_record") - a); }
-    { const size_t x = v12.find("\nextras"); v12.insert(v12.find('\n', x + 1) + 1, body); } // after the "extras" line (CRLF or LF)
-    spit(save, v12);
-    fs::remove_all(PlayerRecord_Dir(), ec);
-    scramble();
-    bool ok2 = LoadWorldSave(world) && GameSave_PlayerLoaded() && same("format 12 loaded");
-    ok2 = ok2 && SaveWorld(world) && fs::exists(PlayerRecord_Path(me)) && lines(slurp(save), "slot ") == 0 && slurp(save).rfind("RAYLIBGAME_SAVE 13", 0) == 0;
     // 3: the owner is someone else (their record, their team): we continue as them.
     const std::string them = "0f0f0f0f-1234-4abc-8def-0123456789ab";
     std::string w3 = slurp(save);
@@ -525,18 +547,23 @@ bool GameSave_TestSplit(Scene& world) {
     scramble();
     const bool loaded4 = LoadWorldSave(world);
     const bool ok4 = loaded4 && !GameSave_PlayerLoaded() && inventory.count("telescope") == 1 && inventory.count("iron_ingot") == 0 && QuestBook_Tier() == 2;
-    // 5: a dedicated server (no player of its own) loads the format 12 save and saves it: its player becomes the owner's
-    // record (with the quests in the owner's team), and single player opening it again continues as that owner.
-    spit(save, v12);
-    fs::remove_all(PlayerRecord_Dir(), ec);
+    // 5 (#1693): a save from a newer build, and one from before 13, are refused with a message and nothing is loaded; then the
+    // first save and record put back load as they were.
+    auto refused = [&](int ver, const char* words) {
+        std::string t = w;
+        t.replace(0, strlen("RAYLIBGAME_SAVE 13"), "RAYLIBGAME_SAVE " + std::to_string(ver));
+        spit(save, t);
+        scramble();
+        const bool no = !LoadWorldSave(world) && LastLoadError().find(words) != std::string::npos && inventory.count("iron_ingot") == 0 && slurp(save) == t;
+        if (!no) printf("bench: save split: version %d: not refused as it should be (%s)\n", ver, LastLoadError().c_str());
+        return no;
+    };
+    bool ok5 = refused(kSaveVersion + 1, "newer build") && refused(kOldestSaveVersion - 1, "older build");
+    spit(save, w);
+    fs::create_directories(PlayerRecord_Dir(), ec);
+    spit(PlayerRecord_Path(me), rec);
     scramble();
-    gHeadless = true;
-    bool ok5 = LoadWorldSave(world) && SaveWorld(world);
-    gHeadless = false;
-    const std::string w5 = slurp(save);
-    ok5 = ok5 && !Teams_Owner().empty() && Teams_Owner() != me && fs::exists(PlayerRecord_Path(Teams_Owner())) && lines(w5, "team ") == 1 && lines(w5, "slot ") == 0;
-    scramble();
-    ok5 = ok5 && LoadWorldSave(world) && GameSave_PlayerLoaded() && same("a server's resave, opened alone") && Teams_Owner() == me;
+    ok5 = ok5 && LoadWorldSave(world) && GameSave_PlayerLoaded() && same("put back after the refusals") && LastLoadError().empty();
     // 6 (step 3): bodies by NetId: the first body's place in the list made wrong in the file, its state still comes back.
     Planetoid* body0 = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     bool ok6 = body0 && SaveWorld(world);
@@ -586,21 +613,21 @@ bool GameSave_TestSplit(Scene& world) {
         Player p2; Inventory inv2; SurvivalState sv2; PlayerRecordMeta m2;
         ok9 = ok9 && PlayerRecord_Read(rec1110, p2, inv2, sv2, m2, nullptr) && inv2.count("copper_ingot") == 5 && m2.playTime >= 5000.0; // SP -> MP
     }
-    const bool all = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9;
+    const bool all = ok1 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9;
     printf("bench: save split (#1110): a record this session didn't load is kept as a .bak before a save %d; a server's record opens in single player "
            "and back, play time kept %d\n", ok8, ok9);
-    printf("bench: save split (#346): saved as 13 with the record beside it and loaded back %d; a format 12 save loaded and resaved as 13 %d; "
+    printf("bench: save split (#346): saved as 13 with the record beside it and loaded back %d; a newer or pre-13 save refused, the first put back %d; "
            "another PC's world continued as its owner %d; no record: a new player with the kit, the quests kept %d; "
-           "a server's resave of a format 12 save kept its player as the owner %d; a body found by its NetId %d; seven saves left %d backups (5), "
+           "a body found by its NetId %d; seven saves left %d backups (5), "
            "the newest with the world and the record %d -> %s\n",
-           ok1, ok2, ok3, ok4, ok5, ok6, (int)backups.size(), ok7, all ? "PASS" : "FAIL");
+           ok1, ok5, ok3, ok4, ok6, (int)backups.size(), ok7, all ? "PASS" : "FAIL");
     fs::remove(save, ec); fs::remove_all(PlayerRecord_Dir(), ec); fs::remove_all(save + ".regions", ec); fs::remove_all(BackupDir(), ec);
     SetWorldSavePath(oldPath.c_str());
     return all;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
-// ---- Unit tests (#869): the player record and the world file's extras (format 13, and format 12 migrating to it) ----
+// ---- Unit tests (#869): the player record and the world file's extras (format 13); the migration chain and refusals (#1693) ----
 // The world file's own header and bodies need a Scene (GL); --test-save-split covers those. These cover what the hooks
 // read and write, which is where the player and the teams live.
 #include "unit_helpers.h"
@@ -753,31 +780,44 @@ TEST_F(SaveTest, Format13PutsThePlayerInItsRecord) {
     EXPECT_FLOAT_EQ(survival.food, 41.0f);
 }
 
-// Format 12 (the player's lines in the world file's extras, no teams, no record) loads the same, and its next save is 13.
-TEST_F(SaveTest, Format12MigratesTo13) {
-    const std::string v12 =
-        "player 10.000000 60000.000000 -3.000000 0.000000 0.000000 1.000000 0 0.500000\n"
-        "inv_cols 9\n"
-        "slot 0 iron_ingot 700\n"
-        "slot 45 stone_pickaxe 100\n" // a 9-wide save's first hotbar cell: moves up to the 10-wide grid's (#495)
-        "survival 90.000000 80.000000 63.000000 2\n"
-        "food 41.000000\n"
-        "end_extras\n";
-    inventory.clear();
-    ReadExtras(v12);
-    EXPECT_TRUE(GameSave_PlayerLoaded());
-    EXPECT_EQ(inventory.count("iron_ingot"), 7);
-    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "stone_pickaxe");
-    EXPECT_FLOAT_EQ(survival.health, 63.0f);
-    EXPECT_FLOAT_EQ(survival.food, 41.0f);
-    EXPECT_EQ(survival.deaths, 2);
-    const std::string w = WriteExtras();
-    EXPECT_EQ(Lines(w, "slot "), 0) << "resaved as 13: the player moved to the record";
-    EXPECT_EQ(Lines(w, "team "), 1);
-    EXPECT_TRUE(std::filesystem::exists(PlayerRecord_Path(PlayerId_Local())));
-    inventory.clear();
-    ReadExtras(w);
-    EXPECT_EQ(inventory.count("iron_ingot"), 7);
-    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "stone_pickaxe");
+// (#1693) Versions: this build opens 13 only; a newer build's save and one from before 13 are refused, each with its message.
+TEST(SaveVersions, OnlyTheSupportedRangeOpens) {
+    std::string why;
+    EXPECT_TRUE(Save_VersionSupported(kSaveVersion, why));
+    EXPECT_FALSE(Save_VersionSupported(kSaveVersion + 1, why));
+    EXPECT_NE(why.find("newer build"), std::string::npos) << why;
+    EXPECT_NE(why.find(std::to_string(kSaveVersion + 1)), std::string::npos) << why;
+    EXPECT_FALSE(Save_VersionSupported(kOldestSaveVersion - 1, why));
+    EXPECT_NE(why.find("older build"), std::string::npos) << why;
+}
+
+// The chain over text lines: the current version needs no step; one with no step to it fails with a message; the lines come
+// back with the version line unchanged.
+TEST(SaveVersions, TheChainRunsFromAnOlderVersionToTheCurrentOne) {
+    std::vector<std::string> lines = { "RAYLIBGAME_SAVE " + std::to_string(kSaveVersion), "seed 42" };
+    const std::vector<std::string> before = lines;
+    MigrateContext ctx;
+    std::string error;
+    EXPECT_TRUE(Save_Migrate(kSaveVersion, lines, ctx, error)) << error;
+    EXPECT_EQ(lines, before);
+    EXPECT_TRUE(ctx.dropped.empty());
+    EXPECT_EQ(Save_UpgradeNote(ctx), "Save upgraded from version " + std::to_string(kSaveVersion));
+    ctx.drop("a"); ctx.drop("b");
+    EXPECT_EQ(Save_UpgradeNote(ctx), "Save upgraded from version " + std::to_string(kSaveVersion) + "; dropped: a, b");
+    if (kSaveVersion == kOldestSaveVersion) {
+        MigrateContext c2;
+        EXPECT_FALSE(Save_Migrate(kSaveVersion - 1, lines, c2, error)) << "no step from a version before the oldest";
+        EXPECT_FALSE(error.empty());
+    }
+}
+
+// A record from a newer build is not read (its next save keeps it as a .bak, #1110); a current one is.
+TEST_F(SaveTest, APlayerRecordFromANewerBuildIsNotRead) {
+    const std::string path = dir + "/newer.player";
+    Spit(path, "RAYLIBGAME_PLAYER " + std::to_string(kPlayerRecordVersion + 1) + "\nuuid x\nend_record\n");
+    Player p; Inventory inv; SurvivalState sv; PlayerRecordMeta m;
+    EXPECT_FALSE(PlayerRecord_Read(path, p, inv, sv, m));
+    Spit(path, "RAYLIBGAME_PLAYER " + std::to_string(kPlayerRecordVersion) + "\nuuid x\nend_record\n");
+    EXPECT_TRUE(PlayerRecord_Read(path, p, inv, sv, m));
 }
 #endif

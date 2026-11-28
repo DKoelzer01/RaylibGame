@@ -32,6 +32,7 @@ std::string Profiler_SummaryJson() { return ""; }
 void Profiler_PrintSummary() {}
 void Profiler_MeasureZoneCost(double& onNs, double& offNs) { onNs = offNs = 0.0; }
 void Profiler_Reset() {}
+double Profiler_ZoneMeanMs(const char*) { return -1.0; }
 void Profiler_SetHitchStamp(double (*)(), std::string (*)()) {}
 void Profiler_SetHitchCap(size_t) {}
 bool Profiler_WriteSession(const std::string&, std::string&) { return false; }
@@ -80,6 +81,8 @@ struct Counter { uint64_t n = 0; double sum = 0.0, max = -1e300, last = 0.0; };
 std::map<std::string, Counter> gCounters;
 Stat gFrames;
 struct Hitch { double atS, ms; std::vector<std::pair<std::string, double>> top; double gameS = -1.0; std::string context; };
+// (#1372) a hitch is a frame over this (ms): RAYLIBGAME_PROFILE_HITCH_MS lowers it to name the zones of shorter spikes
+const double gHitchMs = [] { const char* e = getenv("RAYLIBGAME_PROFILE_HITCH_MS"); const double v = e ? atof(e) : 0.0; return v > 0.0 ? v : 20.0; }();
 double (*gGameClock)() = nullptr;          // (#886) stamped on each hitch: the game time, and what was going on
 std::string (*gHitchContext)() = nullptr;
 size_t gHitchCap = 200;
@@ -174,7 +177,7 @@ void Frame() {
     if (gLastFrameTsc) {
         const double ms = (double)(now - gLastFrameTsc) * gNsPerTick / 1e6;
         gFrames.add(ms * 1e6);
-        if (ms > 20.0) {
+        if (ms > gHitchMs) {
             ++gHitchesOver;
             if (gHitches.size() < gHitchCap) {
                 Hitch h{ (double)(now - gTsc0) * gNsPerTick / 1e9, ms, {} };
@@ -221,6 +224,12 @@ void Profiler_Counter(const char* name, double v) {
     if (!Prof::gOn) return;
     Counter& c = gCounters[name];
     ++c.n; c.sum += v; c.max = std::max(c.max, v); c.last = v;
+}
+
+double Profiler_ZoneMeanMs(const char* name) {
+    if (!Prof::gOn) return -1.0;
+    const auto it = gZones.find(name);
+    return it == gZones.end() || it->second.count == 0 ? -1.0 : it->second.sumNs / (double)it->second.count / 1e6;
 }
 
 std::string Profiler_SummaryJson() {
@@ -271,9 +280,9 @@ std::string Profiler_SummaryJson() {
 void Profiler_PrintSummary() {
     if (!Prof::gOn || gFrames.count == 0) return;
     Calibrate();
-    printf("profile: %llu frames, mean %.2f ms, p50 %.2f, p95 %.2f, p99 %.2f, max %.2f ms; %llu over 20 ms; peak commit %.0f MB, VRAM %.0f MB\n",
+    printf("profile: %llu frames, mean %.2f ms, p50 %.2f, p95 %.2f, p99 %.2f, max %.2f ms; %llu over %g ms; peak commit %.0f MB, VRAM %.0f MB\n",
            (unsigned long long)gFrames.count, gFrames.sumNs / gFrames.count / 1e6, gFrames.pct(0.5) / 1e6, gFrames.pct(0.95) / 1e6, gFrames.pct(0.99) / 1e6, gFrames.maxNs / 1e6,
-           (unsigned long long)gHitchesOver, PeakCommitMB(), gPeakVramMB);
+           (unsigned long long)gHitchesOver, gHitchMs, PeakCommitMB(), gPeakVramMB);
     std::vector<std::pair<std::string, const Stat*>> zs;
     for (const auto& kv : gZones) if (kv.second.count) zs.push_back({ kv.first, &kv.second }); // (zones reset and not seen since: left out)
     std::sort(zs.begin(), zs.end(), [](const auto& a, const auto& b) { return a.second->sumNs > b.second->sumNs; });
@@ -395,11 +404,18 @@ TEST(Profiler, OffRecordsNothingAndCostsLittle) {
     Profiler_Enable(true);
     Prof::Frame();
     const std::string j = Profiler_SummaryJson();
-    double onNs = 0.0, offNs = 0.0;
-    Profiler_MeasureZoneCost(onNs, offNs);
+    // (#1817) The best of 5 runs, and "off" judged against "on" from the same runs: a busy runner (12.5 ns off once against a
+    // fixed 5 ns) slows both, while an off zone that still records or reads the clock costs a large share of an on one.
+    double onNs = 1e9, offNs = 1e9;
+    for (int k = 0; k < 5; ++k) {
+        double on = 0.0, off = 0.0;
+        Profiler_MeasureZoneCost(on, off);
+        onNs = std::min(onNs, on);
+        offNs = std::min(offNs, off);
+    }
     Profiler_Enable(false);
     EXPECT_EQ(j.find("unit/off zone"), std::string::npos);
-    EXPECT_LT(offNs, 5.0);
+    EXPECT_LT(offNs, std::max(5.0, 0.25 * onNs)) << "off " << offNs << " ns, on " << onNs << " ns";
     EXPECT_LT(onNs, 200.0) << "a zone on: two rdtsc and a ring write (the plan: 20-40 ns; loose here, machines vary)";
 }
 #endif
@@ -424,4 +440,35 @@ double Profiler_VramUsedMB() {
     glad_glGetIntegerv(0x9048, &total);
     glad_glGetIntegerv(0x9049, &avail);
     return total > 0 && avail > 0 && total >= avail ? (total - avail) / 1024.0 : 0.0;
+}
+double Profiler_ThreadCpuSeconds() {
+#ifdef _WIN32
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0.0;
+    const auto t = [](FILETIME f) { return (double)(((unsigned long long)f.dwHighDateTime << 32) | f.dwLowDateTime) * 1e-7; };
+    return t(k) + t(u);
+#else
+    timespec ts{};
+    return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0 ? ts.tv_sec + ts.tv_nsec * 1e-9 : 0.0;
+#endif
+}
+void Profiler_MemoryHealth(double& freePhysMB, unsigned long long& pageFaults) {
+    freePhysMB = 0.0; pageFaults = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof ms;
+    if (GlobalMemoryStatusEx(&ms)) freePhysMB = ms.ullAvailPhys / 1048576.0;
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) pageFaults = pmc.PageFaultCount; // soft and hard
+#elif defined(__linux__)
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[128]; unsigned long long kb;
+        while (fgets(line, sizeof line, f)) if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { freePhysMB = kb / 1024.0; break; }
+        fclose(f);
+    }
+    if (FILE* f = fopen("/proc/self/stat", "r")) { // fields 10 and 12: minflt, majflt
+        unsigned long long mn = 0, mj = 0;
+        if (fscanf(f, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %llu %*u %llu", &mn, &mj) == 2) pageFaults = mn + mj;
+        fclose(f);
+    }
+#endif
 }

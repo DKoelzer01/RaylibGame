@@ -8,6 +8,7 @@
 
 #include "dvec3.h"
 #include "netid.h"
+#include "damage.h" // (#1215) damage types and status effects
 
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +30,15 @@ struct DamageEvent {
     DVec3 source{};               // the attacker, world space (double: planet scale)
     float knockback = 0.0f;       // m/s away from the source along the ground, before a block
     NetId sourceId = 0;           // who hit (0: the world)
+    // (#1215, combat step 1) What the hit is made of. The defaults (blunt, no effect) leave today's damage unchanged.
+    DamageType type = DamageType::Blunt;
+    StatusKind status = StatusKind::None; // an explicit effect (None: from the type, the heavy / back flags and a bite)
+    float poise = 0.0f;           // poise damage (#1217)
+    uint8_t faction = 0;          // the attacker's faction (friendly fire, #1223)
+    bool parryable = true;        // a melee hit a parry can turn (#1218)
+    bool heavy = false;           // a heavy attack (a slash heavy bleeds)
+    bool fromBehind = false;      // landed on the target's back (a slash bleeds)
+    bool fromFront = false;       // (#1227) came at the target's face (a front shield can take it)
 };
 
 struct DamageResult {
@@ -36,6 +46,9 @@ struct DamageResult {
     bool blocked = false;         // a block took part of it
     bool guardBroken = false;     // the block ran out of stamina
     bool killed = false;          // this hit took the last health
+    bool staggered = false;       // (#1217) it broke the player's poise
+    bool parried = false;         // (#1218) a parry stopped it whole (the attacker staggers)
+    bool dodged = false;          // (#1218) a dodge's invulnerability let it pass
 };
 
 DamageResult Combat_Damage(PlayerSession& target, const DamageEvent& e);
@@ -44,6 +57,8 @@ DamageResult Combat_DamageFor(SurvivalState& survival, Player& player, const Dam
 
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);
+void Combat_CurePoison(PlayerSession& s); // (#1215) what bitterroot does (#1374: eating it cures through Survival_UseItemFor)
+inline bool gDoubleTapDodge = true; // (#1218) double-tapping a direction dodges (Settings, on by default)
 
 // Hit feel, the local view only (never the simulation): a short camera shake after applyToCamera, and whether the held
 // tool's animation pauses (hit-stop). Reduce motion turns both off.
@@ -54,6 +69,9 @@ bool Combat_HitStop(const PlayerSession& s, bool reduceMotion);
 // stack; hard, everything goes into a grave at the death spot (a waypoint; walk up to it to take it all back).
 void Combat_OnDeath(PlayerSession& s);
 int Combat_GraveCount();
+// (#828) Whether the waypoint `name` on `body` is a grave; `label` then reads as the map shows it ("bob's grave 2, open to
+// all in 12 min" in multiplayer, its name alone in single player, where anyone may take it).
+bool Combat_GraveMark(const std::string& body, const std::string& name, std::string& label);
 // Drops a stack at the player's feet as a pile (#564), picked up by walking back to it after leaving; false: nowhere.
 bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
 // (#865) A pile at `at` (body-local) on that body: a server dropping a remote player's stack (who: its name, the pile's owner;
@@ -62,6 +80,9 @@ bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
 bool Combat_DropFor(const std::string& body, const DVec3& at, const struct InvSlot& stack, const std::string& who); // at: body-local feet
 inline std::function<void(const std::string& item, int64_t centi)> gDropRequest;
 int Combat_DroppedPiles();
+// (#1225) Cave scavengers steal dropped piles: the nearest within radius (body-local), and taking it whole.
+bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt);
+bool Combat_TakePileNear(const std::string& body, Vector3 at, float radius, std::vector<struct InvSlot>& out);
 void Combat_DrawGraves(Scene& world);
 void Combat_Reset();                          // a new world: no graves
 void Combat_Save(FILE* f);
@@ -95,6 +116,7 @@ int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now
 struct GraveInfo { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
                    bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile and up to 3 of its item ids
 std::vector<GraveInfo> Combat_GraveList();
+int Combat_TestGraveOffHand(size_t index); // (#1856 tests) the off hand's item index in the index-th grave or pile (-1 none)
 void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string& me);
 uint32_t Combat_GraveVersion();
 uint8_t Combat_GraveStyle(const std::string& body, const DVec3& local, uint32_t id); // 0 cross, 1 headstone, 2 monolith

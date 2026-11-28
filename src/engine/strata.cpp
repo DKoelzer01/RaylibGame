@@ -1,4 +1,5 @@
 #include "strata.h"
+#include "detmath.h"
 #include <algorithm>
 #include <cmath>
 
@@ -52,9 +53,9 @@ StrataColumn Strata_Column(Vector3 s, float continent, unsigned int seed) {
             // Folds (anticlines and synclines ~16 km apart) across an axis in a fixed frame (on a ~20 km region the
             // sphere is near enough flat): limbs dip up to `dip`. A periodic offset keeps the fade-in at the region's
             // edge gentle (a planar tilt would sweep through layers metres apart there).
-            const Vector3 axis = { cosf(a), 0.5f * sinf(a), sinf(a) };
+            const Vector3 axis = { det::Cosf(a), 0.5f * det::Sinf(a), det::Sinf(a) };
             const float lambda = 2500.0f;
-            c.offset += w * dip * lambda * sinf((s.x * axis.x + s.y * axis.y + s.z * axis.z) / lambda);
+            c.offset += w * dip * lambda * det::Sinf((s.x * axis.x + s.y * axis.y + s.z * axis.z) / lambda);
         }
     }
     // Fault scarps (#590): hard rock on the raised side near the line, so the escarpment stands while the bake wears it.
@@ -94,6 +95,13 @@ namespace {
         return ValueNoise(Scaled(s, 1.0f / 25000.0f), seed ^ 0xFA171u) - 0.5f
              + 0.04f * (ValueNoise(Scaled(s, 1.0f / 6000.0f), seed ^ 0xFA172u) - 0.5f);
     }
+}
+
+float Strata_FaultValue(Vector3 s, unsigned int seed, float* region) {
+    float r = 0.0f;
+    const float f = FaultField(s, seed, r);
+    if (region) *region = r;
+    return f;
 }
 
 float Strata_FaultUplift(Vector3 s, unsigned int seed) {
@@ -141,7 +149,7 @@ float Strata_FoldWeight(Vector3 s, unsigned int seed) {
 float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed) {
     if (c.province != 0 || Strata_RockAt(c, h, seed) == RockType::Soft) return 0.0f;
     const float t = (h + c.offset) / c.thick;
-    return sinf(3.14159265f * (t - floorf(t)));
+    return det::Sinf(3.14159265f * (t - floorf(t)));
 }
 
 float Strata_KarstWeight(Vector3 s, unsigned int seed) {

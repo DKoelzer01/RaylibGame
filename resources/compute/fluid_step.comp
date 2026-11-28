@@ -23,7 +23,7 @@ layout(std430, binding = 0) buffer CellsIn  { uint inC[]; };
 layout(std430, binding = 1) buffer CellsOut { uint outC[]; };
 layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
 layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
-layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
+layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 0 = not processed; else its gravity scale, float bits (#1942)
 layout(std430, binding = 5) buffer Flags { uint flagsOut[]; };      // per slot: bit 0 changed, bits 1-6 face requests
 // Flow readout (#392): bricks someone watches (water wheels, meters) get a block of 4096 cells x 4 ints; each cell adds the
 // fill units crossing its two faces on each axis, signed along the axis (+x, +y, +z = up), every substep. The CPU reads the
@@ -70,9 +70,18 @@ uniform int columns;       // 1: the column-pair flow
 uniform int advect;        // 1: momentum is carried with the water
 struct ColCell { int delta; uint dem; uint cap; uint code01; uint code23; };
 layout(std430, binding = 13) buffer ColScratch { ColCell col[]; };
+// The pressure pass (#1168, FluidKernel's twin): each cell's head (fill units above its own bottom) as the last substep left
+// it (pr, kept by slot) and this substep's (prN, written by the vertical pass, copied to pr per cell by the apply pass).
+uniform int pressure;      // 1: the pass runs (bound only then)
+layout(std430, binding = 14) buffer Press { int pr[]; };
+layout(std430, binding = 15) buffer PressN { int prN[]; };
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
+// G on this slot's body (#1942): inS holds a run slot's gravity root k (sqrt of its body's g over Terra's, from the host: 1
+// on Terra) as float bits, 0 if not run. G k k drives the momentum, k scales the levelling share; at k = 1 both are exact.
+float gRootAt(int gi) { return uintBitsToFloat(inS[uint(gi) / 4096u]); }
+float gravityAt(int gi) { precise float r = gRootAt(gi); precise float rr = r * r; return G * rr; }
 uniform float cellSize;    // m (Plan 10 W4c #642)
 // Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
 // same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
@@ -131,6 +140,14 @@ uint downFlux(uint u, uint l, bool lProc, bool lExists) {
     if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
     return min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u); // up to its room (#454)
 }
+// The fall, except into a cell held up by pressure (#1168: FluidKernel::fall): none into a cell whose head stands at or
+// above the falling water's surface (from that cell's bottom).
+const int kPushMax = 32; // the pressure pass's push at most (fill units a substep; FluidKernel::kPushMax)
+uint fall(uint u, int gl, uint l, bool lProc, bool lExists) {
+    uint f = downFlux(u, l, lProc, lExists);
+    if (f == 0u || pressure == 0 || gl < 0) return f;
+    return pr[gl] >= 255 + int(SH(u) + F(u)) ? 0u : f;
+}
 
 // Whether a cell rests (can spread sideways): on solid, a full cell, or another fluid kind.
 bool rests(uint slot, int x, int y, int z, uint c) {
@@ -169,6 +186,74 @@ uint kindFor(uint slot, int x, int y, int z) {
 // no difference and its surface cell's own fill set the flow area (a dammed reach never rose to its crest).
 uniform int kColumnCells;  // how far down the column depth looks: ~8 m of cells, at most 32 (W4c)
 bool sameWater(uint c, uint kind) { return (FL(c) & SOLID) == 0u && F(c) > 0u && KIND(c) == kind; }
+
+// ---- The pressure pass (#1168): FluidKernel::headPrev / headNow / upMove, the same integer steps. ----
+int headPrev(int gi, bool proc) {
+    uint c = inC[gi];
+    if (proc || pr[gi] > 0) return pr[gi];
+    return F(c) >= CAP(c) ? 255 : int(SH(c) + F(c));
+}
+bool capped(int gi) { // a cell under solid: where water is confined (FluidKernel::capped)
+    uint s; int x, y, z;
+    cellPos(gi, s, x, y, z);
+    bool pa; int fa;
+    int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+    return ga >= 0 && (FL(inC[ga]) & SOLID) != 0u;
+}
+int headNow(uint slot, int x, int y, int z, uint c) {
+    if ((FL(c) & SOLID) != 0u || F(c) == 0u) return 0;
+    if (F(c) < CAP(c)) return int(SH(c) + F(c));
+    uint kind = KIND(c);
+    int h = 255;
+    bool meCapped = capped(int(slot) * 4096 + x + 16 * y + 256 * z);
+    for (int k = 0; k < 6; ++k) {
+        int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
+        bool pn; int face;
+        int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
+        if (gn < 0 || !sameWater(inC[gn], kind)) continue;
+        int hn = headPrev(gn, pn);
+        if (dz > 0) h = max(h, hn + 255);
+        else if (dz < 0) { if (F(inC[gn]) >= CAP(inC[gn])) h = max(h, hn - 256); }
+        else if (meCapped || capped(gn)) h = max(h, hn - 1); // sideways only through confined water
+    }
+    for (int k = 0; k < 6; ++k) { // a sleeping neighbour whose stored head this one would raise is asked to wake
+        int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
+        bool pn; int face;
+        int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
+        if (gn < 0 || pn || !sameWater(inC[gn], kind)) continue;
+        if (dz == 0 && !meCapped && !capped(gn)) continue;
+        bool nFull = F(inC[gn]) >= CAP(inC[gn]);
+        int want = dz > 0 ? h - 256 : dz < 0 ? h + 255 : h - 1;
+        if (nFull && want > headPrev(gn, false) + wakeUnits) atomicOr(flagsOut[slot], 1u << uint(1 + face));
+    }
+    return h;
+}
+int upMove(int gc) {
+    if (pressure == 0) return 0;
+    uint c = inC[gc];
+    if ((FL(c) & SOLID) != 0u || F(c) == 0u || F(c) < CAP(c)) return 0;
+    uint s; int x, y, z;
+    cellPos(gc, s, x, y, z);
+    bool pa, pb; int fa, fb;
+    int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+    if (ga < 0 || !pa) return 0;
+    uint a = inC[ga];
+    if ((FL(a) & SOLID) != 0u) return 0;
+    if (F(a) > 0u && (KIND(a) != KIND(c) || F(a) >= CAP(a))) return 0;
+    if ((FL(a) & (SOURCE | SINK)) == SOURCE) return 0;
+    if ((FL(c) & SOURCE) != 0u && (FL(a) & DUG) == 0u) return 0;
+    int excess = pr[gc] - (255 + int(SH(a) + F(a)));
+    if (excess < 4) return 0;
+    uint as_; int ax, ay, az;
+    cellPos(ga, as_, ax, ay, az);
+    bool paa; int faa;
+    int gaa = neighbour(as_, ax, ay, az, 0, 0, 1, paa, faa);
+    int fallIn = gaa >= 0 ? int(fall(inC[gaa], ga, a, true, true) * uint(paa)) : 0;
+    int room = int(CAP(a)) - int(F(a)) - fallIn;
+    int gb = neighbour(s, x, y, z, 0, 0, -1, pb, fb);
+    int keep = int(F(c)) - int(fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0));
+    return max(0, min(min(excess / 2, kPushMax), min(room, keep)));
+}
 // The water surface over a cell's floor (fill units, 255 a cell): its own height, plus the cells above while it is full.
 int headOf(int g, uint c) {
     int h = int(SH(c) + F(c));
@@ -247,9 +332,9 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     float sgn = aGives ? 1.0 : -1.0;
     // The levelling share, in the cells' own water heights (#454: a film on a half-buried cell stands higher and runs off).
     int localDiff = int(SH(d) + F(d)) - int(SH(r) + F(r));
-    float share = 0.0;
-    if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d));            // a film over a drop runs off whole (#454)
-    else if (localDiff >= visc[kd]) share = shareFloat != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd]); // #1041
+    precise float share = 0.0;
+    if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d)) * gRootAt(ga);          // a film over a drop runs off whole (#454)
+    else if (localDiff >= visc[kd]) share = (shareFloat != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd])) * gRootAt(ga); // #1041; at sqrt(g) (#1942)
     // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
     // under water (a leak into an open cell beside it: a pool dug into from the side).
     precise float depth = colDepth;
@@ -259,7 +344,7 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     // Water deeper than a film builds on 2 units of head (#680: the viscosity's 5-unit gate held a 1.6% slope for ever - a pool
     // stopped 0.3 m over an open hole; on 1 unit deep water never slept); a film (< 5 cm) keeps the 5-unit gate and rests.
     int gate = colDepth < 0.05 ? visc[kd] : 2;
-    precise float accel = abs(ha - hb) >= gate ? dt * G * depth * dh : 0.0;
+    precise float accel = abs(ha - hb) >= gate ? dt * gravityAt(ga) * depth * dh : 0.0;
     precise float fric = frictionLin[kd] + divRN(frictionQuad[kd] * speed, max(depth, 0.02));
     precise float denom = 1.0 + dt * fric;
     q = divRN(q + accel, denom);
@@ -448,7 +533,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     int h = surfU - bedMax, dH = surfU - max(surfD, bedMax);
     precise float hm = divRN(float(h), HU), dHm = divRN(float(dH), HU);
     precise float q = qPrev;
-    if (h >= minSpread[kind] && dH >= 2) q += dt * G * hm * dHm * (aUp ? 1.0 : -1.0);
+    if (h >= minSpread[kind] && dH >= 2) q += dt * gravityAt(gi) * hm * dHm * (aUp ? 1.0 : -1.0);
     if (!wet && q < 0.0) q = 0.0;
     if (h < minSpread[kind]) q = 0.0;
     if (advect != 0 && h >= minSpread[kind]) {
@@ -638,17 +723,26 @@ void main() {
     if ((fl & SOLID) != 0u) { outC[g] = c; if (pass == 2) faceP[g] = uvec2(0u); return; }
     int f = int(F(c));
     uint kind = KIND(c);
+    if (pass == 2 && pressure != 0) pr[g] = prN[g]; // (#1168) this substep's head is the next one's
     if (pass == 0) {
         if (columns != 0) { col[g].delta = 0; col[g].dem = 0u; col[g].cap = 0u; } // the column flows planned next, their demand
         bool pB, pA; int fB, fA;
         int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
         int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
         uint below = gb >= 0 ? inC[gb] : 0u, above = ga >= 0 ? inC[ga] : 0u;
-        uint outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
-        uint inF = ga >= 0 ? downFlux(above, c, true, true) * uint(pA) : 0u;
+        uint outF = f > 0 ? fall(c, gb, below, pB, gb >= 0) : 0u;
+        uint inF = ga >= 0 ? fall(above, g, c, true, true) * uint(pA) : 0u;
         if (gb < 0 && f > 0 && (fl & SOURCE) == 0u) atomicOr(flagsOut[slot], 1u << uint(1 + fB));
-        int nf = f - int(outF) + int(inF);
+        int upOut = 0, upIn = 0; // the pressure pass (#1168): the head now, and what full cells push up
+        if (pressure != 0) {
+            prN[g] = headNow(slot, x, y, z, c);
+            if (abs(prN[g] - pr[g]) > wakeUnits) atomicOr(flagsOut[slot], 1u);
+            upOut = upMove(g);
+            upIn = (gb >= 0 && pB) ? upMove(gb) : 0;
+        }
+        int nf = f - int(outF) + int(inF) - upOut + upIn;
         if (f == 0 && inF > 0u) kind = KIND(above);
+        else if (f == 0 && upIn > 0) kind = KIND(below);
         outC[g] = pack(uint(clamp(nf, 0, 255)), (fl & 31u) | (kind << 5), c);
         int w = watchOf[slot];
         if (w >= 0) flux[(uint(w) * 4096u + local) * 4u + 2u] -= int(inF) + int(outF); // down through the top and the bottom face
@@ -663,7 +757,7 @@ void main() {
         if (f == 0 && nf > 0) kind = inKind;
         if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // a sink's net intake (#656, #875: the columns counted none)
         if ((fl & SOURCE) != 0u) nf = int(TG(c));
-        else if (evaporate != 0 && nf > 0 && nf <= 2 && col[g].delta == 0 && onGround(slot, x, y, z)) nf = 0;
+        else if (evaporate != 0 && nf > 0 && nf < minSpread[kind] && col[g].delta == 0 && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // resting films dry up (#454)
         if (F(outC[g]) != uint(nf)) atomicOr(flagsOut[slot], 1u);
         outC[g] = pack(uint(nf), (fl & 31u) | (kind << 5), c);
         if (useGroups != 0 && nf > 0) atomicOr(gmask[slot * 6u + uint(maskCur) * 2u + (local >> 11u)], 1u << ((local >> 6u) & 31u));
@@ -733,7 +827,7 @@ void main() {
     // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
     // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold
     // little lost the remainder of every fall into them, ~15% of a draining pond).
-    else if (evaporate != 0 && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0; // only the thinnest specks (user: puddles last)
+    else if (evaporate != 0 && nf > 0 && nf < minSpread[kind] && moving == 0u && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // specks go, films under the spread limit thin a unit a time (#454; user: puddles last)
     uint old = outC[g];                                                   // this substep's start (A)
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);

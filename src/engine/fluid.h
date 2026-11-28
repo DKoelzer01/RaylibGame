@@ -68,7 +68,9 @@ namespace Fluid {
     // Tests (#454): m^3 of water in published cells within `radius` of `local` whose bottom stands `above` m or more over it.
     float VolumeAbove(const Planetoid& body, Vector3 local, float radius, float above);
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
-    float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
+    float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius (cost ~ (radius / CellSize)^3: keep it small)
+    // More than minVolume m^3 of water within radius (WaterAt's cube), answered by brick: for large-radius yes/no looks (#1736).
+    bool AnyWaterNear(const Planetoid& body, Vector3 local, float radius, float minVolume = 0.0f);
     // Flow through the simulated water around a point (#392): body-local, its length in m^3/s - the volume crossing the
     // cells within `radius` per second divided by the sphere's diameter, so a sphere spanning a channel reads its
     // discharge. Smoothed over ~0.5 s. The first call starts watching the spot (zero until then); keep asking (a watch
@@ -79,6 +81,9 @@ namespace Fluid {
     // water from the published cells (through connected full cells to the surface: U-bends and flooded caves read their
     // feed level); generated water (sea, rivers, lakes, ponds) from its level.
     float PressureAt(const Planetoid& body, Vector3 local);
+    // The factor on fluid gravity (9.81 m/s^2, tuned on Terra) for water on this body (#1942): its surface gravity over the
+    // home planet's; exactly 1 on the home planet and in the sandbox. Main thread.
+    float GravityScale(const Planetoid& body);
 
     // Fluid kinds (resources/data/fluids.txt; Plan 5): kind 0 is water, the rest by the table (crude oil,
     // later lava...). Every cell holds one kind; kinds don't mix (a fluid flows only into empty cells or
@@ -104,6 +109,10 @@ namespace Fluid {
     float Take(Planetoid& body, Vector3 local, float m3, float radius = 1.5f, int kind = 0); // returns what will be taken
     float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns the m^3 queued (placed on the next step)
     float PourDropped();                                                                       // m^3 pours found no room for, in all (#766)
+    // The mass ledger (#1885): m^3 the CPU side added or removed since the start, by cause. Not in it: the kernels' own
+    // changes (source cells held at their level, sinks, kernel evaporation; RAYLIBGAME_FLUID_NOEVAP=1 turns evaporation off).
+    struct Ledger { double poured = 0.0, taken = 0.0, takenFree = 0.0, spring = 0.0, dried = 0.0; };
+    Ledger GetLedger();
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
     int KindAt(const Planetoid& body, Vector3 local, float radius);                      // the most plentiful non-water kind there, or -1
 
@@ -132,14 +141,22 @@ namespace Fluid {
         int gpuSlots = 0, gpuCapacity = 0; // GPU bricks holding a slot now / the pool (#675: ~230 KB a brick)
         int steadyBricks = 0;             // awake in steady flow (#674: running, read back once a second)
         long long slotReleases = 0;       // slots given back by sleeping bricks since the start (#675)
+        long long ticks = 0, dispatches = 0, flowReads = 0; // (#1407 diagnostics) ticks started by Update, GpuTick calls, flux readbacks for watches
     };
     Stats GetStats();
     bool GpuMode(); // the step runs on compute shaders (else the CPU kernel, #654)
     void WaitIdle();            // tests: until no step job is running
     void SetSpeed(int steps);   // tests: steps per tick (1 = 20 Hz real time)
     bool Asleep();              // every brick asleep and nothing queued
+    int HeadAt(const Planetoid& body, Vector3 local); // tests (#1168, CPU mode): the stored pressure head of the cell there (-1: none)
+    // Tests (#1168): m^3 of water in the simulation's own bricks (not the drawn snapshot) whose cell centres lie in a box:
+    // centre, unit axes, half extents (m), body-local.
+    double VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half);
+    // Tests (#1168): m^3 the simulation's cells in the same kind of box can hold (open cells, less their ground share).
+    double CapacityIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half);
     std::string DebugCell(const Planetoid& body, Vector3 local); // tests: "fill N flags SRTD"
     std::string DebugAwake();   // tests (#935): pending and awake bricks by state
+    bool SteadyAt(const Planetoid& body, Vector3 local); // tests (#1131): the brick holding that point is in steady flow (#674)
 }
 
 #endif

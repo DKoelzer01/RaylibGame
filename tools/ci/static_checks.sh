@@ -10,8 +10,15 @@
 #   2. The erosion bake (src/engine/erosion*.cpp/h) changed in code (not only comments) while kErosionBakeVersion did not:
 #      a warning annotation (stale <save>.erosion caches would load; CLAUDE.md "bump the version on ANY bake code change").
 #   3. A new `gh project` command in tools/ (forbidden by CLAUDE.md: it burns the shared GraphQL budget): an error.
+#   4. renderOrigin (the drawing-only floating origin, Plan 11 #1412) used more in a file than tools/ci/render_origin_baseline.txt
+#      records, or in a new file: a warning (simulation reads body-local doubles). --render-origin-baseline rewrites it.
+#   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
+#   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
+#      two branches can't ship the same number for different wire formats.
+#   7. A kNetProtocol / kSaveVersion / kErosionBakeVersion number this branch reserves is not reserved for another issue on origin/staging,
+#      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
 #
-# Exit code 1 only for errors (duplicate / unparsable ids, check 3). Warnings never fail the job.
+# Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
 set -uo pipefail
 export LC_ALL=C # sort and join must agree on the order
@@ -153,6 +160,133 @@ if [ -n "$BASE" ]; then
         sum ""; sum "**New \`gh project\` usage in tools/** (error): $(echo $hits)"
         errors=$((errors + 1))
     fi
+fi
+
+# ---- 4. renderOrigin doesn't creep into more code (Plan 11 F4, #1412) ----
+# The render origin is for drawing; simulation reads body-local doubles. tools/ci/render_origin_baseline.txt holds each
+# file's count of `renderOrigin` (word); a file whose count rises, or a new file using it, is a warning (an error once F8
+# has moved simulation code off it). Counts may only fall: after removing uses, refresh the baseline with
+#   bash tools/ci/static_checks.sh --render-origin-baseline
+RO_BASE=tools/ci/render_origin_baseline.txt
+ro_counts() { grep -rcw renderOrigin src --include=*.cpp --include=*.h | awk -F: '$2 > 0 { print $2 " " $1 }' | sort -k2; }
+if [ "${1:-}" = "--render-origin-baseline" ]; then ro_counts > "$RO_BASE"; echo "static_checks: wrote $RO_BASE"; exit 0; fi
+if [ -f "$RO_BASE" ]; then
+    rose="$(ro_counts | tr -d '\r' | awk 'NR == FNR { base[$2] = $1; next } ($2 in base) ? $1 > base[$2] : 1 { print $2 " " (($2 in base) ? base[$2] : 0) " " $1 }' <(tr -d '\r' < "$RO_BASE") -)"
+    if [ -n "$rose" ]; then
+        while read -r f was now; do
+            annot warning "$f" 1 "renderOrigin uses rose $was -> $now (Plan 11 #1412): simulation code reads body-local doubles; drawing may, then refresh $RO_BASE"
+        done <<< "$rose"
+        sum ""; sum "**renderOrigin uses rose** (warning; Plan 11 #1412): $(echo "$rose" | awk '{ printf "%s %s->%s; ", $1, $2, $3 }')"
+    fi
+fi
+
+# 5. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
+#    `--scenario tag:...` lists (parts 1 and 2 of the headless scenarios), not both - unless it carries a local-only tag
+#    (rendering, timing and looks belong on the PC). A new tag in neither list would silently never run there: an error.
+LOCAL_ONLY_TAGS="perf visual fx light local" # local: needs the PC's real-time rates (fluid tests the runner can't keep up with, #1447)
+WF=.github/workflows/selfhosted.yml
+part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+part3=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 3p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+part4=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 4p | sed 's/--scenario //; s/tag://g; s/,/ /g') # (#1882) world generation metrics: the full tier and manual runs
+if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ] || [ "$part4" != worldgen ]; then
+    echo "::error file=$WF::static check 5: the four headless scenario tag lists (part 1, part 2, pose twins, worldgen) were not found in the workflow, in that order"
+    errors=$((errors + 1))
+else
+    unplaced=""
+    for f in tests/scenarios/*.cpp; do
+        name=$(grep -o 'SCENARIO("[^"]*")' "$f" | head -1 | sed 's/SCENARIO("\(.*\)")/\1/')
+        [ -n "$name" ] || continue
+        tags=$(grep -o 's.tags = {[^}]*}' "$f" | head -1 | grep -o '"[a-z0-9_-]*"' | tr -d '"' | tr '\n' ' ')
+        in1=0; in2=0; in3=0; in4=0; local=0
+        for t in $tags; do
+            for x in $part1; do [ "$t" = "$x" ] && in1=1; done
+            for x in $part2; do [ "$t" = "$x" ] && in2=1; done
+            for x in $part3; do [ "$t" = "$x" ] && in3=1; done
+            for x in $part4; do [ "$t" = "$x" ] && in4=1; done
+            for x in $LOCAL_ONLY_TAGS; do [ "$t" = "$x" ] && local=1; done
+        done
+        if [ $((in1 + in2 + in3 + in4)) -gt 1 ]; then
+            echo "::error file=$f::scenario $name matches more than one runner scenario step (tags: $tags): it would run twice"
+            errors=$((errors + 1))
+        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $in4 = 0 ] && [ $local = 0 ]; then
+            echo "::error file=$f::scenario $name matches neither runner scenario step (tags: $tags): add a tag to a list in $WF or a local-only tag ($LOCAL_ONLY_TAGS)"
+            errors=$((errors + 1)); unplaced="$unplaced $name"
+        fi
+    done
+    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`, world generation (full tier, manual runs) \`$part4\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
+fi
+
+# ---- 6. kNetProtocol is reserved (#1480) ----
+# Each wire-format change takes the next number from tools/ci/protocol_reservations.txt ("<n> | <branch> | <issue> | <what>",
+# reserved in the PR before the bump). A number missing there, or marked "(unused)", is an error: two branches that bumped
+# independently would both claim it, and a client of one would join a server of the other with a different format.
+RES=tools/ci/protocol_reservations.txt
+proto=$(grep -oE 'kNetProtocol = [0-9]+' "$NETPROTO" | head -1 | grep -oE '[0-9]+$')
+if [ -z "$proto" ]; then
+    echo "::error file=$NETPROTO::static check 6: kNetProtocol not found"; errors=$((errors + 1))
+elif [ ! -f "$RES" ]; then
+    echo "::error file=$RES::static check 6: the protocol reservation list is missing"; errors=$((errors + 1))
+else
+    line=$(tr -d '\r' < "$RES" | grep -E "^${proto}[[:space:]]*\|" | head -1)
+    if [ -z "$line" ]; then
+        echo "::error file=$NETPROTO::kNetProtocol $proto is not reserved in $RES: add a line \"$proto | <branch> | #<issue> | <what>\" (#1480)"
+        errors=$((errors + 1))
+    elif echo "$line" | grep -q "(unused)"; then
+        echo "::error file=$NETPROTO::kNetProtocol $proto is marked (unused) in $RES: reserve the next free number instead (#1480)"
+        errors=$((errors + 1))
+    else
+        sum ""; sum "**kNetProtocol $proto** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+    fi
+fi
+# (#1881) kSaveVersion the same way: a "save <n> | ..." line in the same file, not "(unused)". Two branches that bumped the
+# save version independently would each write a different format under one number, and the migration chain would read
+# one of them wrongly.
+SAVEVER=src/engine/saveversion.h
+savever=$(grep -oE 'kSaveVersion = [0-9]+' "$SAVEVER" 2>/dev/null | head -1 | grep -oE '[0-9]+$')
+if [ -z "$savever" ]; then
+    echo "::error file=$SAVEVER::static check 6: kSaveVersion not found"; errors=$((errors + 1))
+elif [ -f "$RES" ]; then
+    line=$(tr -d '\r' < "$RES" | grep -E "^save[[:space:]]+${savever}[[:space:]]*\|" | head -1)
+    if [ -z "$line" ]; then
+        echo "::error file=$SAVEVER::kSaveVersion $savever is not reserved in $RES: add a line \"save $savever | <branch> | #<issue> | <what>\" (#1881)"
+        errors=$((errors + 1))
+    elif echo "$line" | grep -q "(unused)"; then
+        echo "::error file=$SAVEVER::kSaveVersion $savever is marked (unused) in $RES: reserve the next free number instead (#1881)"
+        errors=$((errors + 1))
+    else
+        sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+    fi
+fi
+# (#2009) kErosionBakeVersion: an "erosion <n> | ..." line when the branch CHANGES the version against BASE (a branch
+# that keeps its base's version needs none, so ladder's older bake still passes). Two branches that bumped to one number
+# would each bake different terrain under it, and a cache baked by one loads in the other.
+if [ -n "$BASE" ] && [ -f "$RES" ]; then
+    ero_ver() { tr -d '\r' | grep -oE 'kErosionBakeVersion = [0-9]+' | head -1 | grep -oE '[0-9]+$'; }
+    ero_new=$(ero_ver < "$EROSION_H" 2>/dev/null)
+    ero_old=$(git show "$BASE:$EROSION_H" 2>/dev/null | ero_ver)
+    if [ -n "$ero_new" ] && [ "$ero_new" != "$ero_old" ]; then
+        line=$(tr -d '\r' < "$RES" | grep -E "^erosion[[:space:]]+${ero_new}[[:space:]]*\|" | head -1)
+        if [ -z "$line" ]; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion ${ero_old:-?} -> $ero_new is not reserved in $RES: add a line \"erosion $ero_new | <branch> | #<issue> | <what>\" (#2009)"
+            errors=$((errors + 1))
+        elif echo "$line" | grep -q "(unused)"; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion $ero_new is marked (unused) in $RES: reserve the next free number instead (#2009)"
+            errors=$((errors + 1))
+        else
+            sum ""; sum "**kErosionBakeVersion $ero_new** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+        fi
+    fi
+fi
+
+# ---- 7. (#2009) a number this branch reserves is not reserved for another issue on the other base or in an open PR ----
+# (check 6 reads only this branch's copy). RESERVATION_CLASH=0 skips it (offline).
+if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
+    rc_out=$(bash tools/ci/reservation_clash.sh "$BASE" 2>&1)
+    rc_rc=$?
+    printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
+    sum ""; sum "**Reservation clashes (check 7):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
+    [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi

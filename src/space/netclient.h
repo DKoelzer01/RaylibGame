@@ -31,7 +31,10 @@ class Scene;
 constexpr double kReconcileError = 0.05;   // m
 constexpr double kInterpDelay = 0.1;       // s
 constexpr double kExtrapolate = 0.25;     // s: how far another player is carried on past their newest state
-struct NetPredicted { uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1; }; // fx..: the view sent with it
+struct NetPredicted { // fx..: the view sent with it; fly..: a creative flyer's state after the step, sent too (#1922)
+    uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1;
+    bool fly = false; uint64_t flyBody = 0; DVec3 flyLocal{}; Vector3 flyVel{};
+};
 
 struct NetClient {
     enum class State { Idle, Connecting, AwaitingWelcome, Joined, Rejected, Closed };
@@ -63,17 +66,21 @@ struct NetClient {
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
+    int creatureFxMsgs = 0;                      // (#1343, #1364) creature shot and event messages heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
+    int teamStores = 0, teamStoreTeam = 0;      // (#1886) team progression stores heard, and the team of the last one
+    std::string teamStoreText;                  // ...and its text
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
     int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
+    double respawnGraceUntil = -1.0;             // (#828) dead, or just respawned: the server moved us (not a miss); errors are not counted
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
     // Who is playing and what they hold (#750)

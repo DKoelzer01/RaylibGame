@@ -80,6 +80,7 @@ struct WorldStats {
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
     long long lodFades = 0;                 // nodes cross-faded into their replacements since start (#243)
+    int lodUncovered = 0;                   // (#1418) desired LOD nodes neither ready nor covered by a kept node: gaps on screen
     long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
     long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
@@ -157,6 +158,12 @@ void WorldTime_Follow(double serverNow);
 double WorldTime_Lag();
 double WorldTime_Pending();
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
+// (#545) The last frame's busy time (ms): from the frame's start to just before EndDrawing, without the frame-rate cap's or vsync's
+// wait; the main loop sets it (0: not measured, GetFrameTime is used). The streaming budget reads it.
+inline float gFrameBusyMs = 0.0f;
+// (#545) The frame time the frame-rate cap or vsync holds frames to (ms; 0: uncapped). Set beside SetTargetFPS.
+inline float gTargetFrameMs = 0.0f;
+inline void SetFrameTarget(int fps, int vsyncHz = 0) { const int hz = fps > 0 ? fps : vsyncHz; gTargetFrameMs = hz > 0 ? 1000.0f / (float)hz : 0.0f; }
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
 inline bool gJobLog = false;           // --perf-log: the job queue and mix every second (#387)
@@ -192,7 +199,7 @@ void SetWorldSavePath(const char* path); // bench runs save to their own file, n
 const char* WorldSavePath();
 // (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest
 // BackupsKept() stay (RAYLIBGAME_BACKUPS=N, default 5, 0 none).
-void BackupSave();
+void BackupSave(const char* prefix = ""); // prefix "pre-v<N>-": the backup taken before an upgrade, never pruned (#1693)
 int BackupsKept();
 std::string BackupDir();
 extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)
@@ -205,7 +212,13 @@ Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
 // Plan 11 (frames.h, #667): a body's orientation (rows of R: body-local -> world) and angular velocity (world, rad/s), in
 // double from its double spin angle.
 void BodyRotationAndSpin(const Planetoid& body, double r[3][3], DVec3& omega);
+// (Plan 11 F6, #1698) The same for a body that isn't loaded: the double rotation of Euler angles (degrees; rows map body-local
+// into world) and the angular velocity (world, rad/s) of a body turning at `spin` deg/s.
+void BodyRotationFromAngles(double rx, double ry, double rz, double r[3][3]);
+DVec3 BodyAngularVelocity(Vector3 rotationDeg, Vector3 spinDegPerS);
 
+// (#1183) the game's work to finish before a save (queued blueprint foundations); nullptr: none
+inline void (*gBeforeSaveWorld)() = nullptr;
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".
 extern std::function<void(FILE*)> saveExtrasHook;
@@ -214,7 +227,12 @@ extern std::function<void()> loadDoneHook; // the end of a load, every body back
 // Run by unloadWorld before the old world's bodies are freed (#902): modules that keep a body, plot or hit pointer between
 // frames drop it there - drawing goes on while the next world loads, and a pointer into the freed world crashed a reload.
 void World_AddUnloadHook(std::function<void()> hook);
+// (#1693) Loads the save through the migration chain (savemigrate.h). A save from a newer build, or from before kOldestSaveVersion,
+// is refused with nothing touched: false, and LastLoadError() says why (for the load screen). An older save (13 on) gets the
+// backup first and is upgraded in memory; gSaveNoticeHook then gets "Save upgraded from version N; dropped: ..." (the game toasts it).
 bool LoadWorldSave(Scene& world);
+const std::string& LastLoadError(); // why the last LoadWorldSave failed ("" when it did not, or failed for no stated reason)
+inline std::function<void(const std::string&)> gSaveNoticeHook;
 // (#943) The last LoadWorldSave's phases (ms): the world regenerated from the seed, and the saved edits (region deltas).
 struct LoadPhases { double regenMs = 0.0, regionsMs = 0.0, plotsMs = 0.0, fluidMs = 0.0; };
 const LoadPhases& LastLoadPhases();

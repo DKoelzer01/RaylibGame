@@ -1,0 +1,52 @@
+# (#1871) Which runner scenarios a PR's changes need: its "affected" set (tools/ci/ci_plan.sh). Each line is
+#   <extended regex on a changed path> | <what to run: comma-separated scenario names or tag:X; ALL = every runner
+#                                         scenario; SERVER = the dedicated server and join tests>
+# Every line that matches a changed path adds its targets. A changed scenario file (tests/scenarios/*.cpp) adds its own
+# scenarios. A changed file under src/ or resources/ that no line matches adds the smoke set (DEFAULT below); a change
+# only to docs or tools runs no scenario (the build and the unit tests still run). Only the runner's tags belong here
+# (the two lists in .github/workflows/selfhosted.yml); local-only scenarios (perf, visual, ...) run on the PC.
+# When in doubt, map wider: a missed regression surfaces only in the next batched run, hours later.
+DEFAULT | tag:world
+# The build and the harness: everything.
+^(CMakeLists\.txt|CMakePresets\.json|tools/build_linux\.sh|\.github/workflows/selfhosted\.yml|tools/ci/(ci_plan\.sh|scenario_map\.txt|gpu_lock\.sh))$ | ALL
+^src/space/scenario[a-z_]*\.(h|cpp)$ | ALL
+^src/engine/(jobsystem|profiler|logger|utils/[a-z_]+)\.(h|cpp)$ | ALL
+# Headers and services nearly everything includes, and the command line (main.cpp's argv loop).
+^src/engine/(dvec3|simclock|gamerng|headless|envflag|glcaps|gpucompute|gpumem)\.(h|cpp)$|^src/space/(main|commandline)\.cpp$ | ALL
+# Saves and joining.
+^src/engine/(savemigrate|saveversion|joininfo)\.(h|cpp)$|^src/space/serverconsole\.(h|cpp)$ | SERVER,tag:world,tag:craft,tag:factory
+# Water and fluids. (Shaders live in resources/ and resources/compute/.)
+^src/engine/(fluid|fluidkernel|waterfield|watersurface|watercaves)[a-z_]*\.(h|cpp)$ | tag:fluid
+^src/space/(watercaves|waterfalls|waterworks|weather)\.(h|cpp)$ | tag:fluid,tag:world
+^resources/data/fluids|^resources/(compute/)?[a-z_]*(fluid|water)[a-z_]*\.(fs|vs|glsl|comp)$ | tag:fluid
+# The terrain and world generation: the ground everything stands on. (#1882) A terrain change also runs the 1-seed world
+# generation metrics; the 8-seed set runs in the full tier and on manual runs (its own workflow step, tag:worldgen).
+^tests/scenarios/worldgen_metrics\.h$ | worldgen/metrics-1
+^src/engine/(voxel[a-z_]*|terrain[a-z]*|cubemarch[a-z]*|erosion[a-z_]*|rivers|canyons|strata|caves?|oreveins|SimplexNoise|worldgen[a-z_]*|worldprofile|planetfield[a-z_]*|bodies|farsphere)\.(h|cpp)$ | tag:world,tag:caves,tag:fluid,worldgen/metrics-1
+^resources/data/(biomes|worldgen|strata|bodies)|^resources/compute/(terrain|chunk)[a-z_]*\.(comp|glsl)$|^resources/(voxel_lighting|farsphere)\.(fs|vs)$ | tag:world,tag:caves,worldgen/metrics-1
+^resources/[a-z_]*\.(fs|vs|glsl)$ | tag:world
+# The factory, machines, crafting and building.
+^src/(engine|space)/(factory[a-z]*|machine[a-z]*|conduit[a-z]*|rotation[a-z]*|multiblock[a-z]*|craft[a-z]*|recipes?|alchemy|magicmachines)\.(h|cpp)$ | tag:factory,tag:craft
+^resources/data/(machines|machine_recipes|recipes|recipe_unlocks|items|tiers|alchemy|materials) | tag:factory,tag:craft
+^src/(engine|space)/(plots|buildtool|blueprint|terraintool)\.(h|cpp)$ | tag:factory,tag:world
+# Creatures and combat.
+^src/(engine|space)/(creatures|animals|creaturesounds|ai[a-z_]*)\.(h|cpp)$|^resources/data/(creatures|animals|factions|loot) | tag:creatures
+^src/(engine|space)/(combat|melee|damage|defense|dungeontraps|weapons?)\.(h|cpp)$ | tag:combat,tag:creatures
+# Skills, research, progression.
+^src/(engine|space)/(skills|research[a-z]*|progression[a-z]*|questbook|quests)\.(h|cpp)$|^resources/data/(skills|research|quests) | tag:skills,tag:craft
+# Audio.
+^src/(engine|space)/(audio[a-z]*|music|ambience|footsteps|machinesounds|subtitles)\.(h|cpp)$|^resources/data/(music|ambience|subtitles) | tag:audio
+# The player, its frames and flight.
+^src/(engine|space)/(player[a-z]*|frames|bodyframes|physics[a-z]*|orbit[a-z]*|rocket[a-z]*|ship[a-z]*|world)\.(h|cpp)$ | tag:frames,tag:world
+# Multiplayer and the server.
+^src/(engine|space)/(net[a-z]*|hostserver|hostprocess|serveradmin|claims|mpbots|gamesave)\.(h|cpp)$|^tools/test_(server|join)\.sh$ | SERVER,tag:world
+# The HUD and the maps.
+^src/space/(navigation|mapfeatures|gameui|hotbar|statusbar|uipalette|itemicons)\.(h|cpp)$|^resources/data/map_colours | ui/map-live,ui/status-bar
+# Inventory and saves.
+^src/(engine|space)/(inventory|itemdata|gamesave|survival)\.(h|cpp)$ | tag:craft,tag:world
+# Farming, food and the magic side of crafting.
+^src/space/(farming|fishing|crops|foods|trapping|toolwear)\.(h|cpp)$ | tag:craft,tag:world
+^src/space/(magic[a-z_]*|mana[a-z_]*|potions|tome[a-z_]*|aspects|burden)\.(h|cpp)$ | tag:craft,tag:skills
+^src/space/storage\.(h|cpp)$ | tag:factory,tag:craft
+# Suits, stations and ships.
+^src/space/(suit[a-z_]*|ship_parts|station|telescope)\.(h|cpp)$ | tag:frames,tag:craft

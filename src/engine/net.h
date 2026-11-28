@@ -30,12 +30,23 @@ bool Net_Host(uint16_t port);                          // listen for connections
 uint32_t Net_Connect(const char* address);             // "ip:port"; a connection handle, 0 on a bad address
 void Net_Poll();                                       // run callbacks: accepts, connects, disconnects
 bool Net_IsConnected(uint32_t conn);
+// (#1868) Incoming connections that came up since the last call (appended): the server admits or refuses each at once.
+void Net_TakeNewIncoming(std::vector<uint32_t>& out);
 int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 // Bytes not yet delivered on a connection: queued, sent but not acknowledged, and held by the simulated conditions. A
 // sender that streams (the join sync, #776) holds back while this is high instead of overflowing the send buffer.
 uint32_t Net_PendingBytes(uint32_t conn);
 int Net_ReliableSendFailures();                        // reliable sends the transport refused (should stay 0)
+// (#1836, #1421) Every send the transport refused, reliable or not: counted per message type (the payload's first byte, a
+// NetMsg id) and result; the first refusal of each (type, reliable, result) is printed. Net_NoteSendRefused is called by the
+// send path (and by tests); the summary is "" when nothing was refused, and is printed when a connection closes.
+void Net_NoteSendRefused(uint32_t conn, const void* data, uint32_t size, bool reliable, const char* result);
+int Net_SendFailures();
+std::string Net_SendFailureSummary();
+// (#1836) The transport's queue on a connection (bytes) and its ping: false where unknown (no GNS, or not connected).
+struct NetQueueStatus { int pendingReliable = 0, pendingUnreliable = 0, sentUnacked = 0, pingMs = -1; };
+bool Net_QueueStatus(uint32_t conn, NetQueueStatus& out);
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
 void Net_Close(uint32_t conn);
 std::string Net_RemoteAddress(uint32_t conn);           // "ip:port" of the other end ("" unknown; #345 IP bans)

@@ -10,7 +10,6 @@ iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
 water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
-concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
@@ -18,6 +17,7 @@ any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 any_stone       | Any stone       | 999 | 130,130,135 | Stone or any rock: granite, basalt, sandstone, limestone or marble.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
+bitterroot      | Bitterroot      | 200 | 150,110, 60 | A bitter wild root from bushes. Cures poison (eat it even when full); a little food.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
 clay            | Clay            | 999 | 170,120, 95 | Dug from river and pond beds, swamps and pockets in the dirt. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
@@ -36,6 +36,7 @@ campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: b
 fibre_torch     | Fibre torch     |  20 | 220,170, 90 | Hold it (hotbar or off hand) for a little light.
 torch           | Torch           |  20 | 250,150, 60 | Hold it (hotbar or off hand) for warm light around you, or stand it on the ground (RMB).
 lantern         | Lantern         |  20 | 255,205,130 | Hold it (hotbar or off hand) for a steady light that never burns out.
+flare           | Flare           |  20 | 230, 60, 50 | Throw it (RMB) to light a cave: it burns red for a minute where it lands.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
 blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
@@ -82,6 +83,7 @@ stone_shovel     | Stone shovel     | tool | 150,130,110 | Digs dirt, sand, grav
 stone_axe        | Stone axe        | tool | 150,120,100 | Fells trees in half the swings.
 wooden_shield    | Wooden shield    | tool | 160,115, 70 | Put it in the off-hand cell (inventory) and hold RMB to block: stops three quarters of a hit from the front, for stamina.
 iron_pickaxe     | Iron pickaxe     | tool | 175,170,175 | Mines bauxite too; a bigger bite than stone.
+crowbar          | Crowbar          | tool | 120,118,124 | Pries open a sealed vault in a ruin (hold E on it). Kept after use.
 iron_shovel      | Iron shovel      | tool | 175,165,155 | A wider, faster shovel.
 iron_axe         | Iron axe         | tool | 175,160,150 | Fells trees faster.
 steel_pickaxe    | Steel pickaxe    | tool | 125,128,140 | Mines ilmenite (titanium ore) too.
@@ -93,7 +95,7 @@ titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few 
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
-farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a hoe, RMB).
 grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
 root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
 flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.
@@ -110,6 +112,9 @@ milk             | Milk             |   999 | 245,245,240 | Food: 12. From a hor
 wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks (O, with shears). Spins into fibre (Tab).
 hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
 feather          | Feather          |   999 | 230,220,210 | From cluckers.
+chitin           | Chitin           |   999 | 190,185,160 | Plates from a tunnel lurker's shell: light, hard armour (armour step to come).
+scrap            | Scrap            |   999 | 140,130,115 | Bits of old tools and metal a cave scavenger carried. (A smelting use comes with the metallurgy step.)
+map_fragment     | Map fragment     |   999 | 210,190,140 | A torn page of an old mine map: it marks the way to a dungeon. (Reading it comes with the dungeons, #719.)
 shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
 bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
 water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).
@@ -122,6 +127,7 @@ cooked_fish      | Cooked fish      |   999 | 210,160,100 | Fish roasted over a 
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
 bed              | Bed              |    5 | 150,62,52   | Build it (hotbar, then place) and right-click it: you respawn at your bed while it stands.
+ladder           | Ladder           | block | 160,115,70  | Place it against a wall or down a shaft: walk into it and hold W to climb, S to climb down, Space to push off.
 claim_banner          | Claim banner          | 5 | 190, 70, 60 | Place it (multiplayer) to claim the land 100 m across for your team: other teams can't build, dig or open anything there. Break it to unclaim.
 bronze_claim_banner   | Bronze claim banner   | 5 | 205,140, 70 | A claim banner for 200 m across (multiplayer).
 steel_claim_banner    | Steel claim banner    | 5 | 150,160,175 | A claim banner for 400 m across (multiplayer).
@@ -139,8 +145,10 @@ rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxy
 thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
 flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
-thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
+thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold. With suit power it stands the deep band's heat.
+cooling_vest       | Cooling vest       |  tool | 150,200,220 | Suit module: a vest of coolant lines. Stands the heat of the middle band (250-500 m down).
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
+gas_sensor         | Gas sensor         |  tool | 170,220,120 | Suit module: warns of cave gas from 15 m, and where it is.
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
 grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
 food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.
@@ -224,3 +232,30 @@ cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlan
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
 ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
+dungeon_key      | Dungeon key      | 20  | 214,184, 72 | Opens the locked vault door of a dungeon, once. Lies in a chest on the floor above the vault.
+# Research (#1193, #1030): packs (labs turn them into research for the team's queue; hand-crafted slowly, the assembler
+# comes later), the labs, and the labs' research units (counted by the game, never carried).
+steam_pack      | Steam research pack | 999 | 190,150,90  | Research for tier 3 (Steam and steel): put it in a lab.
+lv_pack         | LV research pack    | 999 | 90,150,220  | Research for tier 4 (LV): a lab uses it with steam packs.
+mv_pack         | MV research pack    | 999 | 230,150,60  | Research for tier 5 (MV): a lab uses it with the earlier packs.
+hv_pack         | HV research pack    | 999 | 180,90,210  | Research for tier 6 (HV): a lab uses it with the earlier packs.
+rocket_pack     | Rocketry research pack | 999 | 220,80,70 | Research for tier 7 (Rocketry): needs an HV lab.
+lv_lab          | LV lab              | block | 210,210,200 | Researches your team's queued nodes of tiers 3-4 (Research tab) from packs. Needs LV power.
+mv_lab          | MV lab              | block | 210,210,200 | Researches tiers 3-5. Needs MV power.
+hv_lab          | HV lab              | block | 210,210,200 | Researches tiers 3-7. Needs HV power.
+research_t3     | Research (tier 3)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t4     | Research (tier 4)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t5     | Research (tier 5)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t6     | Research (tier 6)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t7     | Research (tier 7)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+shaft            | Shaft            | 256 | 150,112, 70 | Mechanical power: carries rotation end to end along its axis. Lay a line of them from a crank to the machines.
+cogwheel         | Cogwheel         | 256 | 160,120, 76 | A shaft with a small cog: meshes with a cog beside it (turning the other way) and drives a large cogwheel set diagonally at half speed.
+large_cogwheel   | Large cogwheel   | 256 | 150,108, 66 | A big cog: driven diagonally by a small cogwheel, it turns at half the speed.
+gearbox          | Gearbox          | 64  | 150,112, 70 | Takes rotation round a corner: joins the shafts on its four sides (opposite sides turn opposite ways).
+hand_crank       | Hand crank       | 64  | 120, 90, 60 | Hold RMB on it to turn its shaft at 32 RPM: enough for one or two light machines.
+stress_gauge     | Stress gauge     | 64  | 160,120, 76 | Put it in a shaft line: shows how loaded the network is and how fast it turns. Over 100% the whole network slows down.
+millstone        | Millstone        | 20  | 140,138,132 | Mechanical power: grinds grain to flour, stone to gravel and sand, ore to crushed ore. Needs 16 RPM; faster grinds faster.
+mechanical_saw   | Mechanical saw   | 20  | 146,108, 68 | Mechanical power: saws a log into 6 planks (4 by hand). Needs 16 RPM.
+mechanical_press | Mechanical press | 20  | 146,108, 68 | Mechanical power: presses one ingot into one plate (2 by hand). Needs 16 RPM.
+water_wheel      | Water wheel      | 20  | 150,112, 70 | Mechanical power from a river: 1.5 m across, set it with its bottom in flowing water (a river, or a stream you dug). Turns up to 16 RPM, 256 SU, with the current; nothing in still water.
+windmill         | Windmill         | 20  | 226,218,196 | Mechanical power from the wind: four sails on a hub, best high and in the open. Turns up to 8 RPM with 1024 SU in a good wind; stands still in a calm.

@@ -52,12 +52,27 @@ enum class PartType : uint8_t {
     PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
     Bed,                                                             // a bed (#800): right-click it to respawn there while it stands
     ClaimBanner, ClaimBanner2, ClaimBanner3, ClaimBanner4,            // (#343) claim banners: placed in multiplayer, they claim 100 / 200 / 400 / 800 m across for the team
+    // (#159, #1269) mechanical power (rotationplot.*): 1-cell transmission parts along their local z axis, a hand crank, a
+    // stress gauge on a shaft line, and the machines rotation drives (1 m, 2x2x2 cells)
+    Shaft, Cogwheel, LargeCogwheel, Gearbox, HandCrank, StressGauge,
+    Millstone, Saw, Press,
+    WaterWheel, Windmill,                                            // (#1270) rotation sources from the river and the wind (rotationsources.*)
+    LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
+    ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
+    Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
+    Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
+    Lever,                                                           // (#1641 slice 2c) a dungeon floor lever: pulled, it opens the portcullis gates near it (appended: saves and NetPart ids go by order)
+    RuinCache,                                                       // (#2072) a sealed cache in a ruin: opened (hold E), never broken; material = its kind | kCacheOpened
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo || (t >= PartType::Distillery && t <= PartType::Cauldron); }
+// (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
+inline bool IsRotationPart(PartType t) { return t >= PartType::Shaft && t <= PartType::Windmill; }
+// (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
+inline bool IsSpinningPart(PartType t) { return t == PartType::Shaft || t == PartType::Cogwheel || t == PartType::LargeCogwheel || t == PartType::HandCrank || t == PartType::WaterWheel || t == PartType::Windmill; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
 inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
@@ -66,8 +81,21 @@ constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slop
                                  PartType::Slab, PartType::Panel, PartType::Pane, PartType::Post };
 constexpr int kShapeCount = (int)(sizeof(kShapes) / sizeof(kShapes[0]));
 const char* PartName(PartType t);
+// (#1881) The name a part type is saved by (its enum name, "LandingLeg"): saves and blueprints go by names through a palette,
+// so a part type may be added anywhere in the enum. PartFromSaveName: Count when no type has the name.
+const char* PartSaveName(PartType t);
+PartType PartFromSaveName(const std::string& name);
+// The palette the reader is parsing by: saved number -> part type (Count: a type this build doesn't have). Identity unless
+// set: a world load sets its file's ("part_palette" line) for the load's length; a blueprint, its own.
+std::string PartPalette_Line();                              // "part_palette N <name 0> <name 1> ...": this build's order
+bool PartPalette_Parse(const std::string& line, std::vector<PartType>& out); // that line into a map (false: not one)
+void PartPalette_Set(std::vector<PartType> map);             // empty: identity
+PartType PartPalette_Map(int saved);                         // through the set palette (Count: unknown or out of range)
+PartType PartPalette_MapWith(const std::vector<PartType>& map, int saved);
+const char* PartPalette_V13Line();                    // the order saves up to version 13 used (frozen), as a palette line
+const std::vector<PartType>& PartPalette_V13();       // that, parsed
 int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
-const char* PartCostItem(PartType t);       // shapes: concrete (material 0); else the part's own item
+const char* PartCostItem(PartType t);       // shapes: stone brick (material 0); else the part's own item
 const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr
 
 // Building materials: any shape can be built from any of them, costing the material's item.
@@ -87,6 +115,10 @@ struct Part {
     uint8_t material = 0; // shapes: BuildMaterial index
 };
 bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
+inline bool GateLocked(const Part& p) { return p.type == PartType::Gate && p.material == 1; } // (#1641) a vault door (a dungeon_key opens it): solid, where a plain gate is walked through
+inline bool GatePortcullis(const Part& p) { return p.type == PartType::Gate && p.material == 2; } // (#1641 slice 2c) a dungeon portcullis: solid like a vault door, opened by the lever in its dungeon
+inline bool GateSolid(const Part& p) { return GateLocked(p) || GatePortcullis(p); }                   // a gate people cannot walk through
+inline bool PartUnbreakable(const Part& p) { return GateSolid(p) || p.type == PartType::Lever || p.type == PartType::RuinCache; }       // vault doors, portcullises and levers are opened, never broken
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
@@ -120,6 +152,7 @@ public:
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
+    Vector3 toPlot(const DVec3& bodyLocal) const; // (#1277) from a double body-local point: no 4 mm float step at 60 km
     Vector3 toBody(Vector3 plotPos) const;
     // Plot coordinates (metres along east, up, north from the origin) to render space, built in double the way the
     // plot meshes are (lines and boxes drawn under it stay on the blocks as the planet turns, #271).
@@ -128,6 +161,13 @@ public:
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
+    // (#1574) The origin that puts a part flush against a face: every cell in front of the face of hitCell (along `face`, a
+    // unit axis), the nearest ones touching it. Moves it out or back in along the face only; a single-cell part goes exactly
+    // into the cell in front (#1630).
+    static Int3 FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face);
+    // (#1630) The origin whose one cell is `cell`, whatever the part's orientation (the rotation turns about the origin cell's
+    // corner, which moves a lone cell sideways); a part of more cells keeps its origin.
+    static Int3 SingleCellOrigin(const Part& p, Int3 cell);
     // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
     static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
@@ -142,10 +182,22 @@ public:
     ~Plot();
 
     // Collision: push a sphere (body-local centre, radius in m) out of parts; returns true and the
-    // body-local push and normal if it touched any.
-    bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut) const;
+    // body-local push and normal if it touched any. normalOut is the sum of the pushes' normals (a sphere on a floor against
+    // a wall gets the 45-degree diagonal, no real surface); `contacts` (optional, up to 4) gets each push's own normal,
+    // body-local, for clipping a velocity against every surface touched (#1732).
+    struct Contacts { Vector3 n[4]; int count = 0; };
+    // edgeWallCos > 0: a push along a normal tilted up less than that (the sphere's centre over a part's top edge) is made
+    // level, as from a wall face: a capsule's upper spheres over an edge were lifted and the player rose and fell at walls.
+    bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut, Contacts* contacts = nullptr, float edgeWallCos = 0.0f) const;
+    // The same from a double body-local centre, returning the push (body-local, m) rather than the moved centre (#1732): 60 km
+    // out a float centre steps ~4 mm, and the difference of two such centres made the player's pushes jitter by that much a
+    // frame (0.1-0.4 m/s kicks against a wall).
+    bool collideSphereD(const DVec3& bodyLocalCentre, float radius, Vector3& pushOut, Vector3& normalOut, Contacts* contacts = nullptr, float edgeWallCos = 0.0f) const;
+    bool collideCells(Vector3& cellPos, float radiusCells, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const; // (the shared part, in plot cell units)
+    bool touchesPart(Vector3 bodyLocalCentre, float radius, PartType type) const; // (#1105) a sphere overlapping a cell of that part type (ladders)
     // Ray (body-local) against part cells: the nearest hit cell, its face normal (plot space), distance.
     bool raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const;
+    bool raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const; // (#1277) aim rays
 
 private:
     struct Section { Mesh mesh{}; bool dirty = true; };

@@ -1,5 +1,6 @@
 #include "menus.h"
 #include "playerinput.h"
+#include "magic.h" // (#1249) Magic_Enabled: the magic sight key only with magic on
 #include "playerrecord.h"
 #include "scenetarget.h"
 #include "slideshow.h"
@@ -7,6 +8,9 @@
 #include "ship.h"
 #include "telescope.h"
 #include "audio.h"
+#include "combat.h" // (#1218) gDoubleTapDodge
+#include "subtitles.h"
+#include "uipalette.h"
 #include "foliage.h"
 #include "world.h"
 #include "headless.h"
@@ -141,8 +145,9 @@ namespace {
         return ok;
     }
 
-    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete.
-    int renaming = -1, deleting = -1;
+    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete. (#1841, #1842) By
+    // the save's name, not its row: a copy, rename or delete re-sorts the list, and a row index then pointed at another save.
+    std::string renaming, deleting;
     std::string renameText;
     double deleteAsked = 0.0;
     std::string saveMessage;
@@ -226,6 +231,7 @@ namespace {
             // #131: how bright light rolls off - Clip (hard white), Knee (today's look; highlights roll off), ACES (filmic).
             static const char* curves[] = { "Clip", "Knee", "ACES" };
             changed |= Choice({ x, y, w, h }, "Tonemap", curves, 3, settings.tonemap); next();
+            changed |= Slider({ x, y, w, h }, "Brightness", settings.brightness, -1.0f, 1.0f, "%+.1f EV"); next(); // (#1166)
             // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
             static const int startDetail = settings.terrainDetail;
             if ((startDetail == 0) != (settings.terrainDetail == 0))
@@ -251,7 +257,8 @@ namespace {
             static int waiting = -1;   // the action waiting for a key
             static int waitFrames = 0; // frames it has waited (the click that started it is no binding)
             static float scroll = 0.0f;
-            const int n = (int)Act::Count;
+            static_assert((int)Act::MagicSight == (int)Act::Count - 1, "magic sight is the last action (hidden while magic is off)");
+            const int n = (int)Act::Count - (Magic_Enabled() ? 0 : 1); // (#1249) no key for a feature that isn't there
             const float rowH = std::min(40.0f * s, h * 0.8f), colGap = 24 * s, colW = (std::min(sw - 64 * s, 1500.0f * s) - colGap) * 0.5f;
             const float x0 = (sw - (2 * colW + colGap)) * 0.5f, listTop = y, listBottom = backY - 70 * s;
             const int rowsPerCol = (n + 1) / 2;
@@ -292,7 +299,13 @@ namespace {
             break;
         }
         case SettingsTab::Audio:
-            changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            changed |= Slider({ x, y, w, h }, Audio_V2() ? "Master volume" : "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            if (Audio_V2()) // (#1238) the buses; the old engine has only the master volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) { changed |= Slider({ x, y, w, h }, AudioBus_Name((AudioBus)b), settings.busVolume[b], 0.0f, 1.0f, "%.2f"); next(); }
+            if (Audio_V2()) { // (#1244) captions for sounds, with their direction
+                static const char* const kSub[] = { "Off", "Important", "All" };
+                changed |= Choice({ x, y, w, h }, "Subtitles", kSub, 3, settings.subtitles); next();
+            }
             break;
         case SettingsTab::Gameplay: {
             // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
@@ -303,6 +316,10 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            changed |= Toggle({ x, y, w, h }, "Double-tap to dodge", settings.doubleTapDodge); next(); // (#1218)
+            changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
+            static const char* vision[] = { "Normal", "Red-green", "Blue-yellow" }; // (#1432) colour-blind-safe meaning colours
+            changed |= Choice({ x, y, w, h }, "Colour vision", vision, 3, settings.colorVision); next();
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
             changed |= Toggle({ x, y, w, h }, "Inventory scroll: up sends", settings.invertSlotWheel); next(); // (#862) off: down sends to the other side, up pulls in (Mouse Tweaks)
@@ -331,6 +348,11 @@ void Settings_Load() {
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
             if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
+            if (!strcmp(key, "subtitles")) { settings.subtitles = std::clamp((int)v, 0, 2); continue; } // (#1244)
+            if (!strncmp(key, "volume_", 7)) { // (#1238) a bus volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) if (!strcmp(key + 7, AudioBus_Key((AudioBus)b))) settings.busVolume[b] = std::clamp(v, 0.0f, 1.0f);
+                continue;
+            }
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -352,10 +374,14 @@ void Settings_Load() {
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
+            else if (!strcmp(key, "brightness")) settings.brightness = std::clamp(v, -1.0f, 1.0f); // (#1166)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
+            else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
+            else if (!strcmp(key, "colorvision")) settings.colorVision = std::clamp((int)v, 0, 2); // (#1432)
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
+            else if (!strcmp(key, "doubletapdodge")) settings.doubleTapDodge = v != 0; // (#1218)
         }
         fclose(f);
     }
@@ -368,17 +394,23 @@ void Settings_Save() {
     if (!f) return;
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
+    for (int b = 1; b < (int)AudioBus::Count; ++b) fprintf(f, "volume_%s %.3f\n", AudioBus_Key((AudioBus)b), settings.busVolume[b]); // (#1238)
+    fprintf(f, "subtitles %d\n", settings.subtitles); // (#1244)
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
+    fprintf(f, "brightness %.2f\n", settings.brightness); // (#1166)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
+    fprintf(f, "reduceflashing %d\n", settings.reduceFlashing ? 1 : 0);
+    fprintf(f, "colorvision %d\n", settings.colorVision); // (#1432)
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
     for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
+    fprintf(f, "doubletapdodge %d\n", settings.doubleTapDodge ? 1 : 0); // (#1218)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
         if (PlayerInput_Binding((Act)a) != PlayerInput_DefaultBinding((Act)a)) fprintf(f, "bind_%s %d\n", PlayerInput_ActId((Act)a), PlayerInput_Binding((Act)a));
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
@@ -396,16 +428,23 @@ void Settings_Apply() {
     ship.mouseSensitivity = kDefaultShipMouse * settings.mouseSensitivity;
     telescope.baseFov = settings.fov; // the camera's fov is set by the game each frame it is not zoomed
     Audio_SetMasterVolume(settings.volume);
+    static_assert(sizeof(settings.busVolume) / sizeof(settings.busVolume[0]) == (int)AudioBus::Count, "one volume per audio bus");
+    for (int b = 1; b < (int)AudioBus::Count; ++b) Audio_SetBusVolume((AudioBus)b, settings.busVolume[b]); // (#1238)
+    Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
+    UiPalette_Set((ColorVision)std::clamp(settings.colorVision, 0, 2)); // (#1432)
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
-    if (Headless()) SetTargetFPS(kSimHz); // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
+    if (Headless()) { SetTargetFPS(kSimHz); SetFrameTarget(kSimHz); } // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
     else {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
-    SetTargetFPS(settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor()))));
+    { const int fps = settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
+      SetTargetFPS(fps); SetFrameTarget(fps, settings.vsync ? GetMonitorRefreshRate(GetCurrentMonitor()) : 0); } // (#545) the budget's target
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
+    SceneTarget_SetBrightness(settings.brightness); // (#1166)
     player.smoothMotion = settings.reduceMotion;
+    gDoubleTapDodge = settings.doubleTapDodge; // (#1218)
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;
 }
@@ -413,7 +452,9 @@ void Settings_Apply() {
 bool Menu_IsWorldSave(const std::string& path) {
     const fs::path p(path);
     std::error_code ec;
-    return p.extension() == ".sav" && p.filename() != "bench.sav" && !fs::exists(path + ".synced", ec);
+    const std::string name = p.filename().string();
+    const bool benchSave = name == "bench.sav" || name.rfind("bench-", 0) == 0; // (#1387) bench-<seed>.sav too
+    return p.extension() == ".sav" && !benchSave && !fs::exists(path + ".synced", ec);
 }
 
 std::string Menu_NewSavePath() {
@@ -605,7 +646,7 @@ MenuResult Menu_Main() {
             const float sw = 92.0f * s, gap = 8.0f * s;
             const Rectangle main = { row.x, row.y, row.width - 3 * (sw + gap), row.height };
             const Rectangle bRen = { main.x + main.width + gap, row.y, sw, row.height }, bCopy = { bRen.x + sw + gap, row.y, sw, row.height }, bDel = { bCopy.x + sw + gap, row.y, sw, row.height };
-            if (renaming == i) { // the name being typed
+            if (renaming == e.name) { // the name being typed
                 DrawRectangleRounded(main, 0.18f, 6, kHover);
                 const bool ok = SaveNameOk(renameText);
                 const int tfs = (int)(main.height * 0.45f);
@@ -614,28 +655,28 @@ MenuResult Menu_Main() {
                 if (IsKeyPressed(KEY_BACKSPACE) && !renameText.empty()) renameText.pop_back();
                 if ((IsKeyPressed(KEY_ENTER) || Button(bRen, "OK")) && ok) {
                     saveMessage = SaveRename(e.name, renameText) ? TextFormat("Renamed to %s", renameText.c_str()) : "Rename failed";
-                    renaming = -1; changed = true;
+                    renaming.clear(); changed = true;
                 }
-                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming = -1;
+                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming.clear();
                 continue;
             }
             if (Button(main, TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
-            if (Button(bRen, "Rename")) { renaming = i; renameText = e.name; deleting = -1; }
+            if (Button(bRen, "Rename")) { renaming = e.name; renameText = e.name; deleting.clear(); }
             if (Button(bCopy, "Copy")) {
                 std::string to = e.name + " copy";
                 for (int k = 2; !SaveNameOk(to) && k < 100; ++k) to = TextFormat("%s copy %d", e.name.c_str(), k);
                 saveMessage = SaveCopy(e.name, to) ? TextFormat("Copied to %s", to.c_str()) : "Copy failed";
                 changed = true;
             }
-            const bool sure = deleting == i && GetTime() - deleteAsked < 4.0;
+            const bool sure = deleting == e.name && GetTime() - deleteAsked < 4.0;
             if (Button(bDel, sure ? "Sure?" : "Delete")) {
-                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting = -1; changed = true; }
-                else { deleting = i; deleteAsked = GetTime(); }
+                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting.clear(); changed = true; }
+                else { deleting = e.name; deleteAsked = GetTime(); }
             }
         }
         if (!saveMessage.empty()) DrawText(saveMessage.c_str(), (GetScreenWidth() - MeasureText(saveMessage.c_str(), fs)) / 2, (int)(Row(7, 300.0f, 0.32f).y - 34 * s), fs, Fade(kText, 0.8f));
         if (changed) { const float keep = saveScroll; RefreshSaves(); saveScroll = std::min(keep, std::max(0.0f, (float)saves.size() - 7.0f)); }
-        if (renaming < 0 && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting = -1; saveMessage.clear(); }
+        if (renaming.empty() && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting.clear(); saveMessage.clear(); }
     } else if (mainPage == Page::Multiplayer || mainPage == Page::Join || mainPage == Page::Host) {
         MultiplayerPage(r);
     } else if (SettingsPage()) {
@@ -688,6 +729,8 @@ TEST(Menus, AJoinedGamesCacheIsNotAWorldToHost) { // (#1110: hosting the client'
     EXPECT_TRUE(Menu_IsWorldSave((dir / "world_25.sav").string())) << "a world";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "client_player.sav").string())) << "a joined game's cache (a .synced beside it)";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "bench.sav").string())) << "the bench's";
+    touch("bench-7.sav");
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "bench-7.sav").string())) << "(#1387) a bench save for another seed";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "world_25.sav.synced").string())) << "not a .sav";
     fs::remove_all(dir, ec);
 }

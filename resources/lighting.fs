@@ -45,6 +45,7 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform int debugSky;        // RAYLIBGAME_SHOW_SKY=1: draw fragSky as grey (red = the #898 cave-mouth floor range, 0.55-0.65)
+uniform int bounceOn;         // (#898) the sunlit ground's bounce onto walls (RAYLIBGAME_BOUNCE=0: off)
 uniform vec4 toolSphere;     // (#1089) the dig / fill sphere: render-space centre, radius (w = 0: none)
 uniform vec4 toolSphereColor;
 uniform vec3 viewPos;
@@ -130,6 +131,7 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 #include "shadow.glsl"
 #include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
+#include "biometint.glsl" // #2032
 // #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
 // mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
 uniform sampler2DShadow shadowMapWide;
@@ -166,7 +168,7 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
 bool decodeClimate(out float temp, out float moist)
 {
     float y = fragClimate;
-    temp = (floor(y) - 2.0) / 62.0 * 70.0 - 30.0;
+    temp = biomeTempOf(y); // (#2032: the variant id rides on the step)
     moist = fract(y);
     return y >= 1.5;
 }
@@ -347,20 +349,40 @@ void main()
             int i = min(aid[k], kMaterials - 1);
             shiny += shinyOf[i] * wi;
             vec3 c = cs[k];
-            if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
+            if (hasClimate) c *= i == 6 ? mix(vec3(1.0), biomeTint(i, ctemp, cmoist), biomeClimateWeight) * biomeGrass(biomeIdOf(fragClimate)) : biomeTint(i, ctemp, cmoist); // #2032: grass by biome
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
                 // tin pale, coal black, bauxite red, ilmenite dark violet).
                 int kind = int(fragOreKind * 8.0 + 0.5) - 1;
                 vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
                              : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
-                // Veins: thin warped bands of the mineral through the rock, plus crystal glints between them.
+                // Each kind also has its own pattern (#1433): iron and bauxite, coal and ilmenite are close in colour for
+                // everyone (and copper and bauxite for red-green colour blindness), so the shape tells them apart:
+                // iron thin veins, copper veins with green crust patches, tin a fine speckle, coal broad dull seams,
+                // bauxite round nodules, ilmenite dense metallic glints.
                 float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
                 float vp = dot(fragTexPos, vec3(0.37, 0.81, 0.45)) * 1.4 + vnoise(fragTexPos * 0.7) * 1.8;
                 float vein = smoothstep(0.16, 0.04, abs(fract(vp) - 0.5));
                 float glint = step(0.94, hash3(floor(fragTexPos * 7.0)));
-                c = mix(c * 0.6, mineral, 0.2 + 0.35 * fleck + 0.45 * vein);
-                c += mineral * glint * 0.6;
+                float amount = 0.2 + 0.35 * fleck; // the mineral's share
+                if (kind == 0) amount += 0.45 * vein;                                                   // iron: veins
+                else if (kind == 1) amount += 0.45 * vein + 0.5 * smoothstep(0.55, 0.68, vnoise(fragTexPos * 1.3)); // copper: + crust
+                else if (kind == 2) { amount = 0.2 + 0.45 * step(0.8, hash3(floor(fragTexPos * 12.0))); glint = 0.0; } // tin: speckle
+                else if (kind == 3) { // coal: broad layered seams, dull (no glints)
+                    float seam = smoothstep(0.30, 0.18, abs(fract(fragTexPos.y * 0.9 + vnoise(fragTexPos * 0.3) * 0.5) - 0.5));
+                    amount = 0.15 + 0.8 * seam; glint = 0.0;
+                } else if (kind == 4) { // bauxite: round nodules (pisoliths) a few cm to a hand across
+                    vec3 q = fragTexPos * 1.8;
+                    vec3 cell = floor(q);
+                    vec3 o = vec3(hash3(cell), hash3(cell + 17.0), hash3(cell + 31.0)) * 0.4 - 0.2;
+                    float nodule = smoothstep(0.32, 0.24, length(fract(q) - 0.5 - o));
+                    amount = 0.18 + 0.75 * nodule;
+                } else if (kind == 5) { // ilmenite: dense small metallic crystals
+                    glint = 0.5 * step(0.86, hash3(floor(fragTexPos * 9.0)));
+                    amount += 0.3 + 0.2 * vein; // the dark mineral as the ground, the crystals on it
+                }
+                c = mix(c * 0.6, mineral, clamp(amount, 0.0, 1.0));
+                c += (kind == 5 ? vec3(0.55, 0.55, 0.6) : mineral * 0.6) * glint; // ilmenite's crystals shine steel-grey
             }
             if (i == 17) {
                 // Farmland (#1085): darker turned soil in furrows every 25 cm (the old farmland part's pattern, parts.fs).
@@ -414,6 +436,7 @@ void main()
             // and wet warm lands, dark blue-green in the cold.
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
+            if (cl) crowns = biomeClimate(crowns, temperate) * biomeLeaf(biomeIdOf(fragClimate)); // #2032: as the trees
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
             albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.32 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);
@@ -480,7 +503,19 @@ void main()
         }
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
-    direct += albedo * localLights(fragPosition, normal); // lamps, campfires, glowing machines (#139)
+    // (#898) Bounce: the sunlit ground reflects light onto what faces sideways or down - a pit's or shaft's walls, a cliff's
+    // shaded face (user: "light that behaves like light"; a hand-dug shaft's walls read near black at noon: they faced
+    // no sun and took only the sky's small ambient). The ground's irradiance x ~0.25 albedo x how far the surface faces
+    // down (0 up, 0.5 sideways, 1 down) x the sun's height; only where the sky term says open ground, a pit or a shaft
+    // (fragSky >= ~0.85 there: #1067's open column), so caves and cave mouths (<= ~0.6) stay dark. bounceOn 0: off (A/B).
+    if (bounceOn != 0 && lights[0].enabled != 0 && hemiOn()) {
+        vec3 l0 = normalize(lights[0].position - lights[0].target);
+        float sunUp = max(dot(ambientUp, l0), 0.0);
+        float facingDown = 0.5 - 0.5 * dot(normal, ambientUp);
+        float open = smoothstep(0.55, 0.85, fragSky);
+        direct += albedo * lights[0].color.rgb * (0.25 * sunUp * facingDown * open);
+    }
+    direct += albedo * (localLights(fragPosition, normal) + gridLight(fragPosition, normal)); // lamps, campfires, glowing machines (#139); placed lights through the grid (#1739)
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
     float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);

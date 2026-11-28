@@ -197,6 +197,8 @@ template <class F> static void ForBinsAround(const std::vector<std::vector<int>>
         for (int rock : bins[((c + i) % kBins + kBins) % kBins]) f(rock);
 }
 
+const Planetoid* RingSystem::parentBody() const { return Planetoid::find(parentId) == parent ? parent : nullptr; }
+
 Planetoid* RingSystem::promotedBody(int rock) const {
     auto it = promoted.find(rock);
     return it == promoted.end() ? nullptr : Planetoid::find(it->second);

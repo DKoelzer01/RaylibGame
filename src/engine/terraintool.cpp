@@ -1,4 +1,5 @@
 #include "terraintool.h"
+#include "biomevariants.h"
 #include "gamerng.h"
 #include "world.h"
 #include "playerinput.h"
@@ -132,7 +133,8 @@ namespace {
 static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
     const Planetoid* body = h.planetoid;
     if (!body || !body->plots) return false;
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, h.distance / std::max(body->scale, 1e-6f), c, f, d)) return true;
@@ -224,11 +226,12 @@ static void SetToolSphere(const Scene& world); // (#1089) below
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
+    const bool aimOff = terrainTool.noAim || terrainTool.aimHeldOff; // (#1564: the crosshair on a creature, a part, a cockpit)
+    hasHit = !aimOff && RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
     hasPlant = false;
     plantBody = player.nearest;
-    if (plantBody && plantBody->trees && !player.flyMode) {
-        const Vector3 lo = plantBody->toLocal(world.camera.position), ld = plantBody->dirToLocal(dir);
+    if (plantBody && plantBody->trees && !player.flyMode && !aimOff) {
+        const Vector3 lo = plantBody->toLocalRenderD(world.camera.position, world.renderOrigin).toFloat(), ld = plantBody->dirToLocal(dir); // (#1277)
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
     }
@@ -278,11 +281,11 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
 
     digging = gPrimaryLatch.allows(in.down(Act::Primary)); // (#895: not after a break, until the button is pressed again)
     // (#1098, the user) RMB places ground only with a terrain material in hand (dirt, sand, clay, gravel, regolith, raw stone:
-    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. Creative and
-    // the terraform tool place freely.
-    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.creative || terrainTool.terraform;
-    // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
-    const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
+    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. The terraform
+    // tool places freely; creative places for free, but only with ground in hand too (#1577: bare hands or a tool placed).
+    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.terraform;
+    // (#1085) A hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
+    const bool tiller = tool.type == ToolType::Hoe && terrainTool.till; // (#1085: a hoe tills; a shovel only digs)
     adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
@@ -311,7 +314,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
 static int FillerMaterial(const std::string& item) {
     static const struct { const char* item; VoxelMaterial m; } kFillers[] = {
         { "dirt", VoxelMaterial::Regolith }, { "regolith", VoxelMaterial::Regolith }, { "gravel", VoxelMaterial::Gravel },
-        { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
+        { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock },
         // Rock strata (#587): placed rock keeps its kind.
         { "granite", VoxelMaterial::Granite }, { "basalt", VoxelMaterial::Basalt }, { "limestone", VoxelMaterial::Limestone },
         { "marble", VoxelMaterial::Marble }, { "sandstone", VoxelMaterial::Sandstone },
@@ -502,7 +505,7 @@ static DigPerkScale AimedPerks() {
 }
 float TerrainTool_StrokeRate() {
     if (terrainTool.terraform) return terrainTool.strokesPerSecond;
-    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate;
+    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate * (gTerrainStrokeScale ? gTerrainStrokeScale() : 1.0f); // (#1254) mining haste
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
@@ -541,6 +544,14 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     const float step = r / 4.0f;
     const float cell = step * step * step * p.scale * p.scale * p.scale;
     const Vector3 surfN = p.field->normal(hitLocal, p.edits.get()); // the face being dug: materials as drawn (#636)
+    std::shared_ptr<const TerrainDeltas> after; // the ground once this stroke is folded in (the caller applies the stroke itself)
+    {
+        TerrainEdit e{};
+        e.center = centre; e.radius = r; e.carve = true; e.softOnly = softOnly;
+        TerrainDeltasBuilder b(p.edits ? *p.edits : TerrainDeltas{});
+        b.apply(e, *p.field);
+        after = b.finish();
+    }
     bool grass = false;
     const char* stoneKindAt = nullptr;
     bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
@@ -553,15 +564,20 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
             for (int x = -4; x <= 4; ++x) {
                 if (x * x + y * y + z * z > 16) continue;
                 const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
+                // (#1718) Only what the stroke takes out pays: solid now and air once it is folded in. A sample the carve can't
+                // reach (ground it doesn't edit, rock under a shovel) yields nothing however often it is swung at.
                 const float d = p.densityAt(q);
-                if (d < ISO_LEVEL || !p.field->editable(q)) continue;
+                if (d < ISO_LEVEL || !p.field->editable(q) || p.field->density(q, after.get()) >= ISO_LEVEL) continue;
                 const VoxelMaterial m = p.materialAt(q, surfN);
                 if (softOnly && !IsSoft(m)) continue;
                 // (#1097) Placed ground gives back at most what it cost (2 of its filler a m^3, as a fill pays) and nothing more:
                 // no stones in placed dirt, no stone kinds, peat, gems or seeds, no perks. Placing and digging it back can't
                 // make anything.
                 if (const int pm = p.edits ? p.edits->placedAt(q) : -1; pm >= 0) {
-                    out.placed[ItemAt(p, q, (VoxelMaterial)pm)] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
+                    // (#1846) The filler item for that ground, never ItemAt's body specials: placed stone on the moon gave
+                    // back anorthite (aluminium from free stone). Dirt and regolith both place as Regolith, so that one comes
+                    // back as the body's own (dirt where there is soil, regolith where there isn't).
+                    out.placed[ItemForMaterial((VoxelMaterial)pm, HasSoil(p))] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
                     continue;
                 }
                 const char* item = ItemAt(p, q, m);
@@ -578,6 +594,7 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
         const char* gem = GameRng_Int(0, 29999) < 10 * gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) out.gem = gem;
+        else if (gRockFind) if (const char* find = gRockFind(p, hitLocal); find && itemDB.find(find)) out.gem = find; // (#1250) a resonant crystal on a ley line
     }
     if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
@@ -686,15 +703,15 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
-    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsTillable(hit.material) && terrainTool.till) {
-        // A shovel or a hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
+    if (!dig && tool.type == ToolType::Hoe && IsTillable(hit.material) && terrainTool.till) {
+        // A hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
         // placed). The brush is the tool's (TillRadius: an iron or better hoe tills a wide patch at once).
         if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
     // (#1098, #1085) Past the till, RMB places ground only with a ground item in hand or in the off hand: a shovel or hoe on
-    // ground that doesn't till (rock) places nothing.
-    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.creative) return false;
+    // ground that doesn't till (rock) places nothing; in creative too (#1577: free, but with ground in hand).
+    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.terraform) return false;
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         TerrainEdit e{};
@@ -778,6 +795,13 @@ static void SetToolSphere(const Scene& world) {
         gToolSphere = { &p, c, terrainTool.fillRadius, adding ? Color{ 120, 255, 160, 210 } : Color{ 120, 220, 255, 200 }, GetTime() };
         return;
     }
+    // (#1085, the user: the hoe's preview showed the dig's size, not what it tills) A hoe on tillable ground shows its till: the
+    // brush TerrainTool_Stroke tills, centred on the aimed ground (its mouth on the surface is the patch).
+    if (tool.type == ToolType::Hoe && terrainTool.till && IsTillable(hit.material) && !digging) {
+        const float tr = TillRadius(tool);
+        gToolSphere = { &p, hit.local, tr, Color{ 150, 110, 60, 220 }, GetTime() };
+        return;
+    }
     const float R = MiningRadius();
     const Vector3 c = DigCentre(R);
     if (Vector3Distance(p.toWorld(c), world.camera.position) < R * 1.05f) return;
@@ -848,8 +872,13 @@ void TerrainTool_DrawHUD() {
             std::string species = WoodSpeciesInfo(SpeciesOfVariant(p.variant)).name;
             for (char& ch : species) ch = (char)tolower((unsigned char)ch);
             what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
+        } else { // (#1995 phase 3) the small flora's size class
+            static const char* kStone[] = { "pebbles", "stones", "rock", "boulder" }, *kBush[] = { "small bush", "bush", "large bush", "thicket" };
+            const int cls = std::max(0, std::min(p.smallClass(), 3));
+            what = (p.stone() ? kStone : kBush)[cls];
         }
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
+        const bool breaks = p.stone() && p.smallClass() >= kBoulderClass;
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : breaks ? "break" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
         if (chopId == p.id && chopWork > 0.0f) {
             const float f = std::min(chopWork, 1.0f);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
@@ -887,6 +916,7 @@ void TerrainTool_DrawHUD() {
 bool TerrainTool_Chop() { tool = HeldTool(); return Chop(); }
 
 int TerrainTool_HitsToFell(const Plant& p, const ToolSpec& t) {
+    if (p.stone() && p.smallClass() >= kBoulderClass) return 6; // (#1995 phase 3) a boulder takes a few blows to break (GUESS)
     if (!p.tree()) return 1;
     return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(t))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
 }
@@ -900,30 +930,45 @@ void TerrainTool_ScalePlantDrops(PlantDrops& d, const Plant& p, const std::funct
 PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
     PlantDrops d;
     auto add = [&](const char* item, int n) { d.items.push_back({ item, n }); };
-    // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber.
+    // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber; (#2012) so does a
+    // share of the trees in variants with a `rubber` percent (biomes.txt: old growth, mangrove, acacia).
     Biome biome = Biome::Forest;
+    int rubberPercent = 0;
     if (const auto* pf = dynamic_cast<const PlanetField*>(body.field.get())) {
         const float r = Vector3Length(p.base);
-        if (r > 1.0f) biome = pf->biomeAt(Vector3Scale(p.base, 1.0f / r), r - pf->radius);
+        if (r > 1.0f) {
+            const Vector3 dir = Vector3Scale(p.base, 1.0f / r);
+            biome = pf->biomeAt(dir, r - pf->radius);
+            if (p.tree()) {
+                const int v = pf->variantAt(dir, r - pf->radius);
+                const auto& defs = BiomeVariants().defs;
+                if (v >= 0 && v < (int)defs.size()) rubberPercent = defs[v].rubber;
+            }
+        }
     }
     if (!p.tree() && !p.stone() && (biome == Biome::Desert || biome == Biome::Badlands) && itemDB.find("cactus")) {
         add("cactus", 2); d.toast = "+2 cactus";
         return d;
     }
     if (p.tree()) {
-        const bool rubber = biome == Biome::Jungle && itemDB.find("rubber");
+        const bool rubber = (biome == Biome::Jungle || BiomeVariants_RubberRoll(rubberPercent, p.id)) && itemDB.find("rubber");
         if (rubber) add("rubber", 1);
         // Logs of its species (saw them into planks: recipes take any planks).
         const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
         const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
         d.items.push_back({ sp.log, logs });
-        d.toast = TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", rubber ? "  +1 rubber" : "");
+        const ItemDef* logDef = itemDB.find(sp.log); // (#1995 phase 2) the new species drop existing logs: name the item
+        d.toast = TextFormat("+%d %s%s%s", logs, logDef ? logDef->name.c_str() : sp.log.c_str(), logs > 1 && logDef ? "s" : "", rubber ? "  +1 rubber" : "");
         d.sound = 1;
     } else if (p.stone()) {
-        const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
+        // A stone or two picked up off the ground; by size class (#1995 phase 3, GUESS): pebbles 1, a rock 3, a boulder 6.
+        static const int kStones[4] = { 1, 1, 3, 6 };
+        const int n = kStones[std::clamp(p.smallClass(), 0, 3)] + (int)((p.id >> 3) & 1);
         add("stone", n); d.toast = TextFormat("+%d stone", n); d.sound = 2;
     } else {
-        add("fibre", 2);
+        static const int kFibre[4] = { 1, 2, 3, 5 }; // by size class (#1995 phase 3, GUESS): a thicket gives the most
+        const int fibre = kFibre[std::clamp(p.smallClass(), 0, 3)];
+        add("fibre", fibre);
         const bool berries = (p.id & 1) == 0;
         if (berries) add("berries", 1);
         // Seeds for farming: one of grain, roots or flax from half the bushes.
@@ -931,7 +976,11 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
         if (seed && !itemDB.find(seed)) seed = nullptr;
         if (seed) add(seed, 1);
-        d.toast = TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "");
+        // (#1374) Bitterroot, the poison cure: under one bush in 4, one in 2 in wet country (swamp, jungle).
+        const bool wet = biome == Biome::Swamp || biome == Biome::Jungle;
+        const bool root = ((p.id >> 5) & (wet ? 1u : 3u)) == 0 && itemDB.find("bitterroot");
+        if (root) add("bitterroot", 1);
+        d.toast = TextFormat("+%d fibre%s%s%s", fibre, berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
     }
     return d;
 }

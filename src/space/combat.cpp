@@ -32,7 +32,9 @@ static constexpr float kKnockLift = 2.0f;             // m/s up with a push on t
 static bool testHoldBlock = false; // --test-combat: RMB held
 static void PickUpGraves(PlayerSession& s);
 
-static bool IsShield(const std::string& id) { return id == "wooden_shield"; }
+// (#1218) Bucklers, round and tower shields (defense.h); RAYLIBGAME_COMBAT4=0: the wooden shield only, as before.
+static bool IsShield(const std::string& id) { return Combat4_On() ? Shield_Of(id) != nullptr : id == "wooden_shield"; }
+static const ShieldSpec& ShieldFor(const std::string& id) { static const ShieldSpec* round = Shield_Of("wooden_shield"); const ShieldSpec* s = Shield_Of(id); return s ? *s : *round; }
 
 // Does RMB already do something with what is in the main hand? Then it keeps doing that, and a shield in the off
 // hand does not block: food and feed (eat, #201), fillers (place), buckets, shovels and hoes (till), torches and
@@ -43,24 +45,71 @@ static bool RmbUsedByHand(const PlayerSession& s) {
     if (s.terrainTool.holdingItem || TerrainTool_IsFiller(held) || held == "bucket" || held == "water_bucket") return true;
     if (Hotbar_IsLight(held) || Hotbar_IsPlaceable(held)) return true;
     const ToolType t = ToolOf(held).type;
-    return t == ToolType::Shovel || t == ToolType::Hoe;
+    return t == ToolType::Hoe; // (its RMB tills; #1085: a shovel no longer does)
 }
 
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     SurvivalState& sv = s.survival;
     // The block: RMB with a shield in the off hand (and RMB not taken by the main hand or build mode), while stamina lasts.
     s.terrainTool.rmbBlocks = IsShield(s.inventory.offHand().id) && !s.buildTool.active && !RmbUsedByHand(s);
+    const bool wasBlocking = sv.blocking;
     sv.blocking = s.terrainTool.rmbBlocks && (in.down(Act::Secondary) || testHoldBlock) && sv.stamina > 0.0f && !sv.dead;
+    if (sv.blocking && !wasBlocking) sv.blockStartedAt = SimTime(); // (#1218) the parry window counts from the raise
+    if (Combat4_On()) { const ShieldSpec& sh = ShieldFor(s.inventory.offHand().id); sv.shieldStops = sh.stops; sv.shieldArcDeg = sh.arcDeg; sv.shieldParryWindow = sh.parryWindow; }
     // Stamina comes back a second after the last spend.
     if (SimTime() - sv.staminaUsedAt >= kRegenDelay) sv.stamina = std::min(100.0f, sv.stamina + kStaminaRegenPerSec * dt);
+    // (#1215) Status effects: their damage over time, and chill's slow (frozen: no moving) on the walk speed.
+    if (Combat1_On() && !sv.dead) {
+        if (sv.status.interrupted) ++sv.shocks; // (#1216) seen by the melee wind-up before Status_Step clears it
+        const float dot = Status_Step(sv.status, dt, s.player.inWater, sv.resist);
+        if (dot > 0.0f && !sv.invulnerable) { // (#1561)
+            sv.health -= dot;
+            sv.lastHarm = sv.status.poison > 0.0f ? "poison" : sv.status.burn > 0.0f ? "burn" : "bleed"; // (#844 logs)
+        }
+        s.player.statusSpeed = Status_SpeedFactor(sv.status);
+    } else s.player.statusSpeed = 1.0f;
+    // (#1217) Poise comes back after a rest; a stagger slows the walk.
+    if (Combat3_On()) {
+        Poise_Step(sv.poise, dt);
+        if (Poise_Staggered(sv.poise)) s.player.statusSpeed *= PoiseTune::kPlayerStaggerSlow;
+    }
+    // (#1218) Sprinting spends stamina; run dry, the player is winded; a raised tower shield slows; the dodge.
+    if (Combat4_On() && !sv.dead) {
+        Player& p = s.player;
+        const bool moving = in.down(Act::Forward) || in.down(Act::Back) || in.down(Act::Left) || in.down(Act::Right);
+        if (in.down(Act::Sprint) && moving && p.grounded && !p.flyMode) { sv.stamina = std::max(0.0f, sv.stamina - DefenseTune::kSprintStamina * dt); sv.staminaUsedAt = SimTime(); }
+        if (sv.stamina <= 0.0f && !sv.staminaEmpty) sv.windedLeft = DefenseTune::kWindedTime;
+        sv.staminaEmpty = sv.stamina <= 0.0f;
+        if (sv.windedLeft > 0.0f) { sv.windedLeft = std::max(0.0f, sv.windedLeft - dt); p.statusSpeed *= DefenseTune::kWindedWalk; }
+        if (sv.blocking) p.statusSpeed *= ShieldFor(s.inventory.offHand().id).raisedWalk;
+        sv.dodgeInvuln = std::max(0.0f, sv.dodgeInvuln - dt);
+        // A dodge: double-tap a direction (Settings, on by default), or the dodge key toward the held direction (back if none).
+        static const Act kDirs[4] = { Act::Forward, Act::Back, Act::Left, Act::Right };
+        int dir = -1;
+        if (gDoubleTapDodge) for (int k = 0; k < 4 && dir < 0; ++k) if (in.hit(kDirs[k])) dir = sv.taps.press(k, SimTime());
+        if (dir < 0 && in.hit(Act::Dodge)) { dir = 1; for (int k = 0; k < 4; ++k) if (in.down(kDirs[k])) { dir = k; break; } }
+        if (dir >= 0 && p.grounded && !p.flyMode && p.dodgeLeft <= 0.0f && sv.windedLeft <= 0.0f && sv.stamina >= DefenseTune::kDodgeStamina) {
+            const Vector3 flat = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
+            const Vector3 side = Vector3CrossProduct(flat, p.up); // the walk's right
+            const Vector3 dirs[4] = { flat, Vector3Negate(flat), Vector3Negate(side), side };
+            p.dodgeDir = dirs[dir]; p.dodgeLeft = DefenseTune::kDodgeTime; p.dodgeSpeed = DefenseTune::kDodgeDistance / DefenseTune::kDodgeTime;
+            sv.dodgeInvuln = DefenseTune::kDodgeInvuln;
+            sv.stamina -= DefenseTune::kDodgeStamina; sv.staminaUsedAt = SimTime();
+            ++sv.dodges;
+        }
+    }
     PickUpGraves(s);
 }
+
+void Combat_CurePoison(PlayerSession& s) { Status_CurePoison(s.survival.status); } // (#1215) a herb, when it exists
 
 DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Combat_DamageFor(s.survival, s.player, e); }
 // (#337) any player's state: the local session's, or a remote player's on a server (its block from its held input).
 DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e) {
     DamageResult r;
-    if (sv.dead || e.amount <= 0.0f) return r;
+    if (sv.dead || sv.invulnerable || e.amount <= 0.0f) return r; // (#1561: creative takes no hits, no knockback)
+    // (#1218) A dodge's invulnerability: the hit passes through.
+    if (Combat4_On() && sv.dodgeInvuln > 0.0f && e.kind != DamageKind::Other) { r.dodged = true; return r; }
     float amount = e.amount, push = e.knockback;
     // Away from the source, level with the ground where the player stands.
     Vector3 away = { 0, 0, 0 };
@@ -73,8 +122,15 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
     // A block stops part of a hit it faces (the source within the arc around the level view) while stamina lasts.
     if (sv.blocking && e.hasSource && Vector3LengthSqr(away) > 0.0f) {
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
-        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= kBlockArcCos) {
-            const float stopped = amount * kShieldBlockFraction;
+        const float arcCos = Combat4_On() ? cosf(sv.shieldArcDeg * DEG2RAD) : kBlockArcCos;
+        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= arcCos) {
+            // (#1218) Raised within the shield's parry window before a parryable melee hit or bite: stopped whole, for no stamina
+            // (the attacker staggers: animals.cpp).
+            if (Combat4_On() && e.parryable && (e.kind == DamageKind::Melee || e.kind == DamageKind::Bite) && SimTime() - sv.blockStartedAt <= sv.shieldParryWindow + 1e-6) {
+                r.parried = true; ++sv.parries;
+                return r;
+            }
+            const float stopped = amount * (Combat4_On() ? sv.shieldStops : kShieldBlockFraction);
             const float cost = stopped * kBlockCostPerDamage;
             if (sv.stamina >= cost) {
                 amount -= stopped;
@@ -88,6 +144,20 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
             sv.stamina = std::max(0.0f, sv.stamina - cost);
             sv.staminaUsedAt = SimTime();
         }
+    }
+    if (Combat1_On()) { // (#1215) the hit's type through the target's resistances and armour (the 10% floor), then its effect
+        if (e.type == DamageType::Energy && p.inWater) amount *= StatusTune::kShockWaterFactor; // shock: x2 in water
+        amount = Damage_Apply(amount, e.type, sv.resist);
+        Status_Apply(sv.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+    }
+    // (#1217) Poise from armour: the hit wears it (a block takes its share off), and broken the player staggers (a short slow,
+    // a melee wind-up broken) unless a heavy or two-handed wind-up holds it (hyper-armour).
+    if (Combat3_On()) {
+        const float pmax = Poise_PlayerMax(sv.resist.armour);
+        if (sv.poise.max != pmax) { const float f = sv.poise.max > 0.0f ? sv.poise.value / sv.poise.max : 1.0f; sv.poise.max = pmax; sv.poise.value = pmax * f; }
+        float pd = e.poise > 0.0f ? e.poise : e.amount * PoiseTune::kAttackPoisePerDamage;
+        if (r.blocked) pd *= 1.0f - (Combat4_On() ? sv.shieldStops : kShieldBlockFraction);
+        if (Poise_Hit(sv.poise, pd, e.heavy, false, sv.hyperArmour, PoiseTune::kPlayerStaggerTime).staggered) { ++sv.staggers; r.staggered = true; }
     }
     sv.health -= amount;
     sv.hitDamageTaken += amount;
@@ -122,6 +192,10 @@ struct Grave {
 };
 static std::vector<Grave> graves;
 static int graveCounter = 0;
+static uint32_t dropCounter = 0; // (#1852) dropped piles' ids (0x80000000 | n); a load moves it past the ids it read
+// Loading (#1852, #1856 M19): what the last grave or pile line kept (its grave_mp / dropped_mp line follows; none: left out)
+enum class LoadedLast : uint8_t { None, Grave, Pile };
+static LoadedLast lastLoaded = LoadedLast::None;
 static uint32_t graveVersion = 1;          // bumps on every change of the grave set (the server resends its list)
 static constexpr double kGraveReach = 2.5; // m: walking up to it takes everything back
 static constexpr double kDropMerge = 1.0;  // m: a drop this close to an unarmed pile joins it
@@ -262,6 +336,8 @@ int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now
     return removed;
 }
 
+int Combat_TestGraveOffHand(size_t index) { return index < graves.size() ? graves[index].offHand : -1; }
+
 std::vector<GraveInfo> Combat_GraveList() {
     std::vector<GraveInfo> out;
     for (const Grave& g : graves) {
@@ -319,6 +395,47 @@ void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string
 
 int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
 
+bool Combat_GraveMark(const std::string& body, const std::string& name, std::string& label) {
+    for (const Grave& g : graves) {
+        if (g.dropped || g.body != body || g.name != name) continue;
+        label = g.name;
+        if (!g.owner.empty()) { // (#828) multiplayer: the owner's team alone until kGraveOpenToAllSeconds after the death
+            const int64_t left = g.diedAt + kGraveOpenToAllSeconds - WallNow();
+            label += left > 0 ? TextFormat(", open to all in %lld min", (long long)((left + 59) / 60)) : ", open to all";
+        }
+        return true;
+    }
+    return false;
+}
+
+
+// (#1225) Thieves: the nearest dropped pile (not a grave) within `radius` of `at` on `body`; and taking one (its items into `out`).
+bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt) {
+    double best = radius;
+    bool found = false;
+    for (const Grave& g : graves) {
+        if (!g.dropped || g.body != body) continue;
+        const double d = (g.local - DVec3(at)).length();
+        if (d < best) { best = d; pileAt = g.local.toFloat(); found = true; }
+    }
+    return found;
+}
+
+bool Combat_TakePileNear(const std::string& body, Vector3 at, float radius, std::vector<InvSlot>& out) {
+    int bestI = -1; double best = radius;
+    for (size_t i = 0; i < graves.size(); ++i) {
+        const Grave& g = graves[i];
+        if (!g.dropped || g.body != body) continue;
+        const double d = (g.local - DVec3(at)).length();
+        if (d < best) { best = d; bestI = (int)i; }
+    }
+    if (bestI < 0) return false;
+    out.insert(out.end(), graves[bestI].items.begin(), graves[bestI].items.end());
+    graves.erase(graves.begin() + bestI);
+    ++graveVersion;
+    return true;
+}
+
 bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& stack, const std::string& who) {
     if (stack.empty() || body.empty()) return false;
     ++graveVersion; // (#865: a server's clients see it)
@@ -329,7 +446,6 @@ bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& sta
             g.diedAt = WallNow();
             return true;
         }
-    static uint32_t dropCounter = 0;
     Grave g;
     g.body = body;
     g.local = at;
@@ -372,8 +488,8 @@ void Combat_ShakeCamera(Scene& world, const PlayerSession& s, bool reduceMotion)
 }
 
 bool Combat_HitStop(const PlayerSession& s, bool reduceMotion) {
-    const double t = SimTime() - s.survival.lastHitAt;
-    return !reduceMotion && t >= 0.0 && t < kHitStopTime && s.survival.lastHitStrength > 0.0f;
+    const double t = SimTime() - s.survival.lastHitAt, dealt = SimTime() - s.survival.lastDealtAt; // (#1216) and hits landed
+    return !reduceMotion && ((t >= 0.0 && t < kHitStopTime && s.survival.lastHitStrength > 0.0f) || (dealt >= 0.0 && dealt < kHitStopTime));
 }
 
 void Combat_DrawGraves(Scene& world) {
@@ -434,7 +550,7 @@ void Combat_DrawGraves(Scene& world) {
     }
 }
 
-void Combat_Reset() { graves.clear(); graveCounter = 0; }
+void Combat_Reset() { graves.clear(); graveCounter = 0; dropCounter = 0; }
 
 void Combat_Save(FILE* f) {
     fprintf(f, "grave_counter %d\n", graveCounter);
@@ -443,6 +559,8 @@ void Combat_Save(FILE* f) {
             fprintf(f, "dropped %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.armed ? 1 : 0, g.items.size());
             for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
             fprintf(f, "\n");
+            // (#1852) its id (replication matches piles by it), when and by whom it was dropped (others wait 2 s)
+            fprintf(f, "dropped_mp %u %lld %s\n", g.id, (long long)g.diedAt, g.owner.empty() ? "-" : g.owner.c_str());
             continue;
         }
         fprintf(f, "grave %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.offHand, g.items.size());
@@ -457,16 +575,30 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "grave_counter") == 0) { if (fscanf(f, " %d", &graveCounter) != 1) graveCounter = 0; return true; }
     if (strcmp(tok, "grave_mp") == 0) { // (#804) for the grave just read
         unsigned id = 0; long long died = 0, seen = 0; int style = 0; char owner[64] = {};
-        if (fscanf(f, " %u %lld %lld %d %63s", &id, &died, &seen, &style, owner) == 5 && !graves.empty() && !graves.back().dropped) {
+        if (fscanf(f, " %u %lld %lld %d %63s", &id, &died, &seen, &style, owner) == 5 && lastLoaded == LoadedLast::Grave && !graves.empty()) { // (#1856 M19: not a grave left out's line on the one before)
             Grave& g = graves.back();
             g.id = id; g.diedAt = died; g.ownerSeen = seen; g.style = (uint8_t)(style % 3);
             g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
         }
+        lastLoaded = LoadedLast::None;
+        ++graveVersion;
+        return true;
+    }
+    if (strcmp(tok, "dropped_mp") == 0) { // (#1852) for the pile just read (none: it was empty and left out)
+        unsigned id = 0; long long died = 0; char owner[64] = {};
+        if (fscanf(f, " %u %lld %63s", &id, &died, owner) == 3 && lastLoaded == LoadedLast::Pile && !graves.empty()) {
+            Grave& g = graves.back();
+            g.id = id; g.diedAt = died;
+            g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
+            dropCounter = std::max(dropCounter, id & 0x7fffffffu); // new piles number past it
+        }
+        lastLoaded = LoadedLast::None;
         ++graveVersion;
         return true;
     }
     const bool dropped = strcmp(tok, "dropped") == 0;
     if (strcmp(tok, "grave") != 0 && !dropped) return false;
+    lastLoaded = LoadedLast::None;
     Grave g;
     char body[64] = {};
     size_t n = 0;
@@ -474,12 +606,16 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
     if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &flag, &n) != 6) return true;
     if (dropped) { g.dropped = true; g.armed = flag != 0; } else g.offHand = flag;
     g.body = body;
+    const int savedOff = g.offHand;
+    g.offHand = -1; // (#1856 M18) set below to where the off hand's item lands: an item left out before it shifts the rest
     for (size_t i = 0; i < n; ++i) {
         char id[64] = {};
         long long c = 0;
         if (fscanf(f, " %63s %lld", id, &c) != 2) return true;
-        if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
-        else if ((int)i == g.offHand) g.offHand = -1;
+        if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
+        if (!itemDB.find(id) || c <= 0) continue;
+        if ((int)i == savedOff) g.offHand = (int)g.items.size();
+        g.items.push_back(InvSlot{ id, (int64_t)c });
     }
     if (!dropped) { // a pile has no name
         char name[64] = {};
@@ -491,8 +627,11 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         g.id = 0x80000000u + (uint32_t)graves.size();
         g.style = Combat_GraveStyle(g.body, g.local, g.id);
         g.diedAt = g.ownerSeen = WallNow();
+    } else { // (#1852) an id of its own (an older save has no dropped_mp line; one that follows sets it), anyone's now
+        g.id = 0x80000000u | ++dropCounter;
+        g.diedAt = WallNow();
     }
-    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; }
+    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; lastLoaded = dropped ? LoadedLast::Pile : LoadedLast::Grave; }
     return true;
 }
 
@@ -582,7 +721,7 @@ bool Combat_TestFrame(Scene& world) {
         t0 = now; step = 3;
         return false;
     case 3: // a shield in the off hand, RMB held, landed again: a hit from in front
-        if (now - t0 < 0.1 || (!p.grounded && now - t0 < 3.0)) return false;
+        if (now - t0 < 0.3 || (!p.grounded && now - t0 < 3.0)) return false; // (#1218) past the parry window: an ordinary block
         check(sv.blocking && s.terrainTool.rmbBlocks, "a shield in the off hand: RMB blocks (and builds nothing)");
         sv.health = sv.stamina = 100.0f;
         local0 = local();
@@ -749,3 +888,90 @@ bool Combat_TestFrame(Scene& world) {
     }
 }
 
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#828): a grave's map label ----
+#include "unit_helpers.h"
+
+namespace {
+std::vector<GraveInfo> Piles() { std::vector<GraveInfo> o; for (const GraveInfo& g : Combat_GraveList()) if (g.dropped) o.push_back(g); return o; }
+std::vector<GraveInfo> SaveAndLoad(const std::string& extra = "") { // the save's grave lines (plus extra), read back after a reset
+    FILE* f = tmpfile();
+    Combat_Save(f);
+    fputs(extra.c_str(), f);
+    rewind(f);
+    Combat_Reset();
+    char tok[64];
+    while (fscanf(f, " %63s", tok) == 1) Combat_LoadLine(tok, f);
+    fclose(f);
+    return Piles();
+}
+}
+
+// (#1852) Dropped piles keep their ids, owners and times over a save; an older save's piles (no dropped_mp line) get ids of
+// their own; and a pile dropped after a load never takes a loaded one's id.
+TEST(Combat, DroppedPilesKeepIdsAndOwnersOverASave) {
+    Combat_Reset();
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 0 }, InvSlot{ "stone", 300 }, "alice-uuid"));
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 20 }, InvSlot{ "stone", 200 }, "bob-uuid"));
+    const std::vector<GraveInfo> before = Piles();
+    ASSERT_EQ(before.size(), 2u);
+    const std::vector<GraveInfo> after = SaveAndLoad();
+    ASSERT_EQ(after.size(), 2u);
+    for (size_t k = 0; k < 2; ++k) {
+        EXPECT_EQ(after[k].id, before[k].id);
+        EXPECT_EQ(after[k].owner, before[k].owner);
+        EXPECT_EQ(after[k].diedAt, before[k].diedAt);
+    }
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 40 }, InvSlot{ "stone", 100 }, "alice-uuid"));
+    const std::vector<GraveInfo> three = Piles();
+    ASSERT_EQ(three.size(), 3u);
+    EXPECT_NE(three[2].id, three[0].id);
+    EXPECT_NE(three[2].id, three[1].id);
+    // An older save: two piles, no dropped_mp lines.
+    Combat_Reset();
+    const std::vector<GraveInfo> old = SaveAndLoad("dropped terra 0 60000 0 1 1 stone 100\ndropped terra 0 60000 9 1 1 stone 100\n");
+    ASSERT_EQ(old.size(), 2u);
+    EXPECT_NE(old[0].id, 0u);
+    EXPECT_NE(old[0].id, old[1].id);
+    Combat_Reset();
+}
+
+// (#1856 M18, M19) Loading graves: an unknown item before the off hand's leaves the off hand on its own item; a grave left
+// out (nothing it held is known) takes its grave_mp line with it, not onto the grave before.
+TEST(Combat, GraveLoadKeepsOffHandAndOwnLines) {
+    Combat_Reset();
+    SaveAndLoad("grave terra 0 60000 0 1 2 no_such_item 100 wooden_shield 100 Grave 1\n"
+                "grave_mp 1 100 100 0 alice-uuid\n"
+                "grave terra 0 60000 9 -1 1 no_such_item 100 Grave 2\n"
+                "grave_mp 2 200 200 0 bob-uuid\n");
+    const std::vector<GraveInfo> all = Combat_GraveList();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_EQ(Combat_TestGraveOffHand(0), 0);   // the shield, now the only item
+    EXPECT_EQ(all[0].owner, "alice-uuid");      // not bob's (the grave left out)
+    EXPECT_EQ(all[0].id, 1u);
+    Combat_Reset();
+}
+
+// A multiplayer grave reads its time until it opens to others (15 min after the death), then "open to all"; a single
+// player's grave (no owner: anyone may take it) its name alone; a waypoint that is no grave is not one.
+TEST(Combat, AGraveOnTheMapSaysWhenItOpensToOthers) {
+    Combat_Reset();
+    const int64_t now = (int64_t)time(nullptr);
+    std::vector<GraveInfo> list(3);
+    list[0].id = 1; list[0].body = "terra"; list[0].local = { 0, 60000, 0 }; list[0].owner = "bob-uuid"; list[0].name = "bob's grave 1"; list[0].diedAt = now - 60;
+    list[1].id = 2; list[1].body = "terra"; list[1].local = { 0, 60000, 10 }; list[1].owner = "bob-uuid"; list[1].name = "bob's grave 2"; list[1].diedAt = now - 20 * 60;
+    list[2].id = 3; list[2].body = "terra"; list[2].local = { 0, 60000, 20 }; list[2].name = "Grave 3"; list[2].diedAt = now;
+    Combat_SetGraveMirror(list, "someone-else");
+    std::string label;
+    ASSERT_TRUE(Combat_GraveMark("terra", "bob's grave 1", label));
+    EXPECT_EQ(label, "bob's grave 1, open to all in 14 min");
+    ASSERT_TRUE(Combat_GraveMark("terra", "bob's grave 2", label));
+    EXPECT_EQ(label, "bob's grave 2, open to all");
+    ASSERT_TRUE(Combat_GraveMark("terra", "Grave 3", label));
+    EXPECT_EQ(label, "Grave 3");
+    EXPECT_FALSE(Combat_GraveMark("terra", "Copper hill", label)) << "a plain waypoint";
+    EXPECT_FALSE(Combat_GraveMark("luna", "Grave 3", label)) << "on another body";
+    Combat_Reset();
+}
+#endif

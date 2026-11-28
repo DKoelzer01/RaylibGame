@@ -3,9 +3,11 @@
 #include <filesystem>
 #include <cstring>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
+#include "detmath.h"
 #include "canyons.h"
 #include <thread>
 #include "rivers.h"
@@ -15,6 +17,9 @@
 #include "cubemarch.h"
 #include "waterfield.h"
 #include "watersurface.h"
+
+// #1990: the biome shapes the bake (biomes.txt `bake`); RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake (its own cache), A/B.
+static bool BakeBiomeOn() { static const bool on = EnvFlagOr("RAYLIBGAME_BAKE_BIOME", true); return on; }
 
 #include <cstring>
 #include <raymath.h>
@@ -259,6 +264,19 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     moistNoise = SeededNoise(rng, 1.0f / 3200.0f);    // ...wet and dry ones
     biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
     caveMouths = SeededNoise(rng, 1.0f / 700.0f);     // Plan 5 C: regions where cave tunnels break the surface
+    variantNoise = SeededNoise(rng, 1.0f / 2500.0f);  // biome variants (#1977): ~1-3 km patches inside each biome
+    {   // The variant noise's distribution over the sphere (65 quantiles from 4096 Fibonacci directions), so its bands
+        // cover the shares biomes.txt gives them; the same for a seed on every machine (a fixed sample set, a sort, and
+        // det:: trig: MinGW's and glibc's sinf/cosf differ in the last bits, #1905).
+        constexpr int N = 4096;
+        std::vector<float> s(N);
+        for (int i = 0; i < N; ++i) {
+            const float y = 1.0f - 2.0f * (i + 0.5f) / N, r = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * i;
+            s[i] = variantNoise.fractal(2, det::Cosf(a) * r * radius, y * radius, det::Sinf(a) * r * radius);
+        }
+        std::sort(s.begin(), s.end());
+        for (int k = 0; k <= 64; ++k) variantQ[k] = s[std::min(N - 1, k * (N - 1) / 64)];
+    }
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f + 50.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
@@ -299,6 +317,7 @@ struct PlanetField::ErosionState {
 };
 
 bool PlanetField::caveBaked() const { return erosion() != nullptr; }
+uint64_t PlanetField::erosionHash() const { const PlanetErosion* e = erosion(); return e ? e->hash() : 0; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -317,12 +336,18 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.start = envf("RAYLIBGAME_EROSION_START", p.start);
     p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
     p.wind = envf("RAYLIBGAME_WIND", p.wind); // #370: aeolian erosion (0: off, A/B)
+    p.hillslope = envf("RAYLIBGAME_EROSION_HILLSLOPE", p.hillslope); // #1884 (0: off, A/B)
+    p.coarseDt = envf("RAYLIBGAME_EROSION_DT", p.coarseDt); // #1957 (1: the old 400 small coarse steps, A/B)
+    p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+    p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", (float)p.bFace); // #1988: option B on face 0-5, 6 every face (default), -1 none (A)
+    if (BakeBiomeOn()) p.biomeKey = BiomeVariants_BakeKey(BiomeVariants()); // #1990 (RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake, A/B)
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
     const auto tl0 = std::chrono::steady_clock::now();
     const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
+    if (loaded) b.bFace = p.bFace; // #1988 (the key holds it)
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         int threads = std::max(1u, std::thread::hardware_concurrency());
@@ -337,8 +362,26 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
             LOG_INFO("Erosion", "canyons graded (#544): %d canyons (%d drain both ways from a divide), %.0f km, %d corridor cells of 100 m; floors cut %.1f m on average (up to %.0f m), filled %.1f m (up to %.0f m); %.2f s\n",
                      g.canyons, g.divided, g.lengthKm, g.corridorCells, g.meanCut, g.maxCut, g.meanFill, g.maxFill, g.seconds);
         }
-        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
+        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d, float h0) { return bakeStrataColumn(d, h0); }); // + the rock strata (#587) and the biome (#1990)
         erosionState->gradeOn = false;
+        if (BakeBiomeOn()) { // #1990: each variant keeps its `ponds` share of the bake's ponds (dry land few); a hash of the pond's place picks which
+            const BiomeVariantTable& t = BiomeVariants();
+            b.keepPonds([&](const PlanetErosion::Pond& q) {
+                const int v = variantAt(q.dir, q.level, q.dir, climateAt(q.dir, q.level));
+                const float share = v >= 0 && v < (int)t.bake.size() ? t.bake[v].ponds : 1.0f;
+                if (share >= 1.0f) return true;
+                uint32_t hh = (uint32_t)(int)lroundf(q.dir.x * 1e5f) * 73856093u ^ (uint32_t)(int)lroundf(q.dir.y * 1e5f) * 19349663u ^ (uint32_t)(int)lroundf(q.dir.z * 1e5f) * 83492791u;
+                hh ^= hh >> 13; hh *= 0x5bd1e995u; hh ^= hh >> 15;
+                return (hh & 0xFFFFFF) / 16777215.0f < share;
+            });
+        }
+        { // #1990: the bake's ponds per biome type (the bake-free estimate at the water level)
+            int n[(int)Biome::Count] = {};
+            for (const auto& q : b.ponds()) ++n[(int)biomeOf(climateAt(q.dir, q.level), q.level)];
+            std::string s;
+            for (int t = 0; t < (int)Biome::Count; ++t) if (n[t]) s += std::string(" ") + BiomeName((Biome)t) + " " + std::to_string(n[t]);
+            LOG_INFO("Erosion", "bake ponds by biome (#1990):%s\n", s.c_str());
+        }
         erosionState->grade = CanyonGrade(); // only the bake's input needs it
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) {
@@ -386,11 +429,19 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (eroded) {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
-        if (gGullies && fp < 450.0f) h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+        if (gGullies && fp < 450.0f) {
+            // #1988: option B on its face, the 50 m detail made here (the bake's routed drainage keeps valley floors smooth),
+            // blended with the A gullies across the face edge.
+            const float wb = eroded->bWeight(dir);
+            const Vector3 sp = { sx, sy, sz };
+            const float a = wb < 1.0f ? ErosionGullies(sp, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)) : 0.0f;
+            const float b = wb > 0.0f ? TerrainBDetail(sp, dir, s.grad, fp, fieldSeed, s.h, eroded->drainageAt(dir)) : 0.0f;
+            h += (l.relief = a + wb * (b - a));
+        }
         { const float cf = cliffFace({ sx, sy, sz }, h, s.grad, fp); h += cf; l.relief += cf; } // one face per steep resistant layer (#588)
         { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)
             const float top = maxElevation - 65.0f, knee = top - 200.0f;
-            if (h > knee) h = knee + 200.0f * (1.0f - expf(-(h - knee) / 200.0f));
+            if (h > knee) h = knee + 200.0f * (1.0f - det::Expf(-(h - knee) / 200.0f));
         }
         l.ridge = std::max(0.0f, h - 150.0f);
     } else {
@@ -448,7 +499,7 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         // a volcano or a fault on high ground compresses smoothly into the top 200 m instead of poking above the band
         // the chunk selection trusts (#593: seed 42 reached 1759 m against 1755).
         const float top = maxElevation - 65.0f, knee = top - 200.0f;
-        if (h > knee) h = knee + 200.0f * (1.0f - expf(-(h - knee) / 200.0f));
+        if (h > knee) h = knee + 200.0f * (1.0f - det::Expf(-(h - knee) / 200.0f));
     }
     const float ravineWeight = eroded || tBakeInput ? 0.0f : landMask * std::clamp(2.0f - fp / 24.0f, 0.0f, 1.0f);
     if (ravineWeight > 0.0f) {
@@ -511,7 +562,7 @@ float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
     if (const PlanetErosion* e = erosion()) return e->heightAt(dir, smoothFp);
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
-    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
+    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) * gen.roughness - ValleyCarve(l.valley) * l.valleyWeight; // (#1856 M11) scaled as land()'s hills: rivers off the land with roughness != 1
 }
 
 PlanetField::River PlanetField::stream(const Land& l, Vector3 dir, float fp) const {
@@ -541,6 +592,87 @@ PlanetField::River PlanetField::river(const Land& l, Vector3 dir, float fp) cons
     return r;
 }
 
+PlanetField::Pond PlanetField::bakePond(int index, int& reason) const {
+    Pond p{ false, { 0, 0, 0 }, 0, 0, 0 };
+    const PlanetErosion* ero = erosion();
+    if (!ero || index < 0 || index >= (int)ero->ponds().size()) { reason = 3; return p; }
+    const PlanetErosion::Pond& bp = ero->ponds()[index];
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(bp.dir, fabsf(bp.dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, bp.dir);
+    float rim = 1e30f;
+    for (int k = 0; k < 8; ++k) {
+        const float a = k * (PI / 4.0f), s = bp.r * 1.15f / radius;
+        rim = std::min(rim, elevationBase(Vector3Normalize(Vector3Add(bp.dir, Vector3Add(Vector3Scale(t1, det::Cosf(a) * s), Vector3Scale(t2, det::Sinf(a) * s)))), 8.0f));
+    }
+    const float level = std::min(bp.level, rim - 0.3f);
+    const float bottom = elevationBase(bp.dir, 8.0f);
+    // The bowl cuts down to the level where the middle stands higher; a middle far below it is a ravine or a
+    // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
+    // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
+    // inside a lake's region never settled once drained).
+    int water = 0; // 0 apart, 1 in a lake's water, 4 on a lake's bank, 5 by a river
+    if (const RiverNetwork* net = rivers()) {
+        float lv, lo;
+        const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
+        water = net->lakeAt(bp.dir, lv, lo) ? (lo < RiverNetwork::kLakeMargin ? 1 : 4)
+              : (rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f) ? 5 : 0;
+    }
+    reason = water ? water : !(level > 1.0f) ? 2 : !(level - bottom > -1.0f && level - bottom < 6.0f) ? 3 : 0;
+    if (reason == 0) {
+        p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
+        p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
+    }
+    return p;
+}
+
+PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const {
+    PondCensus c;
+    const PlanetErosion* ero = moon ? nullptr : erosion();
+    if (!ero) return c;
+    const auto& ponds = ero->ponds();
+    c.bake = (int)ponds.size();
+    // Two ponds in one 260 m cell: the terrain keeps the larger (pondOfCell's index), the other is shadowed.
+    std::unordered_map<uint64_t, int> best;
+    for (int i = 0; i < (int)ponds.size(); ++i) {
+        const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+        const uint64_t key = PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell));
+        auto it = best.find(key);
+        if (it == best.end() || ponds[it->second].r < ponds[i].r) best[key] = i;
+    }
+    const Vector3 d = Vector3Normalize(dir);
+    for (int i = 0; i < (int)ponds.size(); ++i) {
+        const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+        // Water shows at the hollow's middle, by whatever rule (pond, lake or river): the ground stands under the water.
+        if (elevation(ponds[i].dir, 0.0f) < waterElevation(ponds[i].dir, 0.0f) - 0.1f) {
+            ++c.wet;
+            const float arc = acosf(std::clamp(Vector3DotProduct(Vector3Normalize(dir), ponds[i].dir), -1.0f, 1.0f)) * radius;
+            if (c.nearestWet < 0.0f || arc < c.nearestWet) { c.nearestWet = arc; c.nearestWetDir = ponds[i].dir; }
+        }
+        if (best[PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell))] != i) { ++c.shadowed; continue; }
+        int reason = 0;
+        const Pond p = bakePond(i, reason);
+        if (reason == 1 || reason == 4 || reason == 5) ++c.nearWater;
+        if (reason == 1) {
+            ++c.inLake;
+            float lv, lo; int id = -1;
+            if (const RiverNetwork* net = rivers(); net && net->lakeAt(ponds[i].dir, lv, lo, id) && id >= 0) {
+                if (fabsf(lv - ponds[i].level) < 1.5f) { // the network's lake is this very hollow
+                    ++c.lakeIsPond;
+                    c.lakeCellsMax = std::max(c.lakeCellsMax, net->lakeInfo(id).cells);
+                }
+            }
+        } else if (reason == 4) ++c.lakeBank; else if (reason == 5) ++c.river;
+        else if (reason == 2) ++c.low; else if (reason == 3) ++c.depth;
+        if (!p.exists) continue;
+        ++c.kept;
+        const float arc = acosf(std::clamp(Vector3DotProduct(d, p.dir), -1.0f, 1.0f)) * radius;
+        if (arc <= within) ++c.within;
+        if (c.nearest < 0.0f || arc < c.nearest) c.nearest = arc;
+        if (c.smallest < 0.0f || p.r < c.smallest) c.smallest = p.r;
+    }
+    return c;
+}
+
 PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     struct Entry { int x, y, z; const PlanetField* f; Pond p; };
     thread_local Entry cache[512];
@@ -564,32 +696,7 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
             }
         });
         const auto it = erosionState->pondByCell.find(PondId(cx, cy, cz));
-        if (it != erosionState->pondByCell.end()) {
-            const PlanetErosion::Pond& bp = ero->ponds()[it->second];
-            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(bp.dir, fabsf(bp.dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-            const Vector3 t2 = Vector3CrossProduct(t1, bp.dir);
-            float rim = 1e30f;
-            for (int k = 0; k < 8; ++k) {
-                const float a = k * (PI / 4.0f), s = bp.r * 1.15f / radius;
-                rim = std::min(rim, elevationBase(Vector3Normalize(Vector3Add(bp.dir, Vector3Add(Vector3Scale(t1, cosf(a) * s), Vector3Scale(t2, sinf(a) * s)))), 8.0f));
-            }
-            const float level = std::min(bp.level, rim - 0.3f);
-            const float bottom = elevationBase(bp.dir, 8.0f);
-            // The bowl cuts down to the level where the middle stands higher; a middle far below it is a ravine or a
-            // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
-            // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
-            // inside a lake's region never settled once drained).
-            bool apart = true;
-            if (const RiverNetwork* net = rivers()) {
-                float lv, lo;
-                const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
-                apart = !net->lakeAt(bp.dir, lv, lo) && !(rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f);
-            }
-            if (apart && level > 1.0f && level - bottom > -1.0f && level - bottom < 6.0f) {
-                p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
-                p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
-            }
-        }
+        if (it != erosionState->pondByCell.end()) { int reason = 0; p = bakePond(it->second, reason); }
         e = { cx, cy, cz, this, p };
         return p;
     }
@@ -674,6 +781,12 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (rh.found) h -= l.relief * (1.0f - Smoothstep(rh.halfWidth + 20.0f, rh.halfWidth + 140.0f, rh.dist));
         }
         const float cw = std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h);
+        // #1988 (option B): each river's valley along its (meandering) line, down to just above the water.
+        if (fp < 512.0f && erosion()->bFace >= 0) {
+            float cut = 0.0f; // the deepest of every piece's valley (the nearest piece switches between rivers at other levels)
+            netAll->forEachPieceNear(dir, 175.0f, [&](float d, float lv, float hw) { cut = std::max(cut, erosion()->valleyCut(dir, h, d, lv, hw)); });
+            h -= cut * std::clamp(2.0f - fp / 256.0f, 0.0f, 1.0f);
+        }
         if (cw > 0.0f) { const float c = netAll->carve(dir, h); h += (c - h) * cw; }
     }
     else if (const RiverNetwork* net = netAll) {
@@ -714,10 +827,20 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // ground falls away. Faded out where samples are too far apart to resolve them.
     const float pw = std::clamp(2.0f - fp / 48.0f, 0.0f, 1.0f);
     if (pw > 0.0f) {
+        const PlanetErosion* ero = erosion();
         ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
             const Pond p = pondOfCell(x, y, z);
             if (!p.exists) return;
             const float dist = Vector3Distance(dir, p.dir) * radius;
+            // #2039: on option B the ground around a pond is the chunk-time detail over the smooth bake, metres above the
+            // routing's level, and the bowl alone left a sheer ring wall: a bank slopes from the water out to kPondBank.
+            const float wb = ero ? ero->bWeight(p.dir) : 0.0f;
+            constexpr float kPondBank = 30.0f; // m past the pond's radius
+            if (wb > 0.0f && dist >= p.r && dist < p.r + kPondBank && h > p.level + 0.4f) {
+                const float bank = p.level + 0.4f + (h - p.level - 0.4f) * Smoothstep(p.r, p.r + kPondBank, dist);
+                h += (bank - h) * wb * pw;
+                return;
+            }
             if (dist >= 1.8f * p.r) return;
             float target;
             if (dist < p.r) {
@@ -878,8 +1001,12 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            if (ero->bFace >= 0) rp.meanderShift = [ero](Vector3 d, float a) { return ero->meanderShift(d, a); }; // #1988 (option B)
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
+            // (#637) Rivers fill their worn valley floors from a water cycle of 1 up; at 0.5 only the discharge width (narrow streams).
+            // RAYLIBGAME_RIVER_VALLEY=0: off (A/B).
+            rp.valleyFill = !(getenv("RAYLIBGAME_RIVER_VALLEY") && getenv("RAYLIBGAME_RIVER_VALLEY")[0] == '0') ? std::clamp((gen.waterCycle - 0.5f) / 0.5f, 0.0f, 1.0f) : 0.0f;
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             // #903: the biomes' regional reshaping (swamps pulled ~24 m down) moves the water with the ground; at a coarse
             // footprint only the regional part counts (dunes are bumps the channel cuts through). A/B: =1 the old levels.
@@ -1041,6 +1168,14 @@ PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) cons
 // (#971, user 2026-11-19) Wet lowlands keep their cave roofs: in swamps (the climate's swamp rule, smoothed: moist > ~0.74
 // under ~90 m) and on rivers' floodplains (within ~120 m of a real river's edge, under ~8 m over its level) a tunnel just
 // under the ground stays closed instead of collapsing into a trench (#549). RAYLIBGAME_WET_CAVE_ROOF=0: off.
+float PlanetField::riverChannel(Vector3 dir) const {
+    const RiverNetwork* net = rivers();
+    if (!net) return 0.0f;
+    const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
+    if (!rh.found) return 0.0f;
+    return 1.0f - Smoothstep(rh.halfWidth + 3.0f, rh.halfWidth + 15.0f, rh.dist);
+}
+
 float PlanetField::caveWetColumn(Vector3 dir, float elev) const {
     static const bool on = !(getenv("RAYLIBGAME_WET_CAVE_ROOF") && getenv("RAYLIBGAME_WET_CAVE_ROOF")[0] == '0');
     if (!on || moon || elev <= 0.0f) return 0.0f;
@@ -1253,18 +1388,19 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         data->mouths.push_back({ c, up, 3 });                            // (for tests: --test-caves RAYLIBGAME_CAVES_CHAMBER=1)
         const float floorH = -0.4f * r * flat;
         auto onFloor = [&](float dist, float ang, float h) {
-            return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
+            return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * det::Cosf(ang)), Vector3Scale(sd, dist * det::Sinf(ang))), Vector3Scale(up, h)));
         };
+        static const bool solidsTest = !(getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS") && getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS")[0] == '0'); // (#1116 isolation)
         const int boulders = 3 + (int)(6.0f * u2);
         for (int i = 0; i < boulders; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 2.0f + 4.0f * Ug(g);
             const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
-            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
+            if (solidsTest) add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
         }
         const int columns = (int)(3.0f * u3);
         for (int i = 0; i < columns; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), cr = 1.5f + 2.5f * Ug(g);
-            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
+            if (solidsTest) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
         }
     };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
@@ -1274,7 +1410,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float L = 15.0f + 15.0f * U(rng);
             const float turn = (U(rng) - 0.5f) * 1.2f;                      // up to ~35 degrees a segment
             const Vector3 side = Vector3CrossProduct(dir, head);
-            head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(side, sinf(turn))));
+            head = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(turn)), Vector3Scale(side, det::Sinf(turn))));
             const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, rmin, rmax);
             const float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
             const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
@@ -1295,7 +1431,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
                 const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
                 const Vector3 s2 = Vector3CrossProduct(dir, head);
-                const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(s2, sinf(bt))));
+                const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(bt)), Vector3Scale(s2, det::Sinf(bt))));
                 walk(pos, bh, depth, std::min(r, 1.5f + 2.5f * U(rng)), std::clamp(flat + (U(rng) - 0.5f) * 0.2f, 0.45f, 0.95f), 3 + (int)(U(rng) * 5.0f), 1);
             }
         }
@@ -1315,7 +1451,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         if (U(rng) < 0.1f) continue;               // not every start
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
         const float ang = U(rng) * 2.0f * PI;
-        const Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
+        const Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, det::Cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), det::Sinf(ang))));
         const float r = 2.0f + 6.0f * U(rng);
         const float depth = std::max(25.0f + 95.0f * U(rng), minDepth(r));
         walk(Vector3Scale(dir, R + f.elevation(dir) - depth), head, depth, r, 0.5f + 0.4f * U(rng), 6 + (int)(U(rng) * 11.0f), 0);
@@ -1328,15 +1464,69 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.6; 0.18 before).
+        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.6f; // (user 2026-11-20: 0.18 -> 0.6)
+        const float odds = std::min(0.95f, baseOdds * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
         const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
-        for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
+        // (#1115) The tries look where the cell's ground is steep: a 6 x 6 grid of heights over its surface patch (~43 m apart)
+        // ranks the points by the largest drop to a grid neighbour, and the tries go to the steepest few, jittered by half a
+        // spacing. Random points in the cell's volume (before) mostly missed the patch or fell on gentle ground, so a cell that
+        // rolled a mouth rarely found its face and the user flew around without seeing one.
+        constexpr int kG = 6;
+        float gridStep = 0.0f;                                             // the grid's spacing (m)
+        std::vector<Vector3> steep;                                        // candidate directions, steepest first
+        Vector3 pu1{}, pu2{};
+        static const bool mouthSearch = !(getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH") && getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH")[0] == '0'); // =0: random tries (A/B)
+        if (cellHasMouth && mouthSearch) {
+            const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+            const float cl = Vector3Length(cc);
+            if (cl > 1.0f) {
+                const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+                pu1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                pu2 = Vector3CrossProduct(d0, pu1);
+                const float half = 0.75f * kCaveCell;                      // the patch may sit off the centre's direction
+                float eg[kG + 2][kG + 2]; bool ing[kG + 2][kG + 2]; Vector3 dg[kG + 2][kG + 2];
+                const int n = kG + 2;
+                const float step = 2.0f * half / (n - 1);
+                gridStep = step;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(d0, R), Vector3Add(Vector3Scale(pu1, -half + step * i), Vector3Scale(pu2, -half + step * j))));
+                        const Vector3 onR = Vector3Scale(d, R);
+                        dg[j][i] = d;
+                        ing[j][i] = (int)floorf(onR.x / kCaveCell) == cx && (int)floorf(onR.y / kCaveCell) == cy && (int)floorf(onR.z / kCaveCell) == cz;
+                        eg[j][i] = ing[j][i] ? f.elevation(d) : 0.0f;
+                    }
+                std::vector<std::pair<float, Vector3>> rank;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        if (!ing[j][i] || eg[j][i] < 2.0f) continue;
+                        float drop = 0.0f;
+                        static const int nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+                        for (const auto& o : nb) {
+                            const int a = i + o[0], b = j + o[1];
+                            if (a < 0 || b < 0 || a >= n || b >= n || !ing[b][a]) continue;
+                            drop = std::max(drop, fabsf(eg[b][a] - eg[j][i]));
+                        }
+                        if (drop > 0.2f * step) rank.push_back({ drop, dg[j][i] }); // ~11 degrees or more over a spacing
+                    }
+                std::sort(rank.begin(), rank.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                for (size_t k = 0; k < rank.size() && k < 5; ++k) steep.push_back(rank[k].second);
+            }
+        }
+        // (#1856 M12) An entrance yet (a chamber's centre marker, kind 3, is none: cells with a chamber never got a mouth)
+        auto noEntrance = [&] { for (const CaveMouth& m : data->mouths) if (m.kind != 3) return false; return true; };
+        for (int tries = 0; cellHasMouth && tries < 10 && noEntrance(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
             const float sl = Vector3Length(s);
             (void)coin;
             if (sl < 1.0f) continue;
             Vector3 dir = Vector3Scale(s, 1.0f / sl);
+            if (!steep.empty()) {                                           // (#1115) near a steep grid point instead
+                const float j1 = (UM(rm) - 0.5f) * gridStep, j2 = (UM(rm) - 0.5f) * gridStep; // within half a spacing
+                dir = Vector3Normalize(Vector3Add(Vector3Scale(steep[(size_t)tries % steep.size()], R), Vector3Add(Vector3Scale(pu1, j1), Vector3Scale(pu2, j2))));
+            }
             const Vector3 onR = Vector3Scale(dir, R);
             if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
             const float e0 = f.elevation(dir);
@@ -1355,7 +1545,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
             const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
             const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
-            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_RISE: the rise within 10 m a face needs (5 m; 2/5 of it within 5 m).
+            static const float needRise = getenv("RAYLIBGAME_CAVE_MOUTH_RISE") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_RISE")) : 5.0f;
+            if (rise10 < needRise || rise5 < 0.4f * needRise || fall4 < 0.5f) continue;
             const float flat = 0.55f + 0.15f * rf;
             const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
             if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
@@ -1489,14 +1681,14 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const int n = 20 + (int)(12.0f * rnd[4]);
             const float keyLen = (0.25f + 0.35f * rnd[5]) * n * 20.0f;
             const float ang = rnd[6] * 2.0f * PI;
-            const Vector3 head0 = downhill(up, Vector3Add(Vector3Scale(a1, cosf(ang)), Vector3Scale(a2, sinf(ang))));
+            const Vector3 head0 = downhill(up, Vector3Add(Vector3Scale(a1, det::Cosf(ang)), Vector3Scale(a2, det::Sinf(ang))));
             std::function<void(Vector3, Vector3, Vector3, float, float, float, int, int, float)> kwalk =
                 [&](Vector3 pos, Vector3 dir, Vector3 head, float h, float r, float fall, int steps, int level, float keyRun) {
                 float run = 0.0f;
                 for (int k = 0; k < steps; ++k) {
                     const float L = 15.0f + 10.0f * UK(rk);
                     const float turn = (UK(rk) - 0.5f) * 0.7f;
-                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), det::Sinf(turn))));
                     if (level == 0) head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.7f), Vector3Scale(downhill(dir, head), 0.3f)));
                     const float r2 = std::clamp(r + (UK(rk) - 0.5f) * 1.5f, level ? 1.2f : 2.0f, level ? 3.0f : 5.0f);
                     const float h2 = h - fall * L;
@@ -1525,7 +1717,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                     head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
                     if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
                         const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
-                        const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(bt))));
+                        const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(bt)), Vector3Scale(Vector3CrossProduct(dir, head), det::Sinf(bt))));
                         kwalk(pos, dir, bh, h, std::min(r, 1.5f + 1.5f * UK(rk)), 0.0f, 3 + (int)(4.0f * UK(rk)), 1, 0.0f);
                     }
                 }
@@ -1568,7 +1760,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             };
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
             const float ang = 2.0f * PI * UT(rt);
-            Vector3 head = downhill(dir, Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang)))));
+            Vector3 head = downhill(dir, Vector3Normalize(Vector3Add(Vector3Scale(t1, det::Cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), det::Sinf(ang)))));
             float r = 2.5f + 4.0f * UT(rt), depth = 6.0f + 10.0f * UT(rt);
             const float flat = 0.6f + 0.2f * UT(rt);
             const int n = 20 + (int)(12.0f * UT(rt));
@@ -1576,7 +1768,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             for (int k = 0; k < n; ++k) {
                 const float L = 15.0f + 10.0f * UT(rt);
                 const float turn = (UT(rt) - 0.5f) * 0.5f;                     // sinuous
-                head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                head = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), det::Sinf(turn))));
                 head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.6f), Vector3Scale(downhill(dir, head), 0.4f)));
                 const float r2 = std::clamp(r + (UT(rt) - 0.5f) * 1.5f, 2.5f, 6.5f);
                 const float d2 = std::clamp(depth + (UT(rt) - 0.5f) * 3.0f, 5.0f, 25.0f);
@@ -1608,6 +1800,74 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                 }
                 pos = pos2; dir = dir2; r = r2; depth = d2;
                 head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
+            }
+        }
+    }
+    // (#1181) Sinkholes: hillside mouths need a real face, so on flat or gently rolling ground (a swamp or meadow start)
+    // there were none for kilometres. A collapse pit: a round shaft 2-4 m across at a gentle spot of the cell's ground,
+    // flaring into a funnel at the top, 8-16 m down to a rubble cone, and a passage from its foot wandering level-ish
+    // under the ground (it ends where its roof would thin under 4 m). ~1 in 16 surface cells at 1x (~1 per km^2), its own
+    // random numbers (the same sinks at any abundance, more with more); none in karst (the dolines are its sinks), the sea
+    // or water. Mouth kind 1 (a shaft), so #1067's light pool falls under it. Built from the same segment kinds as the
+    // others: caveDistance and terrain.glsl are unchanged. RAYLIBGAME_CAVE_SINKHOLES=0: off.
+    static const bool sinkholesOn = !(getenv("RAYLIBGAME_CAVE_SINKHOLES") && getenv("RAYLIBGAME_CAVE_SINKHOLES")[0] == '0');
+    if (sinkholesOn) {
+        std::mt19937 rs((unsigned)(CaveCellHash{}(key) ^ 0x51A4C0DEu));
+        std::uniform_real_distribution<float> US(0.0f, 1.0f);
+        const float sinkOdds = std::min(0.95f, 0.065f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float roll = US(rs);
+        const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+        const float cl = Vector3Length(cc);
+        if (roll < sinkOdds && cl > 1.0f) {
+            const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+            const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 a2 = Vector3CrossProduct(d0, a1);
+            auto at = [&](Vector3 base, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(base, R), off)); };
+            auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                segs->push_back(sg);
+            };
+            for (int tries = 0; tries < 8; ++tries) {
+                const float u = (US(rs) - 0.5f) * 1.4f * kCaveCell, v = (US(rs) - 0.5f) * 1.4f * kCaveCell;
+                const Vector3 dir = at(d0, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v)));
+                const Vector3 onR = Vector3Scale(dir, R);
+                if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+                const float e0 = f.elevation(dir);
+                if (e0 < 3.0f) continue;                                               // the sea, a shore, a flooded hollow
+                if (f.karstWeight(onR) >= 0.3f) continue;                              // karst has its dolines
+                if (f.inlandWaterNear(dir, 20.0f)) continue;                           // not into a river or a lake
+                const float g1 = (f.elevation(at(dir, Vector3Scale(a1, 6.0f))) - f.elevation(at(dir, Vector3Scale(a1, -6.0f)))) / 12.0f;
+                const float g2 = (f.elevation(at(dir, Vector3Scale(a2, 6.0f))) - f.elevation(at(dir, Vector3Scale(a2, -6.0f)))) / 12.0f;
+                if (g1 * g1 + g2 * g2 > 0.18f * 0.18f) continue;                       // gentle ground (~10 degrees): hills have mouths
+                const float sr = 1.0f + 1.0f * US(rs), sdepth = 8.0f + 8.0f * US(rs);
+                const Vector3 top = Vector3Scale(dir, R + e0 + 2.0f), rim = Vector3Scale(dir, R + e0 - 1.5f);
+                const Vector3 bot = Vector3Scale(dir, R + e0 - sdepth);
+                push(top, rim, 2.2f * sr, 1.15f * sr, 1.0f, 0);                       // the funnel: a collapsed lip
+                push(rim, bot, 1.15f * sr, sr, 1.0f, 0);                               // the shaft
+                const Vector3 coneC = Vector3Scale(dir, R + e0 - sdepth - 0.45f * sr);
+                push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.8f * sr, 0.8f * sr, 0.35f, 2);
+                data->mouths.push_back({ Vector3Scale(dir, R + e0), dir, 1, sr, sdepth });
+                // The passage from the foot: 6-12 segments, turning gently, falling ~1 m in 15, radius 1.8-3.2 m.
+                const float ang = US(rs) * 2.0f * PI;
+                Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(a1, det::Cosf(ang)), Vector3Scale(a2, det::Sinf(ang))));
+                Vector3 pos = Vector3Scale(dir, R + e0 - sdepth + 0.6f * sr), pdir = dir;
+                float r = 1.6f + 0.6f * US(rs), h = e0 - sdepth + 0.6f * sr;
+                const int n = 6 + (int)(7.0f * US(rs));
+                for (int k = 0; k < n; ++k) {
+                    const float L = 12.0f + 8.0f * US(rs);
+                    const float turn = (US(rs) - 0.5f) * 0.8f;
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, det::Cosf(turn)), Vector3Scale(Vector3CrossProduct(pdir, head), det::Sinf(turn))));
+                    const float r2 = std::clamp(r + (US(rs) - 0.5f) * 1.2f, 1.8f, 3.2f);
+                    const float h2 = h - L / 15.0f;
+                    const Vector3 dir2 = at(pdir, Vector3Scale(head, L));
+                    const float e2 = f.elevation(dir2);
+                    if (e2 - h2 - 1.5f * r2 < 4.0f) break;                             // the roof would thin out: it ends here
+                    const Vector3 pos2 = Vector3Scale(dir2, R + h2);
+                    push(pos, pos2, r, r2, 0.9f, 0);
+                    pos = pos2; pdir = dir2; r = r2; h = h2;
+                    head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(pdir, Vector3DotProduct(head, pdir))));
+                }
+                break;
             }
         }
     }
@@ -1672,6 +1932,22 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
     return found;
 }
 
+void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
+                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) out.push_back(m.at);
+            }
+}
+
 void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const {
     // (#1067) The shaft entrances (kind 1) whose shaft (top to its depth, plus the light pool under its foot) can reach
     // the box: from the cells around the box's corners projected onto the sea-level sphere.
@@ -1696,6 +1972,55 @@ void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out
                     const Vector3 blo = Vector3SubtractValue(Vector3Min(m.at, foot), reach), bhi = Vector3AddValue(Vector3Max(m.at, foot), reach);
                     if (bhi.x < lo.x || blo.x > hi.x || bhi.y < lo.y || blo.y > hi.y || bhi.z < lo.z || blo.z > hi.z) continue;
                     out.push_back({ m.at, m.out, m.radius, m.depth });
+                }
+}
+
+
+// (#1223) The cave graph's segments and entrances near a box, for creature spawning (creatures.cpp / animals.cpp): from the
+// cells within kCaveCellReach of the box's corners projected onto the sea-level sphere, as shaftsNear looks them up.
+static void CaveCellsAround(const PlanetField& f, Vector3 lo, Vector3 hi, int clo[3], int chi[3], bool& ok) {
+    ok = true;
+    for (int a = 0; a < 3; ++a) { clo[a] = INT32_MAX; chi[a] = INT32_MIN; }
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) { ok = false; return; }
+        const Vector3 s = Vector3Scale(q, f.radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - kCaveCellReach); chi[a] = std::max(chi[a], c[a] + kCaveCellReach); }
+    }
+}
+
+void PlanetField::caveSpansNear(Vector3 lo, Vector3 hi, std::vector<CaveSpan>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3], chi[3]; bool ok;
+    CaveCellsAround(*this, lo, hi, clo, chi, ok);
+    if (!ok) return;
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveSeg& s : CaveCell(*this, fieldSeed, x, y, z)->segs) {
+                    const float r = std::max(s.ra, s.rb);
+                    const Vector3 blo = Vector3SubtractValue(Vector3Min(s.a, s.b), r), bhi = Vector3AddValue(Vector3Max(s.a, s.b), r);
+                    if (bhi.x < lo.x || blo.x > hi.x || bhi.y < lo.y || blo.y > hi.y || bhi.z < lo.z || blo.z > hi.z) continue;
+                    out.push_back({ s.a, s.b, s.up, s.ra, s.rb, s.kind });
+                }
+}
+
+void PlanetField::caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntrance>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3], chi[3]; bool ok;
+    CaveCellsAround(*this, lo, hi, clo, chi, ok);
+    if (!ok) return;
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.kind == 3) continue; // (#1859 L11) a chamber's centre is no entrance (it hid cave spawns there as "near a mouth")
+                    if (m.at.x < lo.x || m.at.x > hi.x || m.at.y < lo.y || m.at.y > hi.y || m.at.z < lo.z || m.at.z > hi.z) continue;
+                    out.push_back({ m.at, m.out, m.kind });
                 }
 }
 
@@ -1785,9 +2110,21 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         }
         const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
         const float rough = 1.0f + bk * big;
-        const float rs = swell * rough;
+        // (#1116) A chamber's swell (+-30% over ~10 m) and outline term at a passage's size: on a 30 m hall they moved the wall
+        // +-9 m within 10 m and folded it back along rays (floating shells on the upper walls; --cave-islands 800 at seed 42:
+        // 3349 m^3 -> 1500). The same operations as terrain.glsl (bit-exact; passages keep swell x rough).
+        // RAYLIBGAME_CAVE_HALL_SWELL=1: as before (CPU only, A/B).
+        static const bool hallSwellOld = getenv("RAYLIBGAME_CAVE_HALL_SWELL") && getenv("RAYLIBGAME_CAVE_HALL_SWELL")[0] == '1';
+        float rs = swell * rough;
+        if (hall && !hallSwellOld) {
+            const float hk = std::min(1.0f, 8.0f / r);
+            const float sw0 = swell - 1.0f, sw1 = sw0 * hk, sw = 1.0f + sw1;
+            const float rg0 = rough - 1.0f, rg1 = rg0 * hk, rg = 1.0f + rg1;
+            rs = sw * rg;
+        }
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
-        const float pk = hv > 0.0f ? pocket : 0.0f;
+        static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
+        const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
         const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
@@ -1798,7 +2135,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
         const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
         const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
-        const float floorCut = (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
+        static const bool floorTest = !(getenv("RAYLIBGAME_CAVE_FLOORCUT") && getenv("RAYLIBGAME_CAVE_FLOORCUT")[0] == '0'); // (#1116 isolation, CPU only)
+        const float floorCut = !floorTest && hall ? -1e9f : (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
         // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
         // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
@@ -1806,7 +2144,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         // across the wall (jagged faces) but 10x slower outward (solid rock behind them, no shells or floating pieces).
         // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
         float intrude = 0.0f;
-        if (len > 0.5f * rw && len < rw + 40.0f) {
+        static const int wallNoiseTest = getenv("RAYLIBGAME_CAVE_WALLNOISE") ? atoi(getenv("RAYLIBGAME_CAVE_WALLNOISE")) : 1; // (#1116 isolation, CPU only: 0 none, 2 none in chambers)
+        if (len > 0.5f * rw && len < rw + 40.0f && wallNoiseTest != 0 && !(wallNoiseTest == 2 && hall)) {
             const float hl2 = hx * hx + hy * hy + hz * hz;
             const float hl = sqrtf(hl2);
             if (hl > 1e-3f) {
@@ -1825,7 +2164,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
-                const float ra = hall ? std::min(rw, 8.0f) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
+                static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 4.0f; // (#1116: 8 -> 4 m, floating 1500 -> 722 m^3 with the swell fix; the env is CPU only, tuning)
+                const float ra = hall ? std::min(rw, hallRa) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
                 intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
             }
         }
@@ -1971,9 +2311,11 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
     if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, col); // hills, cliffs, overhangs
-    if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
+    // (#1438) faded out in river channels: the detail and the rock features refilled the 1 m channel over its water
+    const float river = std::fabs(depth) < 14.0f ? (col ? col->river : riverChannel(Vector3Scale(p, 1.0f / d))) : 0.0f;
+    if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * (1.0f - river) * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
     if (depth < 3.0f && depth > -14.0f) {
-        const float m = rockFeature(p, d, surface, fp);
+        const float m = rockFeature(p, d, surface, fp) - 16.0f * river; // (#1438) none in a channel
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     // Caves (#615 step 1: one shared caveDistance, bit-exact with terrain.glsl's): carved where under the meshing reach.
@@ -2080,6 +2422,7 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const float e = elevation(gdir, fp);
             Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
             col.wet = caveWetColumn(gdir, e); // (#971)
+            col.river = riverChannel(gdir); // (#1438)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -2108,6 +2451,7 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
     col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
+    col.river = (c0[0].river * (1 - au) + c0[1].river * au) * (1 - av) + (c1[0].river * (1 - au) + c1[1].river * au) * av; // (#1438) as the GPU
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
     return true;
 }
@@ -2143,6 +2487,7 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c0 = &cols[(size_t)iv * nu + iu];
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+                    col.river = (c0[0].river * (1 - au) + c0[1].river * au) * (1 - av) + (c1[0].river * (1 - au) + c1[1].river * au) * av; // (#1438) as the GPU
                     col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
                 }
@@ -2202,6 +2547,42 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
     return biomeOf(c, elev);
 }
 
+float PlanetField::variantU(Vector3 dir) const {
+    const float bs = 1.0f / std::max(gen.biomeSize, 0.1f); // larger biomes, larger variant patches
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    // The fine border wobble (as biomeAt's) so variants interleave over ~100 m instead of meeting on a line.
+    const float v = variantNoise.fractal(2, x * bs, y * bs, z * bs) + 0.02f * biomeJitter.fractal(2, x, y, z);
+    if (v <= variantQ[0]) return 0.0f;
+    if (v >= variantQ[64]) return 0.999999f;
+    const int k = (int)(std::upper_bound(variantQ, variantQ + 65, v) - variantQ) - 1; // variantQ[k] <= v < variantQ[k + 1]
+    const float span = variantQ[k + 1] - variantQ[k];
+    return std::min(0.999999f, (k + (span > 0.0f ? (v - variantQ[k]) / span : 0.0f)) / 64.0f);
+}
+
+int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) const {
+    const BiomeVariantTable& t = BiomeVariants();
+    const std::vector<int>& ids = t.byType[(int)type];
+    if (ids.size() <= 1) return t.base(type);
+    int k = 0;
+    while (k + 1 < (int)ids.size() && u >= t.bandHi[ids[k]]) ++k;
+    for (int n = 0; n < (int)ids.size(); ++n) { // a failed gate: the next band (the base, first, has none)
+        const int id = ids[(k + n) % ids.size()];
+        if (t.defs[id].admits(elev, c.temp, c.moist)) return id;
+    }
+    return ids[0];
+}
+
+int PlanetField::variantAt(Vector3 dir, float elev) const { return variantAt(dir, elev, dir); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const { return variantAt(dir, elev, uDir, climateAt(dir, elev)); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir, Climate c) const {
+    const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
+    c.temp += 1.2f * j;
+    c.moist += 0.035f * j;
+    return variantOf(biomeOf(c, elev), c, elev, variantU(uDir));
+}
+
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -2211,7 +2592,7 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         // Temperate band: 25-45 degrees north or south.
         const float lat = (25.0f + 20.0f * unit(rng)) * DEG2RAD * (unit(rng) < 0.5f ? 1.0f : -1.0f);
         const float lon = unit(rng) * 2.0f * PI;
-        const Vector3 dir = { cosf(lat) * cosf(lon), sinf(lat), cosf(lat) * sinf(lon) };
+        const Vector3 dir = { det::Cosf(lat) * det::Cosf(lon), det::Sinf(lat), det::Cosf(lat) * det::Sinf(lon) };
         const float e = elevation(dir);
         if (moon || e < 8.0f || e > 400.0f) continue;
         // Slope from the height a few metres away in two tangent directions.
@@ -2268,12 +2649,32 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (it == cache.end()) it = cache.emplace(this, nearestBiomeDir(best, (Biome)gSpawnBiome)).first;
         return it->second;
     }
+    if (gSpawnVariant >= 0) { // ...or that biome variant (#1977)
+        static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(this);
+        if (it == cache.end()) {
+            it = cache.emplace(this, nearestVariantDir(best, gSpawnVariant)).first;
+            const Vector3 d = it->second;
+            printf("bench: --bench-biome: start in %s, %.1f km from the default start%s\n", BiomeVariantName(variantAt(d, elevation(d))),
+                   acosf(std::clamp(Vector3DotProduct(d, best), -1.0f, 1.0f)) * radius / 1000.0f, variantAt(d, elevation(d)) == gSpawnVariant ? "" : " (none found: the default start)");
+        }
+        return it->second;
+    }
     return best;
 }
 
 // The nearest deep patch of biome b (the same biome 200 m out on four sides) to home, from 60k random directions;
 // home if none. Used by --bench-biome (gSpawnBiome).
 Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
+    return nearestDeepDir(home, [&](Vector3 d, float e) { return biomeAt(d, e) == b; });
+}
+
+Vector3 PlanetField::nearestVariantDir(Vector3 home, int variant) const {
+    return nearestDeepDir(home, [&](Vector3 d, float e) { return variantAt(d, e) == variant; });
+}
+
+Vector3 PlanetField::nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const {
     std::mt19937 rng(11);
     std::uniform_real_distribution<float> u(-1.0f, 1.0f);
     float best = -2.0f;
@@ -2285,12 +2686,12 @@ Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
         const float close = Vector3DotProduct(d, home);
         if (close <= best) continue;
         const float e = elevation(d, 32.0f);
-        if (e < 6.0f || biomeAt(d, e) != b) continue;
+        if (e < 6.0f || !is(d, e)) continue;
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
         bool deep = true;
         for (int s = 0; s < 4 && deep; ++s) {
             const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(s < 2 ? t1 : t2, (s & 1 ? 200.0f : -200.0f) / radius)));
-            deep = biomeAt(q, elevation(q, 32.0f)) == b;
+            deep = is(q, elevation(q, 32.0f));
         }
         if (deep) { best = close; out = d; }
     }
@@ -2533,6 +2934,17 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
 // sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
 // up to the stride where the probe stops (a ring).
+// (#899) A mesh vertex's depth under the surface (m), for the sky terms. Hinted: from the block's height grid (gridElev).
+// Unhinted (dug ground, cave blocks on the CPU path): from the height map - it was 1e9 m, so those blocks skipped the
+// opening and open-column terms while their hinted neighbours took them (a straight lit/dark step at the border).
+// unhintedDepth false: as before (RAYLIBGAME_SKY_UNHINTED=0).
+static float VertexDepth(const PlanetField* planet, bool hinted, float gridElev, Vector3 p, float stride, bool unhintedDepth) {
+    if (!planet) return 1e9f;
+    if (hinted) return planet->radius + gridElev - Vector3Length(p);
+    if (!unhintedDepth) return 1e9f;
+    return planet->radius + planet->elevation(Vector3Normalize(p), std::max(stride, 1.0f)) - Vector3Length(p);
+}
+
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
                               Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev, bool verifyOutside = false) {
     const float d = Vector3Length(p);
@@ -2637,6 +3049,24 @@ static std::atomic<long long> gSimFlowVerts[3];
 // RAYLIBGAME_FLOW_SURFACE=0: the current stays level and simulated water keeps its gradient normal (before #677/#696), for A/B.
 static const bool kFlowSurface = [] { const char* e = getenv("RAYLIBGAME_FLOW_SURFACE"); return !(e && e[0] == '0'); }();
 void ChunkWaterFlowStats(long long out[3]) { for (int i = 0; i < 3; ++i) out[i] = gSimFlowVerts[i].load(); }
+// (#1773) Test probe: the water triangles builds put (a corner) inside a box (body-local), for scenarios that check the drawn mesh.
+static struct { std::atomic<bool> on{ false }; uint64_t body = 0; Vector3 lo{}, hi{}; std::mutex mx; std::vector<Vector3> got; } gWaterProbe;
+static void WaterProbeAdd(Vector3 a, Vector3 b, Vector3 c) {
+    auto inBox = [](Vector3 p) { return p.x >= gWaterProbe.lo.x && p.y >= gWaterProbe.lo.y && p.z >= gWaterProbe.lo.z && p.x <= gWaterProbe.hi.x && p.y <= gWaterProbe.hi.y && p.z <= gWaterProbe.hi.z; };
+    if (!inBox(a) && !inBox(b) && !inBox(c)) return;
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    gWaterProbe.got.insert(gWaterProbe.got.end(), { a, b, c });
+}
+void WaterTriangleProbe_Set(uint64_t body, Vector3 lo, Vector3 hi) {
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    gWaterProbe.body = body; gWaterProbe.lo = lo; gWaterProbe.hi = hi; gWaterProbe.got.clear();
+    gWaterProbe.on = true;
+}
+void WaterTriangleProbe_Take(std::vector<Vector3>& out) {
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    out.swap(gWaterProbe.got);
+    gWaterProbe.got.clear();
+}
 // RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
 static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
 static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -2674,6 +3104,15 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         if (grid && pf && pf->gridSurface(*grid, point, e, col)) return e;
         return pf->elevation(dir, stride);
     };
+    // (#1773) The plots near this chunk with whole blocks in them: simulated water stays on its cells' side of them (below).
+    std::shared_ptr<const GrassBlockers> wallSnap;
+    std::vector<const GrassBlockPlot*> wallPlots;
+    if (kinds && stride <= 1.0f && (wallSnap = Grass_BlockersOf(&field))) {
+        const Vector3 cc = Vector3AddValue(origin, 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size() + 1.0f;
+        for (const GrassBlockPlot& b : *wallSnap)
+            if (!b.full.empty() && (DVec3{ cc.x, cc.y, cc.z } - b.origin).length() <= reach + b.radius) wallPlots.push_back(&b);
+    }
     std::vector<float> wd((size_t)S * S * S);
     std::vector<Vector3> wv;
     std::vector<int> wi;
@@ -2713,8 +3152,16 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         auto exact = [&](int x, int y, int z) {
             const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
             float w;
-            if (!(simKind && sim.density(p, kind, w)))
-                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z)) : ISO_LEVEL - DENSITY_GRADIENT;
+            if (!(simKind && sim.density(p, kind, w))) {
+                const float pl = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - pl) : ISO_LEVEL - DENSITY_GRADIENT;
+                // (#1590) Under the original ground the generated water is not there, as the triangle rule below says - here in
+                // the density too: a pit dug below the water's level beside the simulated bricks read as wet just past them, and
+                // the wet/dry step at the brick edge stood as a vertical sheet in the dry pit (its triangles' centres slipped
+                // past the rule). The margin keeps the water body's new floor a metre inside the terrain, never through a bed.
+                if (genKind && pf && w > ISO_LEVEL && pl > 1.0f && groundAt(p, Vector3Scale(p, 1.0f / pl)) > pl - sea + std::max(1.0f, 2.0f * stride))
+                    w = ISO_LEVEL - DENSITY_GRADIENT;
+            }
             return w;
         };
         long long exactCount = 0;
@@ -2844,6 +3291,96 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             }
             wi.swap(clipped);
         }
+        // (#1773) Placed blocks: the fluid cells (0.25 m, in the site's own frame) don't line up with a plot's blocks, so cells the
+        // simulation counts as open reach past a block's face. Inside a block that is hidden, but where two blocks meet only
+        // along an edge (a diagonal corner) the surface between them crossed the open cell beyond, and the water showed on the
+        // dry side the simulation (rightly) lets none through. Here an open plot cell beside a block, with no wet fluid cell's
+        // middle in it, in the open cells beside it or in the one under it, takes no water: triangles are cut along its faces
+        // and the part inside it dropped. (Water rounding into a dry cell beside a wet one stays.)
+        if (simKind && !wallPlots.empty()) {
+            constexpr float kCell = 0.5f; // plots.h (not included here)
+            for (const GrassBlockPlot* b : wallPlots) {
+                const Vector3 o = { (float)b->origin.x, (float)b->origin.y, (float)b->origin.z };
+                auto plotCells = [&](Vector3 g) { // chunk sample coordinates -> plot cells (affine, so cuts interpolate alike)
+                    const Vector3 l = Vector3Subtract(Vector3Add(origin, Vector3Scale(g, stride)), o);
+                    return Vector3{ Vector3DotProduct(l, b->east) / kCell, Vector3DotProduct(l, b->up) / kCell, Vector3DotProduct(l, b->north) / kCell };
+                };
+                auto whole = [&](Int3 c) { return b->full.count(c) > 0; };
+                std::unordered_map<Int3, char> wetMemo, dryMemo;
+                auto holdsWet = [&](Int3 c) { // a wet fluid cell's middle lies in plot cell c (4 x 4 x 4 probes, 12.5 cm apart)
+                    auto it = wetMemo.find(c);
+                    if (it != wetMemo.end()) return (bool)it->second;
+                    bool wet = false;
+                    for (int k = 0; k < 64 && !wet; ++k) {
+                        const Vector3 q = { c.x + ((k & 3) + 0.5f) * 0.25f, c.y + (((k >> 2) & 3) + 0.5f) * 0.25f, c.z + ((k >> 4) + 0.5f) * 0.25f };
+                        const Vector3 p = Vector3Add(o, Vector3Add(Vector3Add(Vector3Scale(b->east, q.x * kCell), Vector3Scale(b->up, q.y * kCell)), Vector3Scale(b->north, q.z * kCell)));
+                        Vector3 mid;
+                        if (!sim.wetCellMiddle(p, kind, mid)) continue;
+                        const Vector3 l = Vector3Subtract(mid, o);
+                        wet = (int)floorf(Vector3DotProduct(l, b->east) / kCell) == c.x && (int)floorf(Vector3DotProduct(l, b->up) / kCell) == c.y &&
+                              (int)floorf(Vector3DotProduct(l, b->north) / kCell) == c.z;
+                    }
+                    wetMemo[c] = wet;
+                    return wet;
+                };
+                auto dryBeside = [&](Int3 c) { // an open cell by a block, with no water of its own or beside it
+                    auto it = dryMemo.find(c);
+                    if (it != dryMemo.end()) return (bool)it->second;
+                    static const Int3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 }, { 0, -1, 0 }, { 0, 1, 0 } };
+                    bool byBlock = false;
+                    for (const Int3& d : kN) byBlock = byBlock || whole({ c.x + d.x, c.y + d.y, c.z + d.z });
+                    bool dry = !whole(c) && byBlock && !holdsWet(c);
+                    for (int i = 0; i < 5 && dry; ++i) { // the four sides and the cell under it
+                        const Int3 n = { c.x + kN[i].x, c.y + kN[i].y, c.z + kN[i].z };
+                        dry = whole(n) || !holdsWet(n);
+                    }
+                    dryMemo[c] = dry;
+                    return dry;
+                };
+                struct PV { int i; Vector3 c; }; // a polygon vertex: its index in wv, its plot cell coordinates
+                std::vector<int> work(wi.begin(), wi.end()), kept;
+                kept.reserve(wi.size());
+                std::vector<PV> poly, in, outP;
+                for (size_t t = 0; t + 2 < work.size(); t += 3) {
+                    if (work.size() > wi.size() * 4 + 3000) { kept.insert(kept.end(), work.begin() + t, work.end()); break; } // (a bound: never loops)
+                    const int tv[3] = { work[t], work[t + 1], work[t + 2] };
+                    Vector3 pc[3], lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+                    for (int e = 0; e < 3; ++e) { pc[e] = plotCells(wv[tv[e]]); lo = Vector3Min(lo, pc[e]); hi = Vector3Max(hi, pc[e]); }
+                    constexpr float kEps = 1e-4f, kGrow = 0.02f; // a piece touching the cut box is not in it; the box reaches 1 cm into the blocks around (the cut no longer lies on their faces: specks)
+                    Int3 dryCell{};
+                    bool found = false;
+                    for (int z = (int)floorf(lo.z - kGrow + kEps); z <= (int)floorf(hi.z + kGrow - kEps) && !found; ++z)
+                        for (int y = (int)floorf(lo.y - kGrow + kEps); y <= (int)floorf(hi.y + kGrow - kEps) && !found; ++y)
+                            for (int x = (int)floorf(lo.x - kGrow + kEps); x <= (int)floorf(hi.x + kGrow - kEps) && !found; ++x)
+                                if (dryBeside({ x, y, z })) { dryCell = { x, y, z }; found = true; }
+                    if (!found) { kept.insert(kept.end(), { tv[0], tv[1], tv[2] }); continue; }
+                    // Cut by the cell's six faces: the part outside each goes back on the list (it may reach another dry cell),
+                    // the part inside goes on to the next face; what is left at the end is inside the cell: dropped.
+                    poly = { { tv[0], pc[0] }, { tv[1], pc[1] }, { tv[2], pc[2] } };
+                    for (int f = 0; f < 6 && poly.size() >= 3; ++f) {
+                        const int ax = f >> 1;
+                        const float bound = (float)(ax == 0 ? dryCell.x : ax == 1 ? dryCell.y : dryCell.z) + (f & 1 ? 1.0f + kGrow : -kGrow);
+                        auto side = [&](const Vector3& c) { const float v = ax == 0 ? c.x : ax == 1 ? c.y : c.z; return f & 1 ? bound - v : v - bound; }; // >= 0: inside
+                        in.clear(); outP.clear();
+                        for (size_t k = 0; k < poly.size(); ++k) {
+                            const PV& a = poly[k];
+                            const PV& bb = poly[(k + 1) % poly.size()];
+                            const float da = side(a.c), db = side(bb.c);
+                            if (da >= 0.0f) in.push_back(a); else outP.push_back(a);
+                            if ((da >= 0.0f) != (db >= 0.0f)) {
+                                const float s = da / (da - db);
+                                wv.push_back(Vector3Lerp(wv[a.i], wv[bb.i], s));
+                                const PV cut = { (int)wv.size() - 1, Vector3Lerp(a.c, bb.c, s) };
+                                in.push_back(cut); outP.push_back(cut);
+                            }
+                        }
+                        for (size_t k = 1; k + 1 < outP.size(); ++k) work.insert(work.end(), { outP[0].i, outP[k].i, outP[k + 1].i });
+                        poly.swap(in);
+                    }
+                }
+                wi.swap(kept);
+            }
+        }
         phase(2);
         std::vector<int> remap(wv.size(), -1);
         for (size_t t = 0; t + 2 < wi.size(); t += 3) {
@@ -2874,6 +3411,10 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     if (wl > 1.0f && tl > 1e-9f && fabsf(Vector3DotProduct(tn, wc)) < 0.7f * tl * wl) continue;
                 }
             }
+            if (gWaterProbe.on.load(std::memory_order_relaxed) && out.planetoidId == gWaterProbe.body) {
+                auto at = [&](int e) { return Vector3Add(origin, Vector3Scale(wv[wi[t + e]], stride)); };
+                WaterProbeAdd(at(0), at(1), at(2));
+            }
             for (int e = 0; e < 3; ++e) {
                 int& r = remap[wi[t + e]];
                 if (r < 0) {
@@ -2885,6 +3426,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     Vector3 n = radial; // the sea is a sphere: radial normals
                     Vector3 simFlow{}; float simSpeed = 0.0f; // simulated water's current (#677)
                     float depth = 50.0f;
+                    bool genVert = false; // (#1164) undisturbed generated water (sea, lake): its shores foam (water.fs)
                     if (simKind && sim.covered(bp)) {
                         // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
                         const float h = 0.5f;
@@ -2954,13 +3496,14 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
                         if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
                     } else if (pf) {
+                        genVert = true;
                         // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
                         const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
                         depth = std::max(0.0f, surfaceE - groundAt(bp, radial));
                     }
                     out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
-                    out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
+                    out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind + (genVert ? 0.25f : 0.0f) }); // +0.25: generated (fragKind rounds it away)
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
                     // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
                     Vector3 flow = simFlow; float speed = simSpeed;
@@ -3200,6 +3743,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
             const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
+            const PlanetField* planetField = dynamic_cast<const PlanetField*>(&field); // (#898/#1067) depth without the grid hint
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -3238,7 +3782,14 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     // seen (a cave mouth, a shaft, a pit): at least 0.6 x (1 - depth / 40 m) of the open share (0.42 at 12 m: walls stay
                     // under the open ground and fall off deeper in), the rays checked past the block. The
                     // depth term alone cut to black ~10 m down, under an opening or not; a closed tunnel stays black.
-                    const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p) : 1e9f;
+                    // (#899, #898/#1067) A block meshed without the grid hint - dug or edited ground, and cave blocks over the
+                    // 32-segment GPU limit (the CPU path, common at mouths) - read its depth as 1e9 m, so it skipped the opening and
+                    // open-column terms below while the hinted block beside it took them: a hard, straight lit/dark step along the
+                    // block border under overhangs and at cave mouths (#899), and dug pits lost their sky. Its depth now comes from
+                    // the height map. RAYLIBGAME_SKY_UNHINTED=0: as before (A/B).
+                    static const bool skyUnhinted = !(getenv("RAYLIBGAME_SKY_UNHINTED") && getenv("RAYLIBGAME_SKY_UNHINTED")[0] == '0');
+                    const float depthHere = hinted ? VertexDepth(gridField, true, gElev, p, stride, true)
+                                          : (sky < 0.999f ? VertexDepth(planetField, false, 0.0f, p, stride, skyUnhinted) : 1e9f);
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
                     if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
@@ -3248,7 +3799,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     //    at least 0.85, at any depth (the column walked in 2 m steps; a closed cave stops at its first roof sample).
                     // 2. Under a shaft's foot (karst sink, tube skylight): a pool of up to 0.5, fading from the shaft's radius to 2.5
                     //    radii around its axis and from 4 to 12 m below its foot. RAYLIBGAME_SHAFT_SKY=0: off.
-                    if (shaftSkyOn && stride <= 1.0f && hinted && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
+                    if (shaftSkyOn && stride <= 1.0f && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
                         const Vector3 upv = Vector3Normalize(p);
                         if (Vector3DotProduct(n, upv) > -0.3f) {
                             const Vector3 p0 = Vector3Add(p, Vector3Scale(n, 0.5f * stride));
@@ -3336,7 +3887,19 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
                     const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
-                    out.tangents[v * 4 + 1] = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2 (#254)
+                    // (#2032) The biome variant for its grass and canopy tints, read ~100 m off at random per vertex as the
+                    // flora reads it per plant (trees.cpp), so neighbouring variants' colours cross-fade over ~200 m.
+                    int variant = -1;
+                    if (BiomeTintOn()) {
+                        uint32_t hv = (uint32_t)(int32_t)floorf(p.x * 2.0f) * 0x8da6b343u ^ (uint32_t)(int32_t)floorf(p.y * 2.0f) * 0xd8163841u ^ (uint32_t)(int32_t)floorf(p.z * 2.0f) * 0xcb1ab31fu;
+                        hv ^= hv >> 15; hv *= 0x2c1b3c6du; hv ^= hv >> 12;
+                        const float ox = (float)(hv & 0xffffu) / 65535.0f * 2.0f - 1.0f, oy = (float)(hv >> 16) / 65535.0f * 2.0f - 1.0f, k = 100.0f / planetLife->radius;
+                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 u2 = Vector3CrossProduct(u1, up);
+                        const Vector3 uDir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
+                        variant = planetLife->variantAt(up, d - planetLife->radius, uDir, cl); // cl: the same climateAt (#2032)
+                    }
+                    out.tangents[v * 4 + 1] = BiomeClimateCode(cl.temp, cl.moist, variant); // from 2 (#254)
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
                     if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                         const float steep = 1.0f - Vector3DotProduct(n, up);
@@ -3467,6 +4030,22 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     return best;
 }
 
+StrataColumn PlanetField::bakeStrataColumn(Vector3 dir, float h0) const {
+    StrataColumn col = strataColumn(dir);
+    if (!BakeBiomeOn()) return col;
+    // One sample per cell: at 100 m a step in rock across a biome border is what a real contact does, and the borders
+    // follow the climate noise (no straight lines). Lighting keeps biomeOf/variantAt bake-free (#1989), so the bake never
+    // reads itself.
+    const Climate c = climateAt(dir, h0);
+    const BiomeVariantTable& t = BiomeVariants();
+    const int v = variantAt(dir, h0, dir, c);
+    if (v >= 0 && v < (int)t.bake.size()) {
+        const BiomeVariantTable::BakeMul& m = t.bake[v];
+        col.kMul = m.k; col.talusMul = m.talus; col.creepMul = m.creep; col.glacialMul = m.glacial;
+    }
+    return col;
+}
+
 StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     // The continent value at a fixed coarse footprint: the bake's cells and the mesher's vertices see the same province.
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
@@ -3569,3 +4148,193 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
     std::sort(out.begin(), out.end(), [&](const Vector3& a, const Vector3& b) { return Vector3DotProduct(dir, a) > Vector3DotProduct(dir, b); });
     return out;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// (#1905) The CPU terrain the same on every platform: the planet (seed 42, the erosion bake left out) sampled at 24 fixed
+// directions (integer lattice points, normalised: no libm in choosing them), its elevation and the density 2 m above, 3 m
+// below and 40 m below the surface, hashed bit for bit against one golden that the Windows (w64devkit) and Linux (GCC) CI legs
+// both check. Every sample is printed as hex bits, so a failing leg's log shows which direction and depth differ first.
+TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    static const int kDirs[24][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { -1, 0, 0 }, { 0, -1, 0 }, { 0, 0, -1 },
+                                      { 1, 1, 0 }, { 1, 0, 1 }, { 0, 1, 1 }, { -1, 1, 0 }, { 1, -1, 1 }, { 0, -1, -1 },
+                                      { 2, 1, 0 }, { 1, 2, 3 }, { -3, 1, 2 }, { 2, -3, 1 }, { 1, 1, -3 }, { -2, -1, 3 },
+                                      { 3, 2, 1 }, { -1, 3, -2 }, { 2, 2, -1 }, { -3, -2, -1 }, { 1, -2, -2 }, { 3, -1, 2 } };
+    auto bits = [](float v) { uint32_t u; memcpy(&u, &v, sizeof u); return u; };
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint32_t u) { for (int b = 0; b < 4; ++b) h = (h ^ ((u >> (8 * b)) & 0xFF)) * 1099511628211ull; };
+    for (int k = 0; k < 24; ++k) {
+        const Vector3 dir = Vector3Normalize({ (float)kDirs[k][0], (float)kDirs[k][1], (float)kDirs[k][2] });
+        const float e = f.elevation(dir);
+        const float r = f.radius + e;
+        const float above = f.baseDensity(Vector3Scale(dir, r + 2.0f)), below = f.baseDensity(Vector3Scale(dir, r - 3.0f)),
+                    deep = f.baseDensity(Vector3Scale(dir, r - 40.0f));
+        for (float v : { e, above, below, deep }) mix(bits(v));
+        printf("terrain probe %2d: elevation %08x (%.6f m), density +2 m %08x, -3 m %08x, -40 m %08x\n", k, bits(e), e, bits(above), bits(below), bits(deep));
+    }
+    PlanetField::tIgnoreBake = false;
+    // The C library's float functions on fixed arguments (printed only): where the two legs' lines differ, so does libm.
+    // a = 2.39996323 i are WorldFingerprint's own sample angles.
+    for (int i = 1; i <= 8; ++i) {
+        const float a = 2.39996323f * (float)i, x = 0.1234567f * (float)i;
+        printf("libm probe %d: sinf %08x cosf %08x expf %08x powf %08x logf %08x asinf %08x\n", i, bits(sinf(a)), bits(cosf(a)),
+               bits(expf(-x * 3.0f)), bits(powf(x * 7.0f, 0.45f)), bits(logf(x * 1000.0f)), bits(asinf(x - 0.5f)));
+    }
+    printf("terrain probe hash %016llx\n", (unsigned long long)h);
+    constexpr uint64_t kGolden = 16656868793744975483ull; // e72915ea8175667b, Linux GCC (sandbox)
+    EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
+}
+
+// (#1905) The erosion bake's input heights give the same bits on every platform: a Linux server and a Windows client
+// baked different planets from one seed, and their first difference was already in these samples. Each term is hashed
+// on its own and printed, so the hosted CI's two legs show which one parts.
+TEST(Voxel, BakeInputMatchesOneGoldenOnEveryPlatform) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    enum { kLand, kCanyon, kFault, kVolcano, kKarst, kFold, kStrata, kTerms };
+    static const char* kNames[kTerms] = { "land", "canyon", "fault", "volcano", "karst", "fold", "strata" };
+    uint64_t h[kTerms];
+    for (uint64_t& v : h) v = 1469598103934665603ull;
+    auto mix = [&h](int t, float v) { uint32_t u; memcpy(&u, &v, sizeof u); for (int b = 0; b < 4; ++b) h[t] = (h[t] ^ ((u >> (8 * b)) & 0xFF)) * 1099511628211ull; };
+    for (int i = 0; i < 4096; ++i) { // a Fibonacci sphere of directions (det:: trig: the directions themselves don't differ)
+        const float y = 1.0f - 2.0f * (i + 0.5f) / 4096.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
+        const Vector3 dir = { rr * det::Cosf(a), y, rr * det::Sinf(a) };
+        const Vector3 s = Vector3Scale(dir, f.radius);
+        const float land = f.testBakeInputHeight(dir, 200.0f);
+        mix(kLand, land);
+        mix(kCanyon, f.canyonFault(s.x, s.y, s.z));
+        mix(kFault, Strata_FaultUplift(s, 42u));
+        mix(kVolcano, Strata_Volcano(s, f.radius, 42u));
+        mix(kKarst, Strata_KarstWeight(s, 42u) * Strata_KarstRelief(s, 42u));
+        const StrataColumn col = f.strataColumn(dir);
+        mix(kFold, Strata_FoldWeight(s, 42u) * Strata_OutcropBump(col, std::max(land, 1.0f), 42u));
+        mix(kStrata, col.offset); mix(kStrata, col.thick);
+    }
+    PlanetField::tIgnoreBake = false;
+    for (int t = 0; t < kTerms; ++t) printf("bake input probe %-8s %016llx\n", kNames[t], (unsigned long long)h[t]);
+    constexpr uint64_t kGolden = 0x0bd1fdfcbb454251ull; // the land hash, Linux GCC (sandbox)
+    EXPECT_EQ(h[kLand], kGolden) << std::hex << "(#1905) one CI leg only: the platforms' bake input differs (compare the legs' probe lines); both: a deliberate terrain change, update the constant. got 0x" << h[kLand];
+}
+
+// (#1977) Biome variants over a whole 60 km planet, at a fixed 100 m elevation (no bake needed): the variant axis is
+// even (its quantile table works), each ungated variant covers its biomes.txt share of its type, gates hold, and a
+// variant's type is always biomeAt's biome.
+TEST(Voxel, BiomeVariantsCoverTheirShares) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 60000.0f, false);
+    const BiomeVariantTable& t = BiomeVariants();
+    ASSERT_GT((int)t.defs.size(), (int)Biome::Count) << "biomes.txt did not load (tests run from the repo root)";
+    constexpr int N = 120000;
+    constexpr float kElev = 100.0f;
+    int decile[10] = {}, typeCount[(int)Biome::Count] = {}, mismatch = 0;
+    std::vector<int> count(t.defs.size(), 0);
+    for (int i = 0; i < N; ++i) {
+        const float y = 1.0f - 2.0f * (i + 0.5f) / N, r = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * i;
+        const Vector3 d = { cosf(a) * r, y, sinf(a) * r };
+        ++decile[std::min(9, (int)(f.variantU(d) * 10.0f))];
+        const int v = f.variantAt(d, kElev);
+        ASSERT_GE(v, 0);
+        ++count[v];
+        ++typeCount[(int)t.defs[v].type];
+        if (t.defs[v].type != f.biomeAt(d, kElev)) ++mismatch;
+    }
+    EXPECT_EQ(mismatch, 0);
+    for (int k = 0; k < 10; ++k) EXPECT_NEAR(decile[k] / (float)N, 0.1f, 0.03f) << "decile " << k;
+    int checked = 0;
+    for (int b = 0; b < (int)Biome::Count; ++b) {
+        if (typeCount[b] < 4000) continue; // too little of this type on the planet to measure shares
+        bool anyGate = false;
+        float total = 0.0f;
+        for (int id : t.byType[b]) { anyGate |= t.defs[id].gated(); total += t.defs[id].weight; }
+        for (int id : t.byType[b]) {
+            const float share = count[id] / (float)typeCount[b];
+            if (kElev < t.defs[id].elevMin || kElev > t.defs[id].elevMax) EXPECT_EQ(count[id], 0) << t.defs[id].key << " outside its elevation gate";
+            if (anyGate) continue; // a failed gate moves points to the next band: no exact shares
+            EXPECT_NEAR(share, t.defs[id].weight / total, 0.08f) << t.defs[id].key;
+            ++checked;
+        }
+    }
+    EXPECT_GE(checked, 9); // shares measured on at least three types
+    PlanetField::tIgnoreBake = false;
+}
+
+// (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
+// rough or smooth world): linear in it, and its hills gone at roughness 0.
+TEST(Voxel, RiverLandFollowsRoughness) {
+    PlanetField::tIgnoreBake = true;
+    auto at = [](float roughness, Vector3 dir) {
+        PlanetField f(42u, 32000.0f, false);
+        WorldGenParams p; p.roughness = roughness;
+        f.setGenParams(p);
+        return f.testBroadLand(dir, 4.0f);
+    };
+    float most = 0.0f;
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float b0 = at(0.0f, dir), b1 = at(1.0f, dir), b2 = at(2.0f, dir);
+        EXPECT_NEAR(b2 - b1, b1 - b0, 0.01f);
+        most = std::max(most, fabsf(b1 - b0));
+    }
+    EXPECT_GT(most, 0.5f); // the hills count for something somewhere
+    PlanetField::tIgnoreBake = false;
+}
+// (#1856 M12) A cell whose cave made a chamber can still have an entrance (the chamber's centre marker counted as one, so
+// those cells never got a hillside mouth): over the cells under a patch of the surface, some chamber cells have one.
+TEST(Voxel, ChamberCellsCanHaveAnEntrance) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    int chambers = 0, withEntrance = 0;
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3; // the shell of cells round the surface
+    for (int cx = r0; cx <= r1; ++cx)
+        for (int cy = -40; cy <= 40; ++cy)
+            for (int cz = -40; cz <= 40; ++cz) {
+                const auto cell = CaveCell(f, f.terrainSeed(), cx, cy, cz);
+                bool chamber = false, entrance = false;
+                for (const CaveMouth& m : cell->mouths) { chamber = chamber || m.kind == 3; entrance = entrance || m.kind != 3; }
+                chambers += chamber;
+                withEntrance += chamber && entrance;
+            }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(chambers, 0);
+    EXPECT_GT(withEntrance, 0) << chambers << " chamber cells, none with an entrance";
+}
+
+// (#1859 L11) Entrances near a chamber's centre never list the centre itself (creatures took it for a mouth).
+TEST(Voxel, ChamberCentreIsNoEntrance) {
+    if (!PlanetField::CavesGraph()) GTEST_SKIP() << "graph caves off";
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3;
+    int checked = 0;
+    for (int cx = r0; cx <= r1 && checked < 5; ++cx)
+        for (int cy = -40; cy <= 40 && checked < 5; ++cy)
+            for (int cz = -40; cz <= 40 && checked < 5; ++cz)
+                for (const CaveMouth& m : CaveCell(f, f.terrainSeed(), cx, cy, cz)->mouths) {
+                    if (m.kind != 3) continue;
+                    std::vector<PlanetField::CaveEntrance> ents;
+                    f.caveEntrancesNear(Vector3SubtractValue(m.at, 1.0f), Vector3AddValue(m.at, 1.0f), ents);
+                    for (const PlanetField::CaveEntrance& e : ents) EXPECT_NE(e.kind, 3);
+                    ++checked;
+                }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(checked, 0);
+}
+// #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
+// in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
+// step along the border. (The old behaviour stays behind RAYLIBGAME_SKY_UNHINTED=0: unhintedDepth false.)
+TEST(Voxel, UnhintedVertexDepthMatchesTheHintedNeighbour) {
+    PlanetField f(42u, 32000.0f, false);
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float e = f.elevation(dir, 1.0f);                       // the grid hint's height here (the same height map)
+        const Vector3 p = Vector3Scale(dir, f.radius + e - 5.0f);      // a vertex 5 m under the surface
+        const float hinted = VertexDepth(&f, true, e, p, 1.0f, true);
+        const float unhinted = VertexDepth(&f, false, 0.0f, p, 1.0f, true);
+        EXPECT_NEAR(hinted, 5.0f, 0.02f);
+        EXPECT_NEAR(unhinted, hinted, 0.05f) << "an unhinted block's vertex depth must match its hinted neighbour's";
+        EXPECT_GT(VertexDepth(&f, false, 0.0f, p, 1.0f, false), 1e8f); // the A/B switch keeps the old 1e9
+    }
+}
+#endif

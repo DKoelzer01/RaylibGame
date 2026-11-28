@@ -1,11 +1,49 @@
 #include "net.h"
+#include "netproto.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <unordered_map>
+
+// (#1836) Refused sends, by (message type, reliable, result): shared by both builds (tests call it directly).
+namespace {
+struct RefusedKey {
+    int type; bool reliable; std::string result;
+    bool operator<(const RefusedKey& o) const { return type != o.type ? type < o.type : reliable != o.reliable ? reliable < o.reliable : result < o.result; }
+};
+std::map<RefusedKey, std::pair<int, uint64_t>> refused; // -> sends, bytes
+int refusedTotal = 0;
+std::string TypeName(int t) { return t >= 1 && t < (int)NetMsg::Count ? NetMsgName((NetMsg)t) : "type " + std::to_string(t); }
+}
+
+void Net_NoteSendRefused(uint32_t conn, const void* data, uint32_t size, bool reliable, const char* result) {
+    const int type = size > 0 && data ? ((const uint8_t*)data)[0] : -1;
+    auto& e = refused[{ type, reliable, result ? result : "?" }];
+    if (e.first == 0)
+        printf("net: the transport refused a %s %s of %u bytes on connection %u: %s (the first; the rest are counted)\n",
+               reliable ? "reliable" : "unreliable", TypeName(type).c_str(), size, conn, result ? result : "?");
+    ++e.first;
+    e.second += size;
+    ++refusedTotal;
+}
+
+int Net_SendFailures() { return refusedTotal; }
+
+std::string Net_SendFailureSummary() {
+    std::string s;
+    for (const auto& kv : refused) {
+        char line[192];
+        snprintf(line, sizeof line, "%s%s %s %s: %d (%.1f KB)", s.empty() ? "" : ", ", kv.first.reliable ? "reliable" : "unreliable",
+                 TypeName(kv.first.type).c_str(), kv.first.result.c_str(), kv.second.first, kv.second.second / 1024.0);
+        s += line;
+    }
+    return s;
+}
 
 // Simulated conditions (#347): shared by both builds (the stub build simply never sends).
 namespace {
@@ -94,6 +132,7 @@ bool initialised = false;
 HSteamListenSocket listenSocket = k_HSteamListenSocket_Invalid;
 HSteamNetPollGroup pollGroup = k_HSteamNetPollGroup_Invalid;
 std::unordered_set<uint32_t> connected;
+std::vector<uint32_t> newIncoming; // (#1868) incoming connections that came up since Net_TakeNewIncoming
 
 void OnStatus(SteamNetConnectionStatusChangedCallback_t* info) {
     ISteamNetworkingSockets* s = SteamNetworkingSockets();
@@ -105,6 +144,9 @@ void OnStatus(SteamNetConnectionStatusChangedCallback_t* info) {
         break;
     case k_ESteamNetworkingConnectionState_Connected:
         connected.insert(info->m_hConn);
+        // (#1868) the server learns of it now, not at its first message: a connection that stays silent still counts against
+        // the limits and times out
+        if (info->m_info.m_hListenSocket != k_HSteamListenSocket_Invalid) newIncoming.push_back(info->m_hConn);
         break;
     case k_ESteamNetworkingConnectionState_ClosedByPeer:
     case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
@@ -179,16 +221,35 @@ std::string Net_RemoteAddress(uint32_t conn) {
     return buf;
 }
 bool Net_IsConnected(uint32_t conn) { return connected.count(conn) > 0; }
+void Net_TakeNewIncoming(std::vector<uint32_t>& out) { out.insert(out.end(), newIncoming.begin(), newIncoming.end()); newIncoming.clear(); }
 int Net_ConnectionCount() { return (int)connected.size(); }
 
 namespace {
 int reliableFailures = 0;
 bool SendNow(uint32_t conn, const void* data, uint32_t size, bool reliable) {
     if (!initialised) return false;
-    const bool ok = SteamNetworkingSockets()->SendMessageToConnection(conn, data, size, reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable, nullptr) == k_EResultOK;
-    if (!ok && reliable && ++reliableFailures <= 5) printf("net: a reliable send of %u bytes on connection %u was refused (the send buffer is full?)\n", size, conn);
-    return ok;
+    const EResult r = SteamNetworkingSockets()->SendMessageToConnection(conn, data, size, reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable, nullptr);
+    if (r == k_EResultOK) return true;
+    if (reliable) ++reliableFailures;
+    const char* why = r == k_EResultLimitExceeded ? "LimitExceeded (the send queue is full)" : r == k_EResultNoConnection ? "NoConnection"
+                    : r == k_EResultInvalidState ? "InvalidState (not connected yet, or closing)" : r == k_EResultInvalidParam ? "InvalidParam"
+                    : r == k_EResultIgnored ? "Ignored" : nullptr;
+    char other[32];
+    if (!why) { snprintf(other, sizeof other, "EResult %d", (int)r); why = other; }
+    Net_NoteSendRefused(conn, data, size, reliable, why); // (#1836: every refusal, per message type)
+    return false;
 }
+}
+
+bool Net_QueueStatus(uint32_t conn, NetQueueStatus& out) {
+    if (!initialised) return false;
+    SteamNetConnectionRealTimeStatus_t st;
+    if (SteamNetworkingSockets()->GetConnectionRealTimeStatus(conn, &st, 0, nullptr) != k_EResultOK) return false;
+    out.pendingReliable = st.m_cbPendingReliable;
+    out.pendingUnreliable = st.m_cbPendingUnreliable;
+    out.sentUnacked = st.m_cbSentUnackedReliable;
+    out.pingMs = st.m_nPing;
+    return true;
 }
 
 int Net_ReliableSendFailures() { return reliableFailures; }
@@ -231,6 +292,7 @@ void Net_Close(uint32_t conn) {
     }
     linkCond.erase(conn); lastReliableDue.erase(conn);
     connected.erase(conn);
+    if (refusedTotal) printf("net: connection %u closed; refused sends so far: %s\n", conn, Net_SendFailureSummary().c_str()); // (#1836)
     SteamNetworkingSockets()->CloseConnection(conn, 0, "bye", true);
 }
 
@@ -245,11 +307,31 @@ uint32_t Net_Connect(const char*) { return 0; }
 void Net_Poll() {}
 int Net_ReliableSendFailures() { return 0; }
 uint32_t Net_PendingBytes(uint32_t) { return 0; }
+bool Net_QueueStatus(uint32_t, NetQueueStatus&) { return false; }
 bool Net_IsConnected(uint32_t) { return false; }
+void Net_TakeNewIncoming(std::vector<uint32_t>&) {}
 int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }
 int Net_Receive(std::vector<NetMessage>&, int) { return 0; }
 void Net_Close(uint32_t) {}
 std::string Net_RemoteAddress(uint32_t) { return ""; }
 
+#endif
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+// (#1836) Every refused send is counted per message type, reliable or not, and result; the summary names them.
+TEST(Net, RefusedSendsAreCountedPerTypeAndResult) {
+    const int before = Net_SendFailures();
+    const uint8_t sync[3] = { (uint8_t)NetMsg::Hello, 1, 2 }, junk[1] = { 250 };
+    Net_NoteSendRefused(7, sync, sizeof sync, true, "LimitExceeded (unit)");
+    Net_NoteSendRefused(7, sync, sizeof sync, true, "LimitExceeded (unit)");
+    Net_NoteSendRefused(7, sync, sizeof sync, false, "NoConnection (unit)");
+    Net_NoteSendRefused(8, junk, sizeof junk, false, "InvalidParam (unit)");
+    EXPECT_EQ(Net_SendFailures() - before, 4);
+    const std::string s = Net_SendFailureSummary();
+    EXPECT_NE(s.find(std::string("reliable ") + NetMsgName(NetMsg::Hello) + " LimitExceeded (unit): 2"), std::string::npos) << s;
+    EXPECT_NE(s.find(std::string("unreliable ") + NetMsgName(NetMsg::Hello) + " NoConnection (unit): 1"), std::string::npos) << s;
+    EXPECT_NE(s.find("unreliable type 250 InvalidParam (unit): 1"), std::string::npos) << s;
+}
 #endif

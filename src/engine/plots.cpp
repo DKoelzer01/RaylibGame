@@ -7,13 +7,95 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 
 // ---------------------------------------------------------------------------------------------
 // Part definitions
 // ---------------------------------------------------------------------------------------------
+
+namespace {
+// (#1881) Save names, in enum order: a new type gets its name here, where it goes in the enum.
+constexpr const char* kPartSaveNames[] = {
+    "Cube", "Block", "Slope", "Corner", "Beam2", "Beam4", "Beam8",
+    "Conveyor", "Cable",
+    "Chest", "Generator", "Furnace", "Macerator", "Battery",
+    "Campfire", "Kiln", "CokeOven", "BlastFurnace", "Boiler", "ForgeHammer", "AlloySmelter", "SteamMacerator",
+    "RocketEngine", "FuelTank", "Cockpit", "Guidance", "LandingLeg",
+    "OreWasher", "Centrifuge", "WaterPump",
+    "MvGenerator", "Electrolyzer", "ChemicalReactor", "Miner",
+    "HvGenerator", "ArcFurnace", "Refinery", "PrecisionAssembler",
+    "Farmland",
+    "Fence", "Gate",
+    "Cabin",
+    "StationCore",
+    "Slab", "Panel", "Pane", "Post",
+    "Pipe", "Outlet",
+    "FusionReactor", "MassDriver",
+    "HandPump",
+    "Torch",
+    "Snare",
+    "Meteorite",
+    "PressurePlate", "GasVent",
+    "Bed",
+    "ClaimBanner", "ClaimBanner2", "ClaimBanner3", "ClaimBanner4",
+    "Shaft", "Cogwheel", "LargeCogwheel", "Gearbox", "HandCrank", "StressGauge",
+    "Millstone", "Saw", "Press",
+    "WaterWheel", "Windmill",
+    "LvLab", "MvLab", "HvLab",
+    "ResearchTable", "ManaSiphon", "ManaDynamo",
+    "Distillery", "EssenceTank", "Cauldron",
+    "Ladder",
+    "Lever",
+    "RuinCache",
+};
+static_assert(sizeof(kPartSaveNames) / sizeof(kPartSaveNames[0]) == (size_t)PartType::Count, "a part type without a save name (kPartSaveNames)");
+std::vector<PartType> gPalette; // empty: identity
+}
+
+const char* PartSaveName(PartType t) { return t < PartType::Count ? kPartSaveNames[(int)t] : "-"; }
+PartType PartFromSaveName(const std::string& name) {
+    for (int t = 0; t < (int)PartType::Count; ++t) if (name == kPartSaveNames[t]) return (PartType)t;
+    return PartType::Count;
+}
+std::string PartPalette_Line() {
+    std::string s = "part_palette " + std::to_string((int)PartType::Count);
+    for (const char* n : kPartSaveNames) { s += ' '; s += n; }
+    return s;
+}
+bool PartPalette_Parse(const std::string& line, std::vector<PartType>& out) {
+    std::istringstream in(line);
+    std::string tag; int n = 0;
+    if (!(in >> tag >> n) || tag != "part_palette" || n < 0 || n > 4096) return false;
+    out.assign(n, PartType::Count);
+    for (int i = 0; i < n; ++i) { std::string name; if (!(in >> name)) return false; out[i] = PartFromSaveName(name); }
+    return true;
+}
+void PartPalette_Set(std::vector<PartType> map) { gPalette = std::move(map); }
+PartType PartPalette_MapWith(const std::vector<PartType>& map, int saved) {
+    if (map.empty()) return saved >= 0 && saved < (int)PartType::Count ? (PartType)saved : PartType::Count;
+    return saved >= 0 && saved < (int)map.size() ? map[saved] : PartType::Count;
+}
+PartType PartPalette_Map(int saved) { return PartPalette_MapWith(gPalette, saved); }
+
+// The order of save version 13 and older (and of blueprints before names), frozen: never edit it. A new type goes in
+// kPartSaveNames; this keeps mapping the old numbers.
+const char* PartPalette_V13Line() {
+    return "part_palette 84 Cube Block Slope Corner Beam2 Beam4 Beam8 Conveyor Cable Chest Generator Furnace Macerator Battery "
+           "Campfire Kiln CokeOven BlastFurnace Boiler ForgeHammer AlloySmelter SteamMacerator RocketEngine FuelTank Cockpit "
+           "Guidance LandingLeg OreWasher Centrifuge WaterPump MvGenerator Electrolyzer ChemicalReactor Miner HvGenerator "
+           "ArcFurnace Refinery PrecisionAssembler Farmland Fence Gate Cabin StationCore Slab Panel Pane Post Pipe Outlet "
+           "FusionReactor MassDriver HandPump Torch Snare Meteorite PressurePlate GasVent Bed ClaimBanner ClaimBanner2 "
+           "ClaimBanner3 ClaimBanner4 Shaft Cogwheel LargeCogwheel Gearbox HandCrank StressGauge Millstone Saw Press "
+           "WaterWheel Windmill LvLab MvLab HvLab ResearchTable ManaSiphon ManaDynamo Distillery EssenceTank Cauldron Ladder Lever";
+}
+const std::vector<PartType>& PartPalette_V13() {
+    static const std::vector<PartType> map = [] { std::vector<PartType> m; PartPalette_Parse(PartPalette_V13Line(), m); return m; }();
+    return map;
+}
 
 const char* PartName(PartType t) {
     switch (t) {
@@ -61,6 +143,12 @@ const char* PartName(PartType t) {
         case PartType::ArcFurnace: return "arc furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
+        case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
+        case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
+        case PartType::Ladder: return "ladder"; // (#1105)
+        case PartType::Lever: return "lever"; // (#1641 slice 2c)
+        case PartType::RuinCache: return "sealed cache"; // (#2072)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -77,6 +165,17 @@ const char* PartName(PartType t) {
         case PartType::Gate: return "gate";
         case PartType::Cabin: return "cabin";
         case PartType::StationCore: return "station_core";
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand crank";
+        case PartType::StressGauge: return "stress gauge";
+        case PartType::Millstone: return "millstone";
+        case PartType::Saw: return "mechanical saw";
+        case PartType::Press: return "mechanical press";
+        case PartType::WaterWheel: return "water wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
         default: return "?";
     }
 }
@@ -115,8 +214,15 @@ const char* PartMachineName(PartType t) {
         case PartType::ArcFurnace: return "arc_furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision_assembler";
+        case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
+        case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence_tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
+        case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
+        case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
+        case PartType::Saw: return "mechanical_saw";
+        case PartType::Press: return "mechanical_press";
         default: return nullptr;
     }
 }
@@ -146,7 +252,17 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
-        default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
+        case PartType::Lever: return "stone"; // (#1641 slice 2c) a dungeon lever (not placed from the hand; never broken)
+        case PartType::RuinCache: return "stone"; // (#2072) placed by ruins only; never broken
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large_cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand_crank";
+        case PartType::StressGauge: return "stress_gauge";
+        case PartType::WaterWheel: return "water_wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
+        default: { const char* m = PartMachineName(t); return m ? m : "stone_brick"; } // shapes: material 0 (#1090: was concrete)
     }
 }
 
@@ -154,7 +270,7 @@ namespace {
     // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
     // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
-        { "concrete", "Concrete", { 168, 166, 158, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1090: was lunacrete ("concrete", gone from the planet); its parts become stone brick
         { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
@@ -246,6 +362,12 @@ static Color PartColor(PartType t) {
         case PartType::ArcFurnace: return { 90, 90, 110, 255 };
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
+        case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
+        case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
+        case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
+        case PartType::Lever: return { 74, 70, 66, 255 }; // (#1641 slice 2c) dark iron
+        case PartType::RuinCache: return { 96, 84, 62, 255 }; // (#2072) old bronze-banded iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -262,14 +384,18 @@ static Color PartColor(PartType t) {
         case PartType::Gate: return { 165, 120, 70, 255 };
         case PartType::Cabin: return { 200, 205, 215, 255 };
         case PartType::StationCore: return { 230, 220, 120, 255 };
-        default: return { 168, 166, 158, 255 };                                                          // concrete
+        case PartType::Gearbox: return { 150, 112, 70, 255 };     // (#1269) a wooden casing
+        case PartType::StressGauge: return { 160, 120, 76, 255 };
+        case PartType::Millstone: return { 140, 138, 132, 255 };
+        case PartType::Saw: case PartType::Press: return { 146, 108, 68, 255 };
+        default: return { 168, 166, 158, 255 };                                                          // plain grey
     }
 }
 
 // Surface pattern of a part (parts.fs draws it procedurally; the id rides in the vertex colour's alpha).
 enum PartPattern : unsigned char {
     PatConcrete = 0, PatStone, PatMetal, PatGlass, PatDirt, PatTiles, PatPlanks, PatPolished, PatBrick, PatPlaster,
-    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble,
+    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble, PatLadder, // PatLadder (#1105): rails and rungs, the rest cut away (parts.fs)
     PatMachine = 20, PatConveyor, PatCable, PatFarmland, PatHull
 };
 static unsigned char PartPatternOf(const Part& p) {
@@ -304,10 +430,15 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
+        case PartType::Ladder: return PatLadder; // (#1105)
+        case PartType::Lever: return PatMetal; // (#1641 slice 2c)
+        case PartType::RuinCache: return PatMetal; // (#2072)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
+        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: return PatPlanks; // (#1269) wooden frames
+        case PartType::Millstone: return PatStone;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -319,7 +450,19 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     CellShape full;
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
+        case PartType::Gearbox: case PartType::StressGauge: // (#1269)
+        case PartType::RuinCache: // (#2072) a 0.5 m strongbox (every kind, for now)
             out.push_back({ { 0, 0, 0 }, full }); break;
+        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::WaterWheel: { // (#1270) 1.5 m across, one cell thick: 3 x 3 cells (rows of x, then y), its hub the middle one (index 4)
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f;
+            for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) out.push_back({ { x, y, 0 }, s });
+            break;
+        }
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
@@ -327,6 +470,10 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: // (#1193)
+        case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
+        case PartType::Distillery: case PartType::EssenceTank: case PartType::Cauldron: // (#1254)
+        case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs
@@ -351,6 +498,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
         case PartType::Snare: // a low trap frame: the Slab shape (#176)
+        case PartType::Lever:  // (#1641 slice 2c) a low iron box on the floor, a cell wide: easy to aim at
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
@@ -358,6 +506,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         }
         case PartType::Panel: { // half the cell's thickness, against one face
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Ladder: { // (#1105) a frame 15% of the cell deep against one face (as Panel, thinner); its rungs are the pattern
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.15f;
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
@@ -450,8 +603,9 @@ int RotateOrientation(int index, int axis) {
 // Plot geometry
 // ---------------------------------------------------------------------------------------------
 
-Vector3 Plot::toPlot(Vector3 b) const {
-    const DVec3 d = DVec3(b) - origin;
+Vector3 Plot::toPlot(Vector3 b) const { return toPlot(DVec3(b)); }
+Vector3 Plot::toPlot(const DVec3& b) const {
+    const DVec3 d = b - origin;
     const Vector3 v = { (float)d.x, (float)d.y, (float)d.z };
     return { Vector3DotProduct(v, east), Vector3DotProduct(v, up), Vector3DotProduct(v, north) };
 }
@@ -479,6 +633,30 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
             s.n[i] = n2;
         }
     }
+}
+
+Int3 Plot::SingleCellOrigin(const Part& p, Int3 cell) {
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(p, fp);
+    if (fp.size() != 1) return p.origin;
+    return { p.origin.x + cell.x - fp[0].first.x, p.origin.y + cell.y - fp[0].first.y, p.origin.z + cell.z - fp[0].first.z };
+}
+
+Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
+    // The rotation turns cells about the origin cell's corner, so an orientation that flips the face's axis moves every cell
+    // one further out (Footprint's off = -1): sliding only outward left such a part a cell away from the face (#1574). Both
+    // ways, then: the nearest cell ends one step in front of the aimed cell.
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(p, fp);
+    if (fp.empty()) return p.origin;
+    // (#1630) A single-cell part goes exactly into the cell in front of the aimed face, whatever its orientation: the corner
+    // rotation moves its one cell sideways too (a planks block placed beside the face a quarter-turn on).
+    if (fp.size() == 1) return SingleCellOrigin(p, { hitCell.x + face.x, hitCell.y + face.y, hitCell.z + face.z });
+    int nearest = 1 << 30;
+    for (const auto& c : fp)
+        nearest = std::min(nearest, (c.first.x - hitCell.x) * face.x + (c.first.y - hitCell.y) * face.y + (c.first.z - hitCell.z) * face.z);
+    const int shift = 1 - nearest;
+    return { p.origin.x + face.x * shift, p.origin.y + face.y * shift, p.origin.z + face.z * shift };
 }
 
 void Plot::SplitBeam(const Part& beam, std::vector<Part>& out) {
@@ -756,7 +934,9 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
         const Part& pp = parts[ref.part];
+        if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
+        if (GateSolid(pp)) color = GatePortcullis(pp) ? Color{ 52, 52, 58, 255 } : Color{ 74, 70, 66, 255 }; // (#1641) a vault door: dark iron; a portcullis: darker bars
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
@@ -883,10 +1063,44 @@ static Vector3 ClosestInCell(Vector3 q, Int3 c, const CellShape& s) {
     return p;
 }
 
-bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const {
+bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#1105) the sphere overlaps a cell of such a part
+    if (cells.empty()) return false;
+    const Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
+    const float rc = r / kCellSize;
+    for (int z = (int)floorf(p.z - rc); z <= (int)floorf(p.z + rc); ++z)
+        for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
+            for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
+                auto it = cells.find({ x, y, z });
+                if (it == cells.end() || parts[it->second.part].type != type) continue;
+                // the whole cell counts (standing in front of a ladder is touching it), not just its frame
+                const Vector3 q = { std::clamp(p.x, (float)x, x + 1.0f), std::clamp(p.y, (float)y, y + 1.0f), std::clamp(p.z, (float)z, z + 1.0f) };
+                if (Vector3Distance(p, q) < rc) return true;
+            }
+    return false;
+}
+
+bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    if (contacts) contacts->count = 0;
     if (cells.empty()) return false;
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
-    const float rc = r / kCellSize;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    bodyCentre = toBody(Vector3Scale(p, kCellSize));
+    return true;
+}
+
+bool Plot::collideSphereD(const DVec3& bodyCentre, float r, Vector3& pushOut, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    if (contacts) contacts->count = 0;
+    if (cells.empty()) return false;
+    const Vector3 p0 = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units: plot-relative, small, exact enough
+    Vector3 p = p0;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    const Vector3 d = Vector3Scale(Vector3Subtract(p, p0), kCellSize);
+    pushOut = Vector3Add(Vector3Add(Vector3Scale(east, d.x), Vector3Scale(up, d.y)), Vector3Scale(north, d.z));
+    return true;
+}
+
+bool Plot::collideCells(Vector3& p, float rc, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
     bool hit = false;
     Vector3 nSum = { 0, 0, 0 };
     // Deepest overlap first, then measure again: pushing out of cells in grid order let a
@@ -898,7 +1112,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate) continue; // people pass a gate
+                    if (it == cells.end() || (parts[it->second.part].type == PartType::Gate && !GateSolid(parts[it->second.part])) || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate (not a locked one, #1641), and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);
@@ -909,18 +1123,24 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
                     if (depth > deepest) { deepest = depth; bestN = len > 0.0f ? Vector3Scale(d, 1.0f / len) : d; }
                 }
         if (deepest <= 0.0f) break;
+        if (edgeWallCos > 0.0f && bestN.y > 0.0f && bestN.y < edgeWallCos) { // (plot y is up) out level, as from a wall face
+            const float level = sqrtf(bestN.x * bestN.x + bestN.z * bestN.z);
+            if (level > 1e-3f) { deepest = std::min(deepest / level, rc); bestN = { bestN.x / level, 0.0f, bestN.z / level }; }
+        }
         p = Vector3Add(p, Vector3Scale(bestN, deepest));
         nSum = Vector3Add(nSum, bestN);
+        if (contacts) contacts->n[contacts->count++] = toBodyDir(bestN); // (at most 4 passes)
         hit = true;
     }
     if (!hit) return false;
-    bodyCentre = toBody(Vector3Scale(p, kCellSize));
-    const Vector3 n = Vector3Normalize(nSum);
-    normalOut = Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z)));
+    normalOut = toBodyDir(Vector3Normalize(nSum));
     return true;
 }
 
 bool Plot::raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
+    return raycast(DVec3(o), d, maxDist, cell, faceNormal, dist); // (bit-identical: toPlot widened the float anyway)
+}
+bool Plot::raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
     if (cells.empty()) return false;
     // DDA through the cell grid in plot space.
     Vector3 p = Vector3Scale(toPlot(o), 1.0f / kCellSize);
@@ -1054,9 +1274,12 @@ bool PlotSet::load(FILE* f) {
             if (fscanf(f, " %d %d %d %d", &x, &y, &z, &o) != 4) return false;
             if (materials && fscanf(f, " %d", &m) != 1) return false;
             // Old saves: beams were iron.
-            if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
+            // (#1881) the saved number through the file's palette; a type this build doesn't have keeps its slot, empty
+            const PartType type = PartPalette_Map(t);
+            if (type == PartType::Count) { p->parts.push_back(dead); continue; }
+            if (!materials && IsBeam(type)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
-            Part part{ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
+            Part part{ type, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
             if (IsBeam(part.type)) { // beams are single cubes now (#200): the first takes the slot, the rest go on the end
                 std::vector<Part> cubes;
                 Plot::SplitBeam(part, cubes);
@@ -1094,20 +1317,65 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
 // ---- Unit tests (#1098): stone buildings need bricks; loose ground and raw stone are terrain only ----
 #include "unit_helpers.h"
 
+// #1574 (playtest: a chest or kiln placed against an S/E/down face landed a cell away): a multi-cell part placed against any
+// of the 6 faces of a block, in each of the 24 orientations, sits flush - every cell in front of the face, the nearest ones
+// touching it - as a 1-cell part does.
+TEST(PlotPlacement, MultiCellPartsSitFlushAgainstEveryFace) {
+    const Int3 hit{ 5, 7, -3 };
+    const Int3 faces[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (PartType t : { PartType::Chest, PartType::Farmland, PartType::Fence, PartType::Cube }) // 2x2x2, 2x1x2, 1x2x2, 1x1x1
+        for (const Int3& f : faces)
+            for (int o = 0; o < 24; ++o) {
+                Part p{ t, { hit.x + f.x, hit.y + f.y, hit.z + f.z }, (uint8_t)o, 0 }; // as the build tool aims: the cell in front
+                p.origin = Plot::FlushAgainstFace(p, hit, f);
+                std::vector<std::pair<Int3, CellShape>> fp;
+                Plot::Footprint(p, fp);
+                int nearest = 1 << 30;
+                for (const auto& c : fp) nearest = std::min(nearest, (c.first.x - hit.x) * f.x + (c.first.y - hit.y) * f.y + (c.first.z - hit.z) * f.z);
+                EXPECT_EQ(nearest, 1) << "part " << (int)t << ", face (" << f.x << ", " << f.y << ", " << f.z << "), orientation " << o
+                                      << ": 1 = flush against the face, 0 or less = inside the block, 2 or more = a gap";
+            }
+}
+
+// #1630 (playtest: a planks block placed against the face a quarter-turn from the aimed one, until R was pressed): a single-cell
+// part placed against any face, in any orientation (the automatic facing's or a hand-turned one), takes exactly the cell in
+// front of the aimed face; on the ground (SingleCellOrigin) exactly the aimed cell.
+TEST(PlotPlacement, SingleCellPartsTakeTheAimedCellInAnyOrientation) {
+    const Int3 hit{ 5, 7, -3 };
+    const Int3 faces[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (PartType t : { PartType::Cube, PartType::Ladder, PartType::Panel, PartType::Slab, PartType::Pane, PartType::Conveyor })
+        for (const Int3& f : faces)
+            for (int o = 0; o < 24; ++o) {
+                const Int3 want{ hit.x + f.x, hit.y + f.y, hit.z + f.z };
+                Part p{ t, want, (uint8_t)o, 0 };
+                p.origin = Plot::FlushAgainstFace(p, hit, f);
+                std::vector<std::pair<Int3, CellShape>> fp;
+                Plot::Footprint(p, fp);
+                ASSERT_EQ(fp.size(), 1u);
+                EXPECT_TRUE(fp[0].first == want) << "part " << (int)t << ", face (" << f.x << ", " << f.y << ", " << f.z << "), orientation " << o
+                                                 << ": its cell (" << fp[0].first.x << ", " << fp[0].first.y << ", " << fp[0].first.z << ")";
+                Part g{ t, want, (uint8_t)o, 0 }; // on the ground: the aimed cell itself
+                g.origin = Plot::SingleCellOrigin(g, want);
+                Plot::Footprint(g, fp);
+                EXPECT_TRUE(fp[0].first == want) << "on the ground: part " << (int)t << ", orientation " << o;
+            }
+}
+
 TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
-    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "concrete", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
         EXPECT_LT(BuildMaterialForItem(m), 0) << m;
     for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
-                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+                           "oak_planks", "oak_log", "spruce_log" })
         EXPECT_GE(BuildMaterialForItem(m), 0) << m;
 }
 
 TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
-    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    // Saves store the index: concrete was slot 0 (#1090), raw stone 1, dirt 4, clay 40; they now read as stone brick and brick.
+    EXPECT_STREQ(GetBuildMaterial(0).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
-    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 0); // new parts use the first slot
     EXPECT_EQ(BuildMaterialForItem("brick"), 16);
     // Each dressed stone keeps its rock's look.
     auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };
@@ -1115,5 +1383,42 @@ TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
     EXPECT_EQ(pat("marble_brick"), PatMarble);
     EXPECT_EQ(pat("granite_brick"), PatPolished);
     EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
+}
+
+// #1881: part types are saved by name. Every type has its own name, the palette line maps back to itself, the frozen
+// version-13 order still holds every type it had, and a palette with a type inserted mid-list (or one this build lacks)
+// maps each saved number to the right type.
+TEST(PartPalette, NamesRoundTripAndOldOrdersMap) {
+    std::set<std::string> names;
+    for (int t = 0; t < (int)PartType::Count; ++t) {
+        EXPECT_EQ(PartFromSaveName(PartSaveName((PartType)t)), (PartType)t) << PartSaveName((PartType)t);
+        names.insert(PartSaveName((PartType)t));
+    }
+    EXPECT_EQ(names.size(), (size_t)PartType::Count) << "two part types share a save name";
+    EXPECT_STREQ(PartSaveName(PartType::Cube), "Cube");
+    EXPECT_STREQ(PartSaveName(PartType::LandingLeg), "LandingLeg");
+    EXPECT_STREQ(PartSaveName(PartType::Lever), "Lever");
+
+    std::vector<PartType> now;
+    ASSERT_TRUE(PartPalette_Parse(PartPalette_Line(), now));
+    ASSERT_EQ(now.size(), (size_t)PartType::Count);
+    for (int t = 0; t < (int)PartType::Count; ++t) EXPECT_EQ(now[t], (PartType)t);
+
+    const std::vector<PartType>& v13 = PartPalette_V13();
+    ASSERT_EQ(v13.size(), 84u) << "the frozen version-13 order changed: it must never be edited";
+    for (size_t i = 0; i < v13.size(); ++i) EXPECT_NE(v13[i], PartType::Count) << "v13 type " << i << " has no type in this build";
+    EXPECT_EQ(v13[0], PartType::Cube);
+    EXPECT_EQ(v13[26], PartType::LandingLeg);
+    EXPECT_EQ(v13[83], PartType::Lever);
+
+    std::vector<PartType> shifted; // a save made by a build with a type ("Gizmo") before Chest, and one that is gone
+    ASSERT_TRUE(PartPalette_Parse("part_palette 4 Cube Gizmo Chest Lever", shifted));
+    EXPECT_EQ(PartPalette_MapWith(shifted, 0), PartType::Cube);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 1), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 2), PartType::Chest);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 3), PartType::Lever);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 4), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith({}, (int)PartType::Chest), PartType::Chest); // no palette: identity
+    EXPECT_FALSE(PartPalette_Parse("camera 1 2 3", shifted));
 }
 #endif

@@ -14,6 +14,7 @@ uniform mat4 matViewProj;
 uniform float time;
 uniform vec3 viewPos;     // the main camera (also in the depth passes, so shadows match)
 uniform float farForest;  // #745: 1 = far trees grow and darken a little so distant forests read (RAYLIBGAME_FAR_FOREST)
+uniform float treeVariationOff; // #1979: 1 = every tree of a variant alike (RAYLIBGAME_TREE_VARIATION=0, A/B)
 #include "wind.glsl"
 
 out vec3 fragPosition;
@@ -24,7 +25,10 @@ out float fragStone;
 out float fragHash;
 out float fragLatitude;
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
+flat out float fragBiome; // (#2032) the biome variant id (biometint.glsl), 0 if none
 out float fragHeight;
+out vec3 fragLocal;        // #1995: the mesh-space position and normal (before turning and scaling), for the bark and leaf textures
+out vec3 fragLocalN;
 out float fragFar;         // #745: 0 near .. 1 far (0 with the switch off)
 out float fragAo;          // (#933 layer 2) baked ambient occlusion (trees.cpp BakeFoliageAo): 1 open
 
@@ -39,10 +43,21 @@ void main()
     vec3 t = t0 * cos(a) + b0 * sin(a);
     vec3 b = cross(t, up);   // right-handed (t, up, b): keeps the mesh winding (front faces CCW)
     float s = instPosScale.w;
+    // #1979: no two trees alike. Sub-hashes of the instance hash give each tree its height stretch (0.85-1.2x), crown
+    // width (0.92-1.08x) and a lean of up to 4 degrees, a shear that keeps the base on the ground (GUESS ranges, tuned in
+    // playtests). The cull bound pads for the stretch (trees.cpp kVariationPad).
+    float sy = 1.0, sxz = 1.0;
+    vec3 leanDir = vec3(0.0);
+    if (treeVariationOff < 0.5) {
+        sy = 0.85 + 0.35 * fract(h * 131.7 + 0.13);
+        sxz = 0.92 + 0.16 * fract(h * 251.3 + 0.71);
+        float la = 6.2831853 * fract(h * 57.9 + 0.29);
+        leanDir = (t0 * cos(la) + b0 * sin(la)) * 0.07 * fract(h * 389.1 + 0.53); // tan(4 deg) = 0.07
+    }
     // #745: far trees grow up to +70% from 300 m to 1.4 km, so far forests keep their mass as they thin out.
     float far = farForest * smoothstep(300.0, 1400.0, length(vec3(matModel * vec4(instPosScale.xyz, 1.0)) - viewPos));
     s *= 1.0 + 0.7 * far; // (stronger, user 2026-11-19: +70% by 1.4 km)
-    vec3 v = vertexPosition;
+    vec3 v = vertexPosition * vec3(sxz, sy, sxz);
     // Wind on leaves: a sway growing with height. With the wind field (#650) it grows with the local wind, and strong
     // wind (storms, bursts) leans the whole tree downwind, more toward the top, swaying with the gusts. No damage.
     float leaf = vertexColor.r;
@@ -62,8 +77,9 @@ void main()
     } else {
         sway = (t0 * sin(time * 0.9 + h * 30.0) + b0 * sin(time * 0.7 + h * 17.0)) * 0.04 * max(v.y, 0.0) * leaf;
     }
-    vec3 local = instPosScale.xyz + (t * v.x + up * v.y + b * v.z) * s + sway * s;
-    vec3 n = t * vertexNormal.x + up * vertexNormal.y + b * vertexNormal.z;
+    vec3 local = instPosScale.xyz + (t * v.x + up * v.y + b * v.z + leanDir * max(v.y, 0.0)) * s + sway * s;
+    vec3 vn = vertexNormal / vec3(sxz, sy, sxz); // the scale's inverse-transpose (the small lean shear is left out)
+    vec3 n = t * vn.x + up * vn.y + b * vn.z;
     fragPosition = vec3(matModel * vec4(local, 1.0));
     fragNormal = normalize(mat3(matModel) * n);
     fragLeaf = leaf;
@@ -73,8 +89,12 @@ void main()
     fragHash = h;
     fragLatitude = abs(up.y);
     float cl = length(instUpHash.xyz);
-    fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    float clN = floor(cl) - 2.0, clId = floor(clN / 64.0); // (#2032) 64 x the variant id rides on the step
+    fragClimate = cl > 1.5 ? vec3((clN - 64.0 * clId) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    fragBiome = cl > 1.5 ? clId : 0.0;
     fragHeight = v.y;
+    fragLocal = vertexPosition;
+    fragLocalN = vertexNormal;
     fragFar = far;
     gl_Position = matViewProj * vec4(fragPosition, 1.0);
 }
