@@ -2,8 +2,8 @@
 // needs a GameNetworkingSockets build, else one SKIP check passes); bob joins. The host puts a small cache (its default
 // opener: a power lock) at bob's feet, a generator and a cable beside it, and burns coal. bob watches the cache, as his
 // prompt does when he aims at it (Factory::View on a client asks the host to watch it): the host's views come back with
-// the lock's size (energyMax) and its charge, as the host has it. Full, bob asks to open it: the host opens it and spends
-// the charge.
+// the lock's size (energyMax) and its charge, as the host has it, up to full. (A client's open request is #2148's
+// net/ruin-cache; the open itself reads the host's charge, factory/cache-power.)
 // The client runs in this process (its factory is the host's), so the client side of the prompt (CacheCharged reading
 // the host's view in remote mode) is the unit test Factory.AJoinedClientReadsACachesChargeFromTheHostsView; this checks
 // what crosses the wire.
@@ -11,7 +11,6 @@
 #include "cacheopeners.h"
 #include "factory.h"
 #include "hostserver.h"
-#include "machineact.h"
 #include "netclient.h"
 #include "net.h"
 #include "plots.h"
@@ -41,7 +40,7 @@ struct State {
     int gen = -1;
     double t0 = 0.0;
     float seen = 0.0f;    // the highest charge bob's views showed
-    bool skip = false, asked = false;
+    bool skip = false;
 } S;
 bool Joined(const NetClient& n) { return n.state == NetClient::State::Joined; }
 void UpdateAll() { RealTime(); if (S.bob.state != NetClient::State::Idle) NetClient_Update(S.bob); }
@@ -138,19 +137,9 @@ SCENARIO("net/cache-power") {
         }
         Factory::SetSpeed(1);
         c.check("full on the host", HostCharge() >= 1.0f);
-        S.t0 = c.t;
-        return true;
-    });
-    s.step("bob opens it: the host opens it and spends the charge", 15.0, [](ScenarioCtx& c) {
-        if (S.skip) return true;
-        UpdateAll();
-        if (!S.asked) { BobAct(c, kMachineActOpenCache); S.asked = true; S.t0 = c.t; }
-        c.waitingFor("the cache opened on the host");
-        if (!Opened()) {
-            if (c.t - S.t0 > 10.0) c.fail("not opened 10 s after bob asked; bob heard: " + Said(S.bob));
-            return false;
-        }
-        c.check("the charge is spent", HostCharge() == 0.0f);
+        c.check("still sealed (nobody asked to open it)", !Opened());
+        // (bob's open request, MachineAction 13, is #2148's net/ruin-cache: until it lands the reader drops actions over 10,
+        // #2150; then this scenario gets an open step)
         BobAct(c, 7); // bob looks away: no more views
         c.eq("sends the transport refused", Net_SendFailures(), 0);
         NetClient_Disconnect(S.bob);
