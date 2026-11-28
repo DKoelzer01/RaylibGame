@@ -3,5 +3,5 @@
 # result, undefined behaviour): fix that, not the line. Every run failing after a deliberate rule change: rerun with
 # RAYLIBGAME_GOLDEN_UPDATE=1 (it writes the updated file into the run's folder: copy it here) and say why in the PR.
 determinism/state-hash cranked edits ef4394ca259e9bd3
-determinism/state-hash cranked factory e44289aa5d798c3e
+determinism/state-hash cranked factory ae4937702de85bf7
 determinism/state-hash flowing water b042bc808bf22c7f

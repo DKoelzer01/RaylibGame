@@ -19,7 +19,7 @@ constexpr float kDepths[] = { 0.0f, 30.0f, 60.0f, 100.0f, 150.0f, 250.0f, 400.0f
 constexpr float kStrides[] = { 0.25f, 1.0f };     // m: the finest chunk level and a mid one
 constexpr int kBlocksPer = 24;                    // blocks per depth and stride
 constexpr int kSegBins[] = { 0, 1, 9, 17, 33, 65 }; // histogram lower edges: 0, 1-8, 9-16, 17-32, 33-64, 65+
-constexpr int kFloatsPerSeg = 20;                 // 5 vec4 a segment (voxel.h blockCaveSegs)
+constexpr int kFloatsPerSeg = 24;                 // 6 vec4 a segment (voxel.cpp GatherCaveSegs; was 20, counting 1.2x high)
 }
 
 SCENARIO("caves/block-cost") {

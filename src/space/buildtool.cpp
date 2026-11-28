@@ -1277,7 +1277,9 @@ void Machine_DrawHUD() {
     const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
     const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
     const std::string runLine = Alchemy_IsVessel(machineAim.type) ? Alchemy_PanelLine(machineAim.body, machineAim.plot, machineAim.part) : std::string(); // (#1254)
-    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1);
+    // (#2071) a drill: what is left of the deposit it works
+    const std::string depLine = v.depositLeft >= 0 ? TextFormat("deposit: %lld units left", v.depositLeft) : "";
+    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1) + (depLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
@@ -1302,6 +1304,7 @@ void Machine_DrawHUD() {
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
+    if (!depLine.empty()) { DrawText(depLine.c_str(), x, ty, 16, v.depositLeft > 0 ? Color{ 210, 200, 150, 255 } : Color{ 255, 150, 110, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(machineAim.type == PartType::Anvil ? (BuildTool_IsHammer(terrainTool.heldTool) ? "hold RMB to hammer   O take the finished piece" : "RMB puts the held metal on   RMB empty-handed takes it off   a hammer in hand to forge") /* (#1613) */ : chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }

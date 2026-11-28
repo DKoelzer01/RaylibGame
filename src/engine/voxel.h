@@ -247,7 +247,10 @@ public:
     static int OreKindCount();                  // (#1466) the kinds in ores.txt
     static const char* OreKindName(int kind);   // its item ("iron_ore", ...), from ores.txt; nullptr outside it
     int oreKind(Vector3 p, float depth) const;
-    int depositNear(Vector3 p, float reach) const; // the main ore kind of a deposit within `reach` m, or -1 (miners)
+    int depositNear(Vector3 p, float reach) const; // the main ore kind of a deposit within `reach` m, or -1
+    // (#2071) The deposit a drill at `base` works: the one nearest the base whose shape's envelope touches the line from
+    // the base `reach` m straight down. Its cell in cx/cy/cz (its id: Deposits_Id). False: none in reach (or the moon).
+    bool depositBelow(Vector3 base, float reach, VeinDeposit& out, int& cx, int& cy, int& cz) const;
     // The ore deposit whose cell holds p (#207: a vein mined out): its centre, the radius its shape fits in (a blob reaches
     // ~1.35x it with its lumpiness) and its family's main ore; false if the cell has none.
     bool depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const;
@@ -343,7 +346,7 @@ public:
     struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
     float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr, float* solid = nullptr) const; // solid (#615 step 3): metres inside rubble aprons (densityNear adds them)
     // (#615 step 2) The cave graph: passages generated per 256 m cell (sea-level projection) from the seed, cached. A block
-    // gets the segments whose capsules can reach it, 5 vec4 each: (a, ra), (b, rb), (up, flat), box lo, box hi. False
+    // gets the segments whose capsules can reach it, 6 vec4 each: (a, ra), (b, rb), (up, flat), (box lo, kind), box hi, (side, 0). False
     // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
     // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
     bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;

@@ -15,9 +15,7 @@ fluid/u-bend-cpu -> FAIL               | #1168 | [Water, until 2026-12-05] the C
 frames/build-hold(-pose)? -> FAIL         | #1759 | [Water, until 2026-12-05] 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
 frames/long-fall(-pose)? -> FAIL          | #2038 | [Water, until 2026-12-05] the 100 m equator drop barely falls in some runner runs (long-fall 16/20, -pose 18/20 recent runs pass); Water owns the fix
 light/torch-room -> FAIL                  | #1829 | [L&G, until 2026-12-05] 1 check fails in ~30% of runs (14/20), on m84 and ladder alike; flaky, to be diagnosed
-perf/creatures-crowd -> FAIL: step .settle.  | #1821 | [L&G, until 2026-12-05] settle times out on the slow runner (26 of its 30 s on the sandbox); not -200
 light/torch-room -> FAIL                | #1829 | [L&G, until 2026-12-05] 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
-caves/cavern-view -> FAIL                | #1828 | [L&G, until 2026-12-05] "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
 net/late-join-lag -> FAIL               | #1972 | [Tools, until 2026-12-05] the sim runs ahead of the wall-clock join (step deadline, or bob not in yet) (12/20 recent runs pass)
 caves/islands -> FAIL                    | #2025 | [L&G, until 2026-12-05] floating rock over budget (825 > 760 m^3) since staging's terrain work reached ladder: a real change, not a flake
 fluid/spring -> FAIL                    | #1910 | [Water, until 2026-12-05] "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands

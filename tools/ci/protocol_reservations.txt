@@ -22,6 +22,8 @@
 55 | ladder          | #1734 | the rotary sieve part type in NetPart
 56 | ladder          | #1734 | the rotary pump part type in NetPart
 59 | ladder          | #1735 | belt sync: BeltSnapshot, BeltSteps, BeltResync (belts replayed on clients; 57, 58 are #1886's)
+62 | ladder          | #2071 | a drill's statuses in MachineView (no deposit, depleted, too close)
+63 | ladder          | #2071 | the borehole rig part types in NetPart; a drill's deposit units left in MachineView
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
