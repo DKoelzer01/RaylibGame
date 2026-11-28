@@ -50,6 +50,7 @@
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
+#include "ruincache.h" // (#2072)
 #include "recorder.h"
 #include "scenario.h"
 #include "cliptelemetry.h"
@@ -10377,7 +10378,7 @@ int main(int argc, char** argv)
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
-            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingCampfire()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it)
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingUsable()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it; #2072: opens a cache, pulls a lever, unlocks a vault door)
             else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
             else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
@@ -14034,6 +14035,7 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
+                RuinCache_DrawHUD(); // (#2072) the hold ring and an opened cache's result
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 CaveGas_DrawHUD(world);

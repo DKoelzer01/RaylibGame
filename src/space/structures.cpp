@@ -1,4 +1,5 @@
 #include "structures.h"
+#include "ruincache.h" // (#2072) cache lines
 #include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
 #include "factory.h"
@@ -159,6 +160,11 @@ bool LoadSet(const std::string& path, Set& s) {
                 std::string kw, table; // an optional trailing "loot <table>": the part breaks open for it (#1641 slice 2c)
                 if (ss >> kw >> table && kw == "loot") s.breakLoot.push_back({ { x, y, z }, table });
             }
+        } else if (cmd == "cache") { // (#2072) "cache small|vault|deep_vault x y z": a sealed ruin cache (never decayed)
+            std::string k; int x, y, z;
+            if (!(ss >> k >> x >> y >> z)) continue;
+            const int kind = k == "vault" ? (int)CacheKind::Vault : k == "deep_vault" ? (int)CacheKind::DeepVault : (int)CacheKind::Small;
+            add(PartType::RuinCache, { x, y, z }, 0, kind);
         } else if (cmd == "fill" || cmd == "walls") {
             std::string t, m; int x0, y0, z0, x1, y1, z1;
             if (!(ss >> t >> x0 >> y0 >> z0 >> x1 >> y1 >> z1 >> m) || TypeNamed(t) == PartType::Count) continue;
@@ -990,7 +996,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
     for (Part p : parts) {
         const bool chest = p.type == PartType::Chest;
         const float rise = (p.origin.y + 0.5f) / topY;
-        if (!chest && Unit(h) < S.decay * (0.35f + 1.3f * rise)) continue;   // decay: more near the top
+        if (!chest && p.type != PartType::RuinCache && Unit(h) < S.decay * (0.35f + 1.3f * rise)) continue;   // decay: more near the top
         p.origin = { p.origin.x + shift.x, p.origin.y + shift.y, p.origin.z + shift.z };
         if (IsShape(p.type)) p.material = (uint8_t)BiomeStone(p.material, biome);
         std::string table;
