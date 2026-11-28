@@ -30,9 +30,11 @@ machine, which only the PC has.
 - **Null-GL scenarios 1/8 .. 8/8** (#1960): the sandbox-world scenarios that pass without a GPU
   (`tools/ci/nogl_scenarios.sh`: world `sandbox`, minus the perf/visual/light/fx/local tags and
   `tools/ci/nogl_exclude.txt`), in 8 parallel shards with the Linux job's game (passed through the cache). A scenario
-  that fails here but passes on the GPU runner (`scenario_history`) needs the GPU path: add it to the exclude list.
-  **Not** in `CI ok`'s needs yet (report-only), so it holds no merge and adds no wall time to the gate.
-- **CI ok**: passes when every job above (except the null-GL scenarios) passed or was skipped. **Make this the required check** (branch protection on
+  that fails here every time but passes on the GPU runner (`scenario_history`) needs the GPU path: add it to the
+  exclude list. (#2123) A tracked flake goes in `tools/ci/known_failures_nogl.txt` (the format and 7-day expiry of
+  `known_failures.txt`, static check 8): a shard fails only on a failure that no line there matches, and its summary
+  marks each one "known (#N)" or NEW.
+- **CI ok**: passes when every job above, the null-GL shards included (#2123), passed or was skipped. **Make this the required check** (branch protection on
   `staging` and `develop`: "Require status checks to pass", check name `CI ok`). It is reported on every PR,
   also when the builds are skipped, so docs-only PRs are not left waiting.
 

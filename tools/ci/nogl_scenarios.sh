@@ -27,11 +27,30 @@ mkdir -p "$out"
 "$game" --scenario "$pick" --scenario-no-record --scenario-out "$out" > "$out/run.log" 2>&1
 rc=$?
 grep -E -- '^scenario: [^ ]+ -> ' "$out/run.log"
-fails="$(grep -cE -- '^scenario: [^ ]+ -> (FAIL|TIMEOUT|ERROR)' "$out/run.log" || true)"
 passes="$(grep -cE -- '^scenario: [^ ]+ -> PASS' "$out/run.log" || true)"
-echo "nogl: $passes passed, $fails failed (exit $rc)"
+# (#2123) Each failure, "known (#N)" when it matches a line of known_failures_nogl.txt (this checkout's plus staging's),
+# else NEW. Only NEW failures fail the shard: "CI ok" needs the shards, and a tracked flake must not block every merge.
+known="$(bash "$here/known_list.sh" known_failures_nogl.txt)"
+new=0 old=0 marked=""
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    tag=NEW
+    while IFS='|' read -r pat issue _; do
+        pat="$(echo "$pat" | sed 's/[[:space:]]*$//')"; [[ -z "$pat" || "$pat" == \#* ]] && continue
+        if echo "$line" | grep -Eq -- "$pat"; then tag="known $(echo $issue)"; break; fi
+    done <<< "$known"
+    if [ "$tag" = NEW ]; then new=$((new + 1)); else old=$((old + 1)); fi
+    marked+="- **[$tag]** \`$(echo "$line" | cut -c1-200)\`"$'\n'
+done < <(grep -E -- '^scenario: [^ ]+ -> (FAIL|TIMEOUT|ERROR)' "$out/run.log" | tr -d '\r')
+echo "nogl: $passes passed, $new NEW and $old known failures (exit $rc)"
+printf '%s' "$marked"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    { echo "### Null-GL scenarios, shard $shard of $count: $passes passed, $fails failed"
-      grep -E -- '^scenario: [^ ]+ -> (FAIL|TIMEOUT|ERROR)' "$out/run.log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+    { echo "### Null-GL scenarios, shard $shard of $count: $passes passed, $new NEW and $old known failures"
+      printf '%s' "$marked"
+      [ $new -gt 0 ] && echo "" && echo "NEW failures need a fix, or an issue and a line in \`tools/ci/known_failures_nogl.txt\`."; } >> "$GITHUB_STEP_SUMMARY"
 fi
-[ "$rc" = 0 ] && [ "$fails" = 0 ] && [ "$passes" -gt 0 ]
+# Red unless every picked scenario printed a verdict (a crash cuts the list short) and the exit code is 0, or 1 (the
+# game's "some scenario failed") with only known failures.
+picked=$(echo "$pick" | tr ',' '\n' | grep -c .)
+if [ $((passes + new + old)) -ne "$picked" ]; then echo "nogl: $((passes + new + old)) verdicts for $picked scenarios (exit $rc): a crash?"; exit 1; fi
+[ $new = 0 ] && { [ "$rc" = 0 ] || { [ "$rc" = 1 ] && [ $old -gt 0 ]; }; }

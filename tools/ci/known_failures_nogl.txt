@@ -1,0 +1,7 @@
+# Known failures in the hosted null-GL scenario shards (pr-checks.yml, tools/ci/nogl_scenarios.sh; #2123). A shard whose
+# only failures match a line here passes, so "CI ok" (which needs the shards) doesn't block a merge on a tracked flake.
+# Same format and rules as tools/ci/known_failures.txt (static check 8: owner and an expiry at most 7 days ahead):
+#   <extended regex matched against the failure line> | <issue> | [<owner>, until <YYYY-MM-DD>] <note>
+# A scenario that can't pass without the GPU at all belongs in tools/ci/nogl_exclude.txt instead.
+water/diagonal-corner -> FAIL            | #1773 | [Water, until 2026-12-05] the corner wedge (3.7 cm): water remeshes are wall-clock paced, so a fast null-GL sim rebuilds rarely (3 of the last 40 PR runs)
+net/late-join-lag -> FAIL                | #1972 | [Tools, until 2026-12-05] sim-time join deadlines expire when the sim runs 30-50x real time (3 of the last 40 PR runs; GPU runner 14/20)
