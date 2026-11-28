@@ -10749,7 +10749,7 @@ int main(int argc, char** argv)
                     const MsgChat m = gJoin.chat.front(); gJoin.chat.pop_front();
                     const auto who = gJoin.roster.find(m.from);
                     const std::string line = m.from == 0 ? m.text : (who != gJoin.roster.end() ? who->second : std::string("?")) + ": " + m.text;
-                    GameUI_Toast(line.c_str());
+                    if (!(m.from == 0 && RuinCache_TakeHostLine(m.text))) GameUI_Toast(line.c_str()); // (#2072) a cache's result: its panel, not toasts
                     printf("chat: %s\n", line.c_str());
                     if (benchNetClaims && m.from == 0) benchChatHeard.push_back(m.text);
                     if (m.from == 0 && m.text.rfind("Quest:", 0) == 0) ++gQuestNewsHeard; // (#338) the server's team news

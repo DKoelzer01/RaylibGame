@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include "netproto.h"
 
 // The caller has already taken `count` of `item` out of the inventory (or off the cursor), as before. Joined: it is
 // given back here and the server takes it out of the inventory it keeps (the delta then removes it here too).
@@ -34,6 +35,8 @@ constexpr int kMachineActUnlockVault = 11, kMachineActPullLever = 12;
 // (#2072) A ruin cache, its hold done: the host opens it (spending the requester's power cell, as its kind needs), rolls,
 // gives the parts, marks it opened for everyone and sends the requester the result lines.
 constexpr int kMachineActOpenCache = 13;
+// (#2150) MsgMachineAction's reader refuses an action above kNetMachineActionMax (netproto.h): widen it with a new action.
+static_assert(kMachineActOpenCache <= kNetMachineActionMax, "widen kNetMachineActionMax (netproto.h) for the new machine action");
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;

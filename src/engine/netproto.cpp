@@ -986,7 +986,7 @@ void NetWrite(NetWriter& w, const MsgMachineAction& m) {
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 10 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103 - widen with each new action, #1365)
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > kNetMachineActionMax || m.which > 2) r.ok = false; // (#1365, #2150: machineact.h asserts the actions fit)
     m.part = (int32_t)part;
     return Done(r);
 }
@@ -1246,7 +1246,9 @@ TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
     MsgMachineAction fireBack;
     EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
     EXPECT_EQ(fireBack.action, 10);
-    MsgMachineAction past = fire; past.action = 11;
+    MsgMachineAction last = fire; last.action = kNetMachineActionMax;
+    EXPECT_TRUE(RoundTrip(last, fireBack)) << "the largest machine action (#2150: a cache's open, 13) reaches the server";
+    MsgMachineAction past = fire; past.action = kNetMachineActionMax + 1;
     EXPECT_FALSE(RoundTrip(past, fireBack));
     MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
     MsgEditRequest qBack;
