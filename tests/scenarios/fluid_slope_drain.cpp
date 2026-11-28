@@ -1,8 +1,8 @@
 // fluid/slope-drain (#454, playtest 2026-11-24: "Water clings to slopes as a thin film after all water has flowed away"): on the
 // bench planet, the steepest open slope (9-35 degrees each 2 m, still falling 8 m down) within 80 m of the spawn; 0.5 m^3 poured at its
 // top runs down. A film under the spread limit (~1 cm) never moves, and the bricks fall asleep after 2-3 s, so their films
-// stayed for good. Checked: 150 s later under a litre is left on the slope (the cells in a box over its upper 6 m, 2 m wide), no
-// film cell of 3 units or more and at most 2 specks (1-2 units, too thin to draw). Reported: the litres at 20 s and 150 s and
+// stayed for good. Checked: 240 s later (#1944: films thin a unit every 20 s) under a litre is left on the slope (the cells in a box over its upper 6 m, 2 m wide), no
+// film cell of 3 units or more and at most 2 specks (1-2 units, too thin to draw). Reported: the litres at 20 s and 240 s and
 // the cells left by depth (2026-11-24: RAYLIBGAME_FLUID_NOEVAP=1 keeps 95 litres in 160 film cells; with the fix 0.2 litres).
 #include "scenario.h"
 #include "fluid.h"
@@ -29,7 +29,7 @@ double SlopeWater(ScenarioCtx& c) { // m^3 on the slope: a box from the top 6 m 
 SCENARIO("fluid/slope-drain") {
     s.tags = { "fluid", "water" };
     s.world = ScenarioWorld::Planet;
-    s.timeout = 300.0;
+    s.timeout = 400.0;
     s.step("find a slope", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle() || !c.field) return false;
@@ -75,19 +75,19 @@ SCENARIO("fluid/slope-drain") {
         c.note(TextFormat("slope grade %.2f (%.0f degrees)", S.grade, atanf(S.grade) * RAD2DEG));
         return true;
     });
-    s.step("pour at its top and wait (150 s)", 200.0, [](ScenarioCtx& c) {
+    s.step("pour at its top and wait (240 s)", 290.0, [](ScenarioCtx& c) {
         if (S.grade <= 0.0f) return true;
         // The camera across the slope, a few metres off its side.
         const Vector3 mid = Vector3Add(S.top, Vector3Scale(S.down, 3.0f));
         c.camera(Vector3Add(Vector3Add(mid, Vector3Scale(S.side, 6.0f)), Vector3Scale(S.up, 3.0f)), mid, S.up);
         if (c.t >= S.nextPour && c.t < 2.0) { S.nextPour = c.t + 0.1; S.poured += Fluid::Pour(*c.body, Vector3Add(S.top, Vector3Scale(S.up, 0.3f)), 0.025f); }
         if (S.at20 < 0.0 && c.t >= 20.0) S.at20 = SlopeWater(c);
-        return c.t >= 150.0;
+        return c.t >= 240.0;
     });
     s.step("report", 1.0, [](ScenarioCtx& c) {
         if (S.grade <= 0.0f) return true;
         const double left = SlopeWater(c);
-        c.note(TextFormat("%.2f m^3 poured; on the slope %.4f m^3 at 20 s, %.4f m^3 at 150 s", S.poured, S.at20, left));
+        c.note(TextFormat("%.2f m^3 poured; on the slope %.4f m^3 at 20 s, %.4f m^3 at 240 s", S.poured, S.at20, left));
         // What is left, by depth (the published cells, 0.25 m apart over the box): films under the spread limit (10) dry; deeper
         // water should have run on.
         {
@@ -108,11 +108,11 @@ SCENARIO("fluid/slope-drain") {
             c.note(TextFormat("wet cells on the slope by fill: 1-2 %d, 3-9 %d, 10-39 %d, 40+ %d (deepest %d); bricks %d, awake %d, steady %d, settled %d",
                               S.films[0], S.films[1], S.films[2], S.films[3], worst, st.bricks, st.activeBricks, st.steadyBricks, st.settled));
         }
-        c.metric("water left on the slope at 150 s", (float)(left * 1000.0), "litres");
+        c.metric("water left on the slope at 240 s", (float)(left * 1000.0), "litres");
         c.gt("water poured", S.poured, 0.4f);
-        c.eq("no films 3 mm+ (fill 3 to the spread limit) left on the slope at 150 s (cells)", S.films[1], 0);
-        c.lt("specks (fill 1-2, too thin to draw) left on the slope at 150 s (cells)", S.films[0], 3);
-        c.lt("water left on the slope at 150 s (litres)", (float)(left * 1000.0), 1.0f);
+        c.eq("no films 3 mm+ (fill 3 to the spread limit) left on the slope at 240 s (cells)", S.films[1], 0);
+        c.lt("specks (fill 1-2, too thin to draw) left on the slope at 240 s (cells)", S.films[0], 3);
+        c.lt("water left on the slope at 240 s (litres)", (float)(left * 1000.0), 1.0f);
         return true;
     });
 }

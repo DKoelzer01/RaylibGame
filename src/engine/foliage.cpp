@@ -1,4 +1,5 @@
 #include "foliage.h"
+#include "biomevariants.h"
 #include "gpumem.h"
 #include "voxel.h"
 #include "plots.h"
@@ -164,6 +165,9 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
         const float det = (bx2 - ax2) * (cy2 - ay2) - (cx2 - ax2) * (by2 - ay2);
         if (fabsf(det) < 1e-6f) continue; // edge-on to the axis: steep, bare anyway
         const float faceAxis = fabsf(cr.x * axisDir.x + cr.y * axisDir.y + cr.z * axisDir.z) / (2.0f * area); // |n . axis|
+        // The climate code (below) carries the biome variant (BiomeClimateCode: 64 x id); its grass size shift (#1995).
+        const float code = std::max(1.0f, out.tangents[4 * i0 + 1]);
+        const float grassShift = SmallFloraSizesOf(code >= 2.0f && BiomeTintOn() ? (int)((code - 2.0f) / 64.0f) : -1, Biome::Forest).grass;
         const int x0 = (int)floorf(std::min({ ax2, bx2, cx2 }) / cell), x1 = (int)floorf(std::max({ ax2, bx2, cx2 }) / cell);
         const int y0 = (int)floorf(std::min({ ay2, by2, cy2 }) / cell), y1 = (int)floorf(std::max({ ay2, by2, cy2 }) / cell);
         for (int gy = y0; gy <= y1; ++gy)
@@ -198,14 +202,19 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
             const float h = Unit(state);
             // Variant: a quarter sparse tufts, the rest clumps (taller), so open ground is covered.
             const float pick = Unit(state), su = Unit(state);
-            const int var = pick < 0.25f ? 0 : pick < 0.7f ? 1 : 2;
-            const float scale = var == 0 ? 0.22f + 0.35f * su * su   // mostly short, a few tall
-                              : var == 1 ? 0.35f + 0.3f * su
-                                         : 0.42f + 0.35f * su;
+            // (#1995 phase 3) The height class: short turf, the grass as before, tall grass, waist-high stands; from the
+            // biome's and variant's shift and a ~25 m patch, so tall grass grows in drifts (its own hash: the draws
+            // above stay as they were). Tall stands are dense clumps.
+            uint32_t cs = Hash(state ^ 0x1995e7u);
+            const int cls = SmallFloraSizeClass(grassShift, ValueNoise3(local, 0.04f), Unit(cs));
+            static const float kClassScale[4] = { 0.6f, 1.0f, 1.35f, 1.8f }; // the tallest ~1.4 m (GUESS)
+            const int var = cls == 3 ? 2 : pick < 0.25f ? 0 : pick < 0.7f ? 1 : 2;
+            const float scale = kClassScale[cls] * (var == 0 ? 0.22f + 0.35f * su * su   // mostly short, a few tall
+                                                  : var == 1 ? 0.35f + 0.3f * su
+                                                             : 0.42f + 0.35f * su);
             // The variant rides in the scale (scale + 10 * variant); grouped by variant for one draw each.
             // The climate (Plan 5 B) rides in the up vector's length (the shader normalises it): the packed
             // code the mesher left in the vertex's tangent.y (2 + temperature step + moisture; 1 = none).
-            const float code = std::max(1.0f, out.tangents[4 * i0 + 1]);
             byVariant[var].insert(byVariant[var].end(), { p.x, p.y, p.z, scale + 10.0f * var, up.x * code, up.y * code, up.z * code, h });
         }
     }
@@ -244,7 +253,12 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
         const int8_t u4[4] = { sbyte(s[4] * inv), sbyte(s[5] * inv), sbyte(s[6] * inv), sbyte(s[7] * 2.0f - 1.0f) };
         memcpy(d + 8, u4, 4);
         uint8_t c4[4] = { 0, 0, 0, 0 };
-        if (len > 1.5f) { c4[0] = (uint8_t)std::clamp((int)floorf(len) - 2 + 1, 1, 255); c4[1] = (uint8_t)std::clamp((int)lroundf((len - floorf(len)) * 255.0f), 0, 255); }
+        if (len > 1.5f) { // the float form's step carries 64 x the biome variant id (#2032): the id gets its own byte
+            const int stepId = (int)floorf(len) - 2;
+            c4[0] = (uint8_t)std::clamp(stepId % 64 + 1, 1, 255);
+            c4[1] = (uint8_t)std::clamp((int)lroundf((len - floorf(len)) * 255.0f), 0, 255);
+            c4[2] = (uint8_t)std::clamp(stepId / 64, 0, 255);
+        }
         memcpy(d + 12, c4, 4);
     }
     GpuMemTag gm133_("grass"); // VRAM accounting (#302)

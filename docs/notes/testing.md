@@ -11,7 +11,7 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
     (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package, and the headless
     half of the regression (`tools/regression.sh planet --only headless`, #1028; nightly, or add `-f regression=headless`).
     Runs on pushes to staging/develop and nightly; for your own branch, dispatch it: `gh workflow run
-    selfhosted.yml -r <branch>` (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
+    selfhosted.yml -r <branch>` (a newer dispatch on the branch cancels the older run, #2117, so batch your changes). Use it instead of running those tests here.
     Three ephemeral runners (raylibgame-runner@1-3, 4 CPU/10 GB each) share one `ci-persist` volume; each job takes a
     flock'd slot (`ci-persist/slotN`) with its own out/ and run/ (#1411: shared dirs made join tests stall each other).
     The GPU gate (#1394) runs the GPU checks only when shader, terrain, fluid, render or build files change. Static
@@ -43,6 +43,10 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
   report always shows the numbers and fails only on +15% mean frame time or a new hitch over 30 ms against recent passes.
   In play (not a scenario), `RAYLIBGAME_PROFILE=1` writes the session's summary on quit to saves/logs/profile-<date-time>.txt and
   .json (#886): zones, GPU passes, the frame histogram, and every hitch with its game time, top zones and what was going on.
+- **Bench `gpu per frame` lines average the whole run, load included (#2142):** a pass that only works while the world streams
+  (chunk uploads, density batches) shows up as ~1 ms a frame there but ~0 in the scenario's timed window. Read per-pass costs
+  from results.json's `gpu:`/`cpu:` zones (the timed window). `RAYLIBGAME_GPU_FINE=1` makes every CPU mark a GPU segment
+  too, splitting a GPU span over update code by name (GL_TIME_ELAPSED does not count GPU idle: a CPU-only span reads ~0).
 - **Perf budgets (#1690):** four reference scenes tagged `budget` (`perf/planet-view`, `perf/creatures-60`, `perf/water-shore`,
   `perf/factory-base`: 5 s warm-up, ~20 s on a fixed camera path; metrics "frame mean", "frame p95" and the scene's own cost).
   The runner's "Perf budgets" step runs them 3 times under `gpu_lock.sh exclusive` and `tools/ci/perf_budgets.sh` judges the

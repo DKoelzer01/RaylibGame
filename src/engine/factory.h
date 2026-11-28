@@ -156,6 +156,13 @@ namespace Factory {
     std::vector<std::pair<std::string, int>> DrainOutputs(uint64_t bodyId, uint32_t plotId, int part, const std::string& prefix);
     // (#1103) Light a campfire (lit = true) or put it out; other machines ignore it.
     void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
+    // (#2072) A sealed ruin cache with a power opener (cache_openers.txt) is a consumer on its plot: a cable or a battery bank
+    // against it charges its lock, at most its cap a tick and only from a network at its voltage or more. CacheCharged: how
+    // full (0..1; 0 until the sim has it), from the last tick, without waiting for the sim. CacheSpend empties it (opened).
+    // Factory::Start hands both to CacheOpeners_SetPower; InstallCachePower does it again (after a test's own hooks).
+    float CacheCharged(uint64_t bodyId, uint32_t plotId, int part);
+    void CacheSpend(uint64_t bodyId, uint32_t plotId, int part);
+    void InstallCachePower();
     // (#1269) A player turns a hand crank: it turns for 0.3 s after the last call (call it each frame RMB is held).
     void Crank(uint64_t bodyId, uint32_t plotId, int part);
     // (#1271 L2) A player strikes an anvil with a hammer: its recipe moves on by kStrikeTicks (two strikes can wait).

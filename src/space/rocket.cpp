@@ -1103,6 +1103,7 @@ void Rocket_Reset() {
     padPlot = 0;
     throttle = 0.0f;
     autopilot = RocketAutopilot::Off;
+    rfValid = false; // (F7a) a reset or a load starts its frame state again
 }
 
 void Rocket_Save(FILE* f) {
@@ -1114,6 +1115,11 @@ void Rocket_Save(FILE* f) {
     v->plots->save(f);
     Factory::Save(f, v->id); // its machines' contents
     fprintf(f, "rocket_id %llu\n", (unsigned long long)v->netId); // its own line: older builds skip it (#317)
+    // (Plan 11 F7a, #2074) The frame state the flight runs on, in double: without it a load re-seeded it from the float
+    // velocity above (6e-5 m/s at orbital speed).
+    if (Framed())
+        fprintf(f, "rocket_frame %llu %c %.9f %.9f %.9f %.9f %.9f %.9f\n", (unsigned long long)rf.frame.body, rf.frame.kind == FrameKind::Fixed ? 'F' : 'C',
+                rf.pos.x, rf.pos.y, rf.pos.z, rf.vel.x, rf.vel.y, rf.vel.z);
 }
 
 bool Rocket_LoadLine(const char* tok, FILE* f) {
@@ -1122,6 +1128,17 @@ bool Rocket_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "rocket_id") == 0) { // #317
         unsigned long long id = 0;
         if (fscanf(f, " %llu", &id) == 1 && id != 0) { if (Planetoid* v = Vehicle()) v->netId = id; NetId_Note(id); }
+        return true;
+    }
+    if (strcmp(tok, "rocket_frame") == 0) { // (F7a, #2074) after the rocket line; the frame path only
+        unsigned long long id = 0; char kind = 'F'; FramePos fp;
+        if (fscanf(f, " %llu %c %lf %lf %lf %lf %lf %lf", &id, &kind, &fp.pos.x, &fp.pos.y, &fp.pos.z, &fp.vel.x, &fp.vel.y, &fp.vel.z) == 8 &&
+            Frames_On() && state == RocketState::Flying && (kind == 'F' || kind == 'C')) {
+            fp.frame = FrameRef{ id, kind == 'F' ? FrameKind::Fixed : FrameKind::Centred };
+            // The global com and vel above were written at the same instant, and the load puts the bodies back where they
+            // were then: the pair stands for this frame state, so the next step continues on it (not re-seeded).
+            rf = fp; rfValid = true; rfCom = com; rfVel = vel;
+        }
         return true;
     }
     if (strcmp(tok, "rocket") != 0) return false;
@@ -1335,10 +1352,11 @@ bool Rocket_DockedAtStation() {
     return body && Station_Is(*body);
 }
 
-bool Rocket_TestState(DVec3& c, Vector3& v, FrameRef* frame) {
+bool Rocket_TestState(DVec3& c, Vector3& v, FrameRef* frame, FramePos* framePos) {
     if (state != RocketState::Flying) return false;
     c = com; v = vel;
     if (frame) *frame = Framed() ? rf.frame : FrameRef{};
+    if (framePos) { *framePos = rf; if (!Framed()) framePos->frame = FrameRef{}; }
     return true;
 }
 

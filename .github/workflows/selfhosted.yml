@@ -5,11 +5,17 @@
 # while it is unset every job is skipped, so nothing waits in the queue for a runner that is not there. See .github/CI.md.
 name: Self-hosted (deweyserver)
 
+# (#1871) Tiers, decided by the plan job (tools/ci/ci_plan.sh): a PR's dispatch runs only the scenarios its changes need
+# (tools/ci/scenario_map.txt); the integration branch is not run on every merge any more but batched every 4 h, only when it
+# moved; the nightly, pushes to develop and tier=full dispatches run everything.
 on:
   push:
-    branches: [develop, staging]
+    branches: [develop]
   schedule:
-    - cron: "0 5 * * *" # nightly, 05:00 UTC (the schedule fires from the default branch's copy of this file)
+    - cron: "0 5 * * *"     # nightly, 05:00 UTC: tier full (the schedule fires from the default branch's copy of this file)
+    # the batched run of the integration branch every 4 h (GUESS: 4-6 h), only when it moved; no 04:30 slot, which built
+    # the same commit as the 05:00 nightly beside it (#2117)
+    - cron: "30 0,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       ref:
@@ -17,6 +23,12 @@ on:
         required: false
         default: ""
         type: string
+      tier:
+        description: "auto: affected on a PR's branch, batch on the integration branch; scheduled: a batch that skips when the branch hasn't moved (an outside cron); full: everything"
+        required: false
+        default: auto
+        type: choice
+        options: [auto, affected, batch, scheduled, full]
       regression:
         description: "Also run tools/regression.sh --only headless after the checks (the nightly does)"
         required: false
@@ -29,9 +41,9 @@ on:
         default: planet multiplayer
         type: string
       fluid_pressure:
-        description: "Run the headless scenarios with the fluid pressure pass on (#1168: RAYLIBGAME_FLUID_PRESSURE=1)"
+        description: "The fluid pressure pass for the headless scenarios (#1168; on by default since #1898, 0 turns it off)"
         required: false
-        default: "0"
+        default: "1"
         type: choice
         options: ["0", "1"]
       extra_scenarios:
@@ -43,21 +55,65 @@ on:
 permissions:
   contents: read
 
+# (#2117, user 2026-11-28) A newer run cancels the one it supersedes, queued or running. One group per branch the run
+# builds (the ref input, the integration branch for a schedule, else the branch it was started on), in three classes so
+# nothing cancels a run that covers more than it does:
+#   full   the nightly, a push to develop, tier=full: a newer full run supersedes it;
+#   timed  the 4-h batch and tier=scheduled: never cancelled; a duplicate queues and its plan step skips the commit the
+#          one before covered (tools/ci/ci_plan.sh's markers, also written by nightly, manual batch and full runs);
+#   run    everything else (a PR's evidence, manual batches): the newest dispatch on the branch wins. The merge bot's
+#          runner-evidence check reads the run on the PR's head SHA, which is the newest one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false # one GPU run at a time; a newer push waits instead of killing a run mid-test
+  group: >-
+    ${{ github.workflow }}-${{ inputs.ref || (github.event_name == 'schedule' && (vars.INTEGRATION_BRANCH || vars.NIGHTLY_BRANCH || 'staging')) || github.ref_name }}-${{
+    ((github.event_name == 'push' || inputs.tier == 'full' || github.event.schedule == '0 5 * * *') && 'full') ||
+    ((github.event_name == 'schedule' || inputs.tier == 'scheduled') && 'timed') || 'run' }}
+  cancel-in-progress: ${{ !((github.event_name == 'schedule' && github.event.schedule != '0 5 * * *') || inputs.tier == 'scheduled') }}
 
 # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags); a manual run
 # builds its `ref` input, else the branch it was started on.
 env:
-  REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'staging') || github.ref) }}
+  # (#1871, #1870) the integration branch in one place: the repository variable INTEGRATION_BRANCH, default staging
+  INTEGRATION: ${{ vars.INTEGRATION_BRANCH || vars.NIGHTLY_BRANCH || 'staging' }}
+  REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.INTEGRATION_BRANCH || vars.NIGHTLY_BRANCH || 'staging') || github.ref) }}
 
 jobs:
+  # (#1871) What this run does: its tier, whether a timed run can be skipped (the branch hasn't moved), and for a PR's run
+  # the scenarios its changes need.
+  plan:
+    name: Plan (tier, affected scenarios)
+    if: ${{ vars.SELF_HOSTED_ENABLED == 'true' && github.repository == 'DKoelzer01/RaylibGame' }}
+    runs-on: [self-hosted, linux, raylibgame-linux, gpu]
+    timeout-minutes: 10
+    outputs:
+      tier: ${{ steps.plan.outputs.tier }}
+      skip: ${{ steps.plan.outputs.skip }}
+      scenarios: ${{ steps.plan.outputs.scenarios }}
+      server: ${{ steps.plan.outputs.server }}
+      regression: ${{ steps.plan.outputs.regression }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+          persist-credentials: false
+          fetch-depth: 300 # the merge base with the integration branch or ladder
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          TIER_INPUT: ${{ inputs.tier || 'auto' }}
+          REGRESSION_INPUT: ${{ inputs.regression || 'none' }}
+          PERSIST: ${{ runner.workspace }}/ci-persist
+        run: bash tools/ci/ci_plan.sh
+
   # The server package on its own (#1028): its result is what tools/ci/deweyserver-update-server.sh looks at, so a failing
   # scenario or regression test never holds back a server build whose build and unit tests passed.
   package:
     name: Linux server build, unit tests, package
-    if: ${{ vars.SELF_HOSTED_ENABLED == 'true' && github.repository == 'DKoelzer01/RaylibGame' }}
+    needs: plan
+    if: ${{ needs.plan.outputs.skip != 'true' }}
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 75
     steps:
@@ -89,13 +145,15 @@ jobs:
 
   linux-gpu:
     name: GPU check, headless scenarios, server and join tests
-    needs: package
+    needs: [plan, package]
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 120
     env:
-      # (#1768) The slow report and twin steps (fluid parity, pose twins, perf budgets) run on the nightly, on pushes to the
-      # integration branches and on staging dispatches; a dispatch on any other branch (a PR's runner evidence) skips them.
-      FULL_RUN: ${{ (github.event_name != 'workflow_dispatch' || endsWith(inputs.ref || github.ref, 'staging') || endsWith(inputs.ref || github.ref, 'develop')) && 'true' || 'false' }}
+      # (#1768, #1871) The slow report and twin steps (fluid parity, pose twins, perf budgets) run in the batch and full tiers;
+      # a PR's run (the affected tier) skips them.
+      FULL_RUN: ${{ needs.plan.outputs.tier != 'affected' && 'true' || 'false' }}
+      TIER: ${{ needs.plan.outputs.tier }}
+      AFFECTED: ${{ needs.plan.outputs.scenarios }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,9 +165,10 @@ jobs:
       - name: Which GPU steps this push needs (#1392)
         id: changes
         env:
-          EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
+          # (#1871) a PR's run (affected) is gated like a push, on its changes since its merge base
+          EVENT: ${{ (needs.plan.outputs.tier == 'affected' && needs.plan.outputs.base != '') && 'push' || github.event_name }}
+          BEFORE: ${{ (needs.plan.outputs.tier == 'affected' && needs.plan.outputs.base) || github.event.before }}
+          AFTER: ${{ (needs.plan.outputs.tier == 'affected' && 'HEAD') || github.sha }}
         # The GPU bit-exact check and the fluid parity only for shader, terrain, fluid, render or build changes; the
         # headless scenarios and the server and join tests always run; a schedule or a manual run runs everything.
         run: bash tools/ci/gpu_changes.sh
@@ -125,7 +184,7 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
           rm -rf "$RUN/scenarios" "$RUN/join-logs"
           # (#1768) the nightly-only steps' logs from an earlier run in this slot must not show up in this run's failure list
-          rm -f "$RUN/scenarios-pose.log" "$RUN/parity.log" "$RUN/parity-pressure.log" "$RUN/half.log"
+          rm -f "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-worldgen.log" "$RUN/scenarios-pose.log" "$RUN/parity.log" "$RUN/parity-pressure.log" "$RUN/half.log"
           mkdir -p "$RUN/join-logs"
           # (#1447) The GPU's state every 5 s for the whole job (performance state, clocks, utilisation, memory, the
           # processes on it): the runner's fluid step ran ~35x slower than the PC's, and the GPU is shared by three runners.
@@ -169,7 +228,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
           # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
-          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
           grep -E "^scenario: parity" parity-pressure.log || true
@@ -181,13 +240,30 @@ jobs:
       # (~40 min alone), then the rest. (#1768) The two parts run at the same time (both under the shared GPU lock, each with
       # its own output folder and log): the step takes as long as the slower part, not the sum. The pose twins are tagged
       # `pose` (not `frames`), so they are not in part 1; they run in their own step below, nightly and on integration branches.
+      - name: Affected scenarios only (a PR's run, #1871)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED != 'ALL' }}
+        timeout-minutes: 60
+        working-directory: ${{ env.RUN }}
+        env:
+          RAYLIBGAME_TIMING_GATES: "0"
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
+        run: |
+          if [ -z "$AFFECTED" ]; then echo "scenarios: none for these changes (tools/ci/scenario_map.txt)" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          set +e
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
+            --scenario "$AFFECTED" --scenario-no-record --scenario-out "$RUN/scenarios/affected" > scenarios-affected.log 2>&1
+          rc=$?
+          set -e
+          grep -E "^scenario: " scenarios-affected.log | grep -vE "heartbeat|waiting" | tail -60 || true
+          echo "scenarios (affected: $AFFECTED): exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit $rc
       - name: Headless scenarios, parts 1 and 2 at the same time (#1768)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED == 'ALL' }}
         timeout-minutes: 60
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0" # #1034: timing gates are reported, not judged, on this shared machine
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }} # #1168: the pressure pass for every fluid scene, when asked
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }} # #1168/#1898: the pressure pass (on unless asked off)
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           # Part 1: fluid, frames, factory.
@@ -216,7 +292,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }}
         run: |
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
@@ -226,6 +302,27 @@ jobs:
           set -e
           grep -E "^scenario: " scenarios-pose.log | grep -vE "heartbeat|waiting" | tail -40 || true
           echo "scenarios pose twins: exit $rc" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      # (#1882, #1871) World generation metrics: 8 seeds, each an in-process erosion bake of ~60 s. Only in the full tier (the
+      # nightly, develop, promotion) and on a manual dispatch; not in the timed batch. A PR that touches the terrain runs the
+      # 1-seed variant by name through its affected set (tools/ci/scenario_map.txt).
+      - name: World generation metrics (tag:worldgen; full tier and manual runs, #1882)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && (env.TIER == 'full' || (github.event_name == 'workflow_dispatch' && env.TIER == 'batch' && inputs.tier != 'scheduled')) }}
+        timeout-minutes: 40
+        working-directory: ${{ env.RUN }}
+        env:
+          RAYLIBGAME_TIMING_GATES: "0"
+        run: |
+          set +e
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
+            --scenario tag:worldgen --scenario-no-record --scenario-out "$RUN/scenarios/worldgen" \
+            > scenarios-worldgen.log 2>&1
+          rc=$?
+          set -e
+          # no worldgen scenario on this branch yet: the game exits 2 ("no scenario matches")
+          if [ $rc = 2 ] && grep -q "no scenario matches" scenarios-worldgen.log; then echo "worldgen: no scenarios on this branch" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          grep -E "^scenario: " scenarios-worldgen.log | grep -vE "heartbeat|waiting" | tail -40 || true
+          echo "scenarios worldgen: exit $rc" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
       - name: Extra scenarios (the dispatch input extra_scenarios, #1447)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.extra_scenarios != '' }}
@@ -275,7 +372,7 @@ jobs:
           PERF_BUDGETS_NOTE="GPU clocks, utilisation and temperature over the job: see the 'GPU over the job' summary below (gpu-samples.csv in the results)." \
             bash "$GITHUB_WORKSPACE/tools/ci/perf_budgets.sh" "${dirs[@]}"
       - name: Dedicated server and multiplayer (test_server.sh, test_join.sh)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && needs.plan.outputs.server == 'true' }}
         timeout-minutes: 20
         env:
           TMPDIR: ${{ env.RUN }}/join-logs # the scripts' mktemp -d folders (host and client logs) land in the uploaded results
@@ -287,7 +384,7 @@ jobs:
         # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
         # summary (the runner-check skill's matching). Labels only: the steps above carry the verdicts.
         run: |
-          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-pose.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
+          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-pose.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
             "$RUN/half.log" "$RUN/terrain-gpu.log" "$RUN/join-logs"
       - name: GPU state over the job (#1447)
         if: ${{ !cancelled() }}
@@ -329,8 +426,8 @@ jobs:
   # between. A shard fails only on new failures: the ones in tools/regression_known.txt (with their issues) are reported apart.
   regression:
     name: Regression (--only headless, shard ${{ matrix.shard }}/4)
-    needs: [package, linux-gpu]
-    if: ${{ !cancelled() && needs.package.result == 'success' && (github.event_name == 'schedule' || inputs.regression == 'headless') }}
+    needs: [plan, package, linux-gpu]
+    if: ${{ !cancelled() && needs.package.result == 'success' && needs.plan.outputs.regression == 'true' }} # (#1871: the nightly, or regression=headless)
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 90
     strategy:

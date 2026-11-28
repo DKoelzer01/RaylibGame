@@ -197,6 +197,8 @@ void Waterfalls_Draw3D(Scene& world) {
         const DVec3 mid = SheetPoint(fr, 0.5f, 0.0f);
         const float dist = Vector3Distance({ (float)mid.x, (float)mid.y, (float)mid.z }, camL);
         if (dist >= kFarRange) continue;
+        // (#2140) Out of view: the sheet (it spreads to 1.25 x its width and arcs out as it falls) and the foam disc at its foot.
+        if (!world.inView(toRender(mid), (0.75f * fr.drop + 1.25f * fr.width + 2.0f) * p->scale)) continue;
         // Colour g: the sheet's opacity (fading in from kFarRange, #612); b: how animated it is (none beyond kStaticRange).
         const float fade = 1.0f - std::clamp((dist - 0.8f * kFarRange) / (0.2f * kFarRange), 0.0f, 1.0f);
         const float anim = 1.0f - std::clamp((dist - kNearRange) / (kStaticRange - kNearRange), 0.0f, 1.0f);

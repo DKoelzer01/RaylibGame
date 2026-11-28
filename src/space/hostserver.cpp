@@ -28,7 +28,9 @@
 #include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
+#include "research.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
@@ -66,9 +68,23 @@
 #include <unordered_map>
 
 extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmake, #501)
+#include "utils/logger.h"
+#include <cstdarg>
 #include "buildcommit.h"
+#include "ruincache.h" // (#2072)
 
 namespace {
+    // (#1916) A connection's life (connect, refusal, join, join sync, kick, disconnect): on stdout as "host: ..." as before
+    // (the console, Pterodactyl, tools/test_server.sh) and in log.txt under [Host], so a join can be read back afterwards.
+#if defined(__GNUC__)
+    __attribute__((format(gnu_printf, 1, 2)))
+#endif
+    void HostLog(const char* fmt, ...) {
+        char b[1024];
+        va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
+        printf("host: %s\n", b);
+        LOG_INFO("Host", "%s", b);
+    }
     bool listening = false;
     int joins = 0;
     std::set<uint32_t> localClients;                   // tests: client connections opened in this process
@@ -455,9 +471,39 @@ namespace {
         else if (!strcmp(kind, "obtained")) TeamQuests_Obtained(team, what, n);
         questContributor[team] = session;
     }
+    // (#1886) The team's progression store (research, explored map, blueprint library) to one member: on join and team
+    // changes (with the book), and to every online member when it changes (TeamStoreTick). A text over the message cap
+    // goes without its map section (the client keeps the map it has; a known gap: the map needs deltas).
+    std::map<int, std::string> teamStoreSent;  // team -> the store text its online members have
+    std::map<int, long long> teamStoreSentAt;  // team -> SimTick of that send
+    std::set<int> teamStoreNow;                // teams to send at the next tick (SendUrgentTeamStores)
+    // A changed store at most every 5 s: exploring grows the map's tiles often and each send is the whole text (research
+    // done right now waits up to 5 s; a map pin goes at the next tick)
+    constexpr long long kTeamStoreEvery = 5 * 60; // ticks
+    int teamStoreMsgs = 0;
+    int mapPins = 0, mapPinsRefused = 0;       // (#1886) MsgMapPin taken, and refused (no team, a bad name or direction, 256 pins)
+    int researchQueueActs = 0, researchQueueRefused = 0; // (#1886) MsgResearchQueue applied, and refused (Research_QueueAction)
+    // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
+    bool TeamStoreTextForNet(int team, std::string& text) {
+        text = TeamStore_Text(team);
+        if (text.size() <= MsgTeamStore::kMaxText) return true;
+        const size_t full = text.size();
+        const size_t a = text.find("section map\n"), b = a == std::string::npos ? a : text.find("section_end\n", a);
+        if (b != std::string::npos) text.erase(a, b + strlen("section_end\n") - a);
+        const bool fits = text.size() <= MsgTeamStore::kMaxText;
+        printf("host: team %d's store is %zu KB: %s\n", team, full / 1024, fits ? "sent without its map" : "too big even without its map, not sent");
+        return fits;
+    }
+    void SendTeamStore(uint32_t conn, int team) {
+        MsgTeamStore m; m.team = (uint32_t)team;
+        if (!TeamStoreTextForNet(team, m.text)) return;
+        SendMsg(conn, m);
+        ++teamStoreMsgs;
+    }
     void SendQuestBook(uint32_t conn, int team) {
         MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
         SendMsg(conn, m);
+        SendTeamStore(conn, team); // (#1886) a book goes out on join and team changes: the progression store with it
     }
     // ---- Machines (#332): the factory runs here only; players act on machines by request and see views ----
     // Each player's open machine (watch) gets its full view 5 times a second; the machines working on the plots within
@@ -681,6 +727,28 @@ namespace {
         SendChangedItems(conn, rm.inventory, before);
         ++machineActions;
     }
+    // (#2072) A ruin cache the requester held E on: opened here (once per world), the rewards from their team's roll; the
+    // part edit tells everyone it is open, the requester gets the result lines.
+    void OnCacheAction(uint32_t conn, uint32_t session, Remote& rm, Planetoid& b, Plot& plot, int part) {
+        auto refuse = [&](const std::string& why) { ++machineActionsRefused; if (!why.empty()) SendMsg(conn, MsgChat{ 0, why }); };
+        const Part& pt = plot.parts[part];
+        const Vector3 at = plot.toBody({ (pt.origin.x + 0.5f) * kCellSize, (pt.origin.y + 0.5f) * kCellSize, (pt.origin.z + 0.5f) * kCellSize });
+        if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kCacheReach) { refuse("That is out of reach"); return; }
+        const auto before = AllAmounts(rm.inventory);
+        std::vector<CacheRoll> rolls;
+        std::vector<std::pair<std::string, int>> overflow;
+        std::vector<PartEdit> edits;
+        std::string why;
+        if (!Cache_Open(b, plot, part, rm.inventory, TeamOfSession(session), rolls, overflow, &edits, &why)) { refuse(why); return; }
+        SendPartEdits(b.netId, plot.id, edits);
+        SendChangedItems(conn, rm.inventory, before);
+        std::string name;
+        for (const Session& s : sessions) if (s.id == session) name = s.name;
+        for (const auto& [item, n] : overflow) Combat_DropFor(b.name, DVec3(at), InvSlot{ item, (int64_t)n * 100 }, name); // what didn't fit: at the cache
+        SendMsg(conn, MsgChat{ 0, std::string("Opened the ") + CacheKindName(CacheKindOf(pt)) + ":" }); // (a result screen for clients: a later slice)
+        for (const CacheRoll& r : rolls) SendMsg(conn, MsgChat{ 0, "  " + r.text });
+        ++machineActions;
+    }
     void OnMachineAction(uint32_t conn, uint32_t session, const MsgMachineAction& a) {
         auto rit = remotes.find(session);
         Planetoid* b = Planetoid::findNet(a.body);
@@ -694,7 +762,14 @@ namespace {
             OnDungeonAction(conn, rit->second, *b, *plot, a);
             return;
         }
-        if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
+        if (a.action == kMachineActOpenCache) { // (#2072) a ruin cache: not a machine; ruins are never claimed ground
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::RuinCache) { refuse("That isn't there any more"); return; }
+            OnCacheAction(conn, session, rit->second, *b, *plot, a.part);
+            return;
+        }
+        // (#2181) a client aiming at a sealed cache watches it (6, 7) for its lock's charge: the factory simulates its lock
+        const bool cacheWatch = plot && a.part >= 0 && a.part < (int)plot->parts.size() && plot->parts[a.part].type == PartType::RuinCache && (a.action == 6 || a.action == 7);
+        if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !(IsMachine(plot->parts[a.part].type) || cacheWatch)) { refuse("That machine isn't there any more"); return; }
         const Factory::MachineKey key{ b->id, plot->id, a.part };
         if (a.action == 7) { machineWatch[session].on = false; return; }
         // Reach: the machine's origin cell from the player (body-local)
@@ -884,6 +959,13 @@ namespace {
         SendChangedItems(conn, rm.inventory, before);
     }
 
+    // (#1886) The store to a team's online members if it changed since their last one.
+    void SendChangedTeamStore(int team, const std::vector<std::pair<uint32_t, uint32_t>>& members) {
+        std::string store;
+        if (!TeamStoreTextForNet(team, store) || store == teamStoreSent[team]) return;
+        teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
+        for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
+    }
     void StepTeamQuests(Scene& world) {
         if (SimTick() - lastQuestTick < 60) return; // once a second
         lastQuestTick = SimTick();
@@ -927,9 +1009,23 @@ namespace {
             const std::string text = TeamQuests_Text(team);
             if (text != questBookSent[team]) {
                 questBookSent[team] = text;
-                for (const auto& [s, c] : members) SendQuestBook(c, team);
+                for (const auto& [s, c] : members) { MsgQuestBook m; m.team = (uint32_t)team; m.text = text; SendMsg(c, m); }
             }
+            // (#1886) the progression store when it changed, at most every 5 s: exploring grows the map's tiles often and
+            // each send is the whole text (research done right now waits up to 5 s)
+            if (SimTick() - teamStoreSentAt[team] >= kTeamStoreEvery) SendChangedTeamStore(team, members);
         }
+    }
+    // (#1886) Teams whose store a member changed (a map pin, a research queue change): sent at the next tick, every tick,
+    // not with StepTeamQuests' once a second (a pin waited up to 1 s; a member joining then could have it first).
+    void SendUrgentTeamStores() {
+        if (teamStoreNow.empty()) return;
+        for (const int team : teamStoreNow) {
+            std::vector<std::pair<uint32_t, uint32_t>> members;
+            for (const auto& [conn, p] : peers) if (p.joined && TeamOfSession(p.session) == team) members.push_back({ p.session, conn });
+            if (!members.empty()) SendChangedTeamStore(team, members);
+        }
+        teamStoreNow.clear();
     }
 
     void SendVitals() {
@@ -1235,7 +1331,7 @@ namespace {
         if (it == peers.end()) return;
         for (Session& s : sessions) if (s.id == it->second.session && s.conn == conn) { s.online = false; s.conn = 0; }
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
-        printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
+        HostLog("connection %u (session %u) %s", conn, it->second.session, NetByeText(why));
         if (eventHook && it->second.joined) { // (#345 audit)
             std::string name; for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
             eventHook("leave", it->second.session, name + " (" + NetByeText(why) + ")");
@@ -1261,7 +1357,7 @@ namespace {
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
         SendMsg(conn, MsgReject{ why, detail });
-        printf("host: refused connection %u: %s%s%s\n", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
+        HostLog("refused connection %u: %s%s%s", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
         peers.erase(conn);
         Net_Close(conn); // (lingers: the reject goes out first)
     }
@@ -1307,7 +1403,7 @@ namespace {
         if (rm.record.firstSeen <= 0.0) rm.record.firstSeen = (double)time(nullptr);
         rm.joinedAt = GetTime();
         Teams_Join(s.uuid, s.name, 0); // a team of one to start with (#604 forms bigger ones)
-        printf("host: %s (%s): %s\n", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
+        HostLog("%s (%s): %s", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
         return loaded;
     }
     bool SaveRecord(uint32_t session) {
@@ -1317,7 +1413,7 @@ namespace {
         const double now = GetTime();
         const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt, &rm.skills);
         if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
-        else printf("host: could not write the record of %s\n", rm.record.name.c_str());
+        else HostLog("could not write the record of %s", rm.record.name.c_str());
         return ok;
     }
     int SaveAllRecords() { int n = 0; for (const auto& [id, rm] : remotes) n += SaveRecord(id); return n; }
@@ -1670,7 +1766,7 @@ namespace {
         SendAllPlants(world, conn); // (#335) the plants felled so far
         claimsSent.erase(conn); // (#343) the claims list goes with the next claims step
         ++joins;
-        printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
+        HostLog("%s joined as session %u%s (connection %u, %d joins so far)", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
         if (!hadRecord) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one); (#346) never again for one with a record
             Host_Give(s->id, "telescope", 1);
@@ -1929,7 +2025,7 @@ namespace {
         } else {
             Part part = ToPart(q.part);
             if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type)); // (#1427 L7a) a machine's variant step
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || (IsShape(part.type) && part.material >= BuildMaterialCount())
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || part.type == PartType::RuinCache || (IsShape(part.type) && part.material >= BuildMaterialCount())
                 || (IsMultiblockPart(part.type) && !*Multiblock_PartItem(part.type, part.material))) { // (#1429) no such casing/hatch/controller
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
@@ -2054,7 +2150,7 @@ namespace {
             for (size_t i = (size_t)pg * kSyncIndexPage; i < n && i < (size_t)(pg + 1) * kSyncIndexPage; ++i) x.entries.push_back(job.items[i].e);
             SendMsg(conn, x);
         }
-        printf("host: join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)\n", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
+        HostLog("join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
     }
     void OnSyncWant(Scene& world, uint32_t conn, const MsgSyncWant& w) {
         auto it = syncs.find(conn);
@@ -2098,7 +2194,7 @@ namespace {
                 job.statusAt = GetTime();
                 NetQueueStatus q;
                 if (Net_QueueStatus(it->first, q))
-                    printf("host: join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends\n",
+                    HostLog("join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends",
                            job.snapshot, job.cur, job.order.size(), job.sent / 1048576.0, q.pendingReliable, q.pendingUnreliable, q.sentUnacked, q.pingMs, Net_SendFailures());
             }
             if (Net_PendingBytes(it->first) > kSyncMaxPending) { job.lastAt = GetTime(); ++it; continue; } // the link is behind: wait
@@ -2122,9 +2218,9 @@ namespace {
             }
             if (job.cur >= job.order.size()) {
                 SendMsg(it->first, MsgSyncDone{ job.snapshot, (uint32_t)job.wanted, job.sent });
-                printf("host: join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s\n", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
+                HostLog("join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
                 if (getenv("RAYLIBGAME_SYNC_FINGERPRINT")) // (tests: a client's after its sync must equal this; costs an encode of every region)
-                    printf("host: terrain fingerprint %016llx\n", (unsigned long long)NetSync_TerrainFingerprint(world));
+                    HostLog("terrain fingerprint %016llx", (unsigned long long)NetSync_TerrainFingerprint(world));
                 ++syncsDone;
                 it = syncs.erase(it);
             } else ++it;
@@ -2136,7 +2232,7 @@ namespace {
     void GuardKick(uint32_t conn, const std::string& why) {
         auto it = peers.find(conn);
         std::string name; if (it != peers.end()) for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
-        printf("host: kicked connection %u (%s) for flooding: %s\n", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
+        HostLog("kicked connection %u (%s) for flooding: %s", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
         if (eventHook) eventHook("kicked", it != peers.end() ? it->second.session : 0, (name.empty() ? std::string("connection") : name) + " (flooding: " + why + ")");
         if (it != peers.end() && it->second.joined) SendMsg(conn, MsgChat{ 0, "You were kicked: too many invalid messages" });
         ++guardKicks;
@@ -2169,7 +2265,7 @@ namespace {
             }
         if (const int v = AdmitVerdict(loop, same, pending)) {
             const char* why = v == 1 ? "too many connections from your address" : "too many players connecting at once: try again shortly";
-            printf("host: refused connection %u from %s: %s (%d from that address, %d not joined)\n", conn, host.c_str(), why, same, pending);
+            HostLog("refused connection %u from %s: %s (%d from that address, %d not joined)", conn, host.c_str(), why, same, pending);
             if (eventHook) eventHook("refused", 0, "connection from " + host + (v == 1 ? " (too many from one address)" : " (too many connecting)"));
             Refuse(conn, NetReject::Full, why);
             ++pendingRefused;
@@ -2177,6 +2273,7 @@ namespace {
         }
         Peer& p = peers[conn];
         p.firstHeard = p.lastHeard = GetTime();
+        HostLog("connection %u from %s", conn, host.empty() ? "?" : host.c_str());
         return true;
     }
     void OnMessage(Scene& world, const NetMessage& m) {
@@ -2456,6 +2553,28 @@ namespace {
                 OnAnimalHit(world, it->second.session, h.netId, h.action, h.flags);
                 return;
             }
+            case NetMsg::MapPin: { // (#1886) a player's map pin, for their team's shared pins
+                MsgMapPin p;
+                if (!it->second.joined || !NetRead(r, p)) return;
+                const int team = TeamOfSession(it->second.session);
+                if (!team) { ++mapPinsRefused; return; }
+                if (!TeamQuests_SetPin(team, p.add, p.body, Vector3{ p.dir[0], p.dir[1], p.dir[2] }, p.name)) { ++mapPinsRefused; return; }
+                ++mapPins;
+                if (p.add) TeamEvent(it->second.session, "count", "waypoint"); // (the team's "place a waypoint" task)
+                teamStoreNow.insert(team); // to the team at the next tick, not in up to 5 s
+                return;
+            }
+            case NetMsg::ResearchQueue: { // (#1886) the research tab's queue changes: the team's research is kept here
+                MsgResearchQueue q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                const int team = TeamOfSession(it->second.session);
+                const bool ok = team && q.op >= 1 && q.op <= 3 &&
+                                Research_QueueAction(Research_Team(team), (ResearchQueueOp)q.op, q.node, TeamQuests_Book(team).tier);
+                if (!ok) { ++researchQueueRefused; return; } // (the client's mirror is put right by the next store)
+                ++researchQueueActs;
+                teamStoreNow.insert(team);
+                return;
+            }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
                 MsgChat c;
                 if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
@@ -2611,6 +2730,7 @@ void Host_Update(Scene& world) {
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
     StepGraves(world);         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
+    SendUrgentTeamStores(); // (#1886) a pin or research queue change: the team's store now
     StepMachines(world);  // (#332) machines: near points, watched views, working states
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     StepClaims();         // (#343) claim decay, enter/leave lines

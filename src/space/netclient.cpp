@@ -5,6 +5,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "factory.h"
 #include "farming.h"
 #include "claims.h"
@@ -77,6 +78,7 @@ namespace {
         if (c.conn) Net_Close(c.conn);
         c.conn = 0;
         c.state = s;
+        if (gNetRole == NetRole::Client) TeamStore_ResetLocalTeam(); // (#1886) the research tab goes back to our own teams
     }
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
@@ -309,6 +311,7 @@ namespace {
                 MsgMachineView v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
                 ++c.machineViews;
+                c.lastMachineView = v;
                 if (Planetoid* b = Planetoid::findNet(v.body)) Factory::SetRemoteView({ b->id, v.plot, v.part }, v.view);
                 return;
             }
@@ -386,6 +389,13 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, q)) return;
                 ++c.questBooks; c.questTeam = (int)q.team;
                 if (gNetRole == NetRole::Client) TeamQuests_ApplyText(q.text); // (a host in this process keeps the real ones)
+                return;
+            }
+            case NetMsg::TeamStore: { // (#1886) our team's research, explored map and blueprint library as the server keeps them
+                MsgTeamStore t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                ++c.teamStores; c.teamStoreTeam = (int)t.team; c.teamStoreText = t.text;
+                if (gNetRole == NetRole::Client) TeamStore_ApplyFromHost((int)t.team, t.text); // (a host in this process has the real ones)
                 return;
             }
             case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
@@ -729,6 +739,21 @@ uint32_t NetClient_RequestForm(NetClient& c, const Planetoid& body, const Plot& 
 void NetClient_SendChat(NetClient& c, const std::string& text) {
     if (c.state != NetClient::State::Joined || text.empty()) return;
     SendMsg(c, MsgChat{ 0, text.substr(0, 256) });
+}
+
+bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vector3 dir, const std::string& name) {
+    if (c.state != NetClient::State::Joined || !c.conn) return false;
+    MsgMapPin m; m.add = add; m.body = body; m.name = name;
+    m.dir[0] = dir.x; m.dir[1] = dir.y; m.dir[2] = dir.z;
+    SendMsg(c, m);
+    ++c.mapPinsSent;
+    return true;
+}
+
+bool NetClient_SendResearchQueue(NetClient& c, uint8_t op, const std::string& node) {
+    if (c.state != NetClient::State::Joined || !c.conn) return false;
+    SendMsg(c, MsgResearchQueue{ op, node });
+    return true;
 }
 
 // ---- Join sync (#776) helpers ----

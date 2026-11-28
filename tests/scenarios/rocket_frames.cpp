@@ -242,6 +242,58 @@ static void StationHold(ScenarioDef& s) {
     });
 }
 
+// rocket/frame-save (Plan 11 F7a, #2074), frames on: coasting in a circular orbit 45 km over Terra, the world is saved and
+// loaded mid-flight. The rocket's frame state (its frame, double position and velocity) must come back to 1e-6 m and
+// 1e-6 m/s (the save's rocket_frame line), and the orbit must go on as before: after 10 s more its radius is within 5 m
+// of the orbit's.
+static void FrameSave(ScenarioDef& s) {
+    Common(s);
+    s.step("coast, save and load mid-flight", 120.0, [](ScenarioCtx& c) {
+        static uint64_t terraNet = 0;
+        if (!S.placed) terraNet = S.terra->netId;
+        Planetoid* tp = Planetoid::findNet(terraNet); // (a load makes the bodies again: S.terra dangles after it)
+        if (!tp) { c.fail("no Terra after the load"); return true; }
+        Planetoid& t = *tp;
+        const double R = t.radius * t.scale, r = R + 45000.0, mu = Mu(t);
+        static FramePos before{};
+        static bool loaded = false;
+        if (!S.placed) {
+            const DVec3 u(0.0, 1.0, 0.0), e(1.0, 0.0, 0.0);
+            const DVec3 pos = t.worldPos + u * r;
+            const DVec3 v = DVec3(t.linearVelocity) + e * sqrt(mu / r);
+            if (!Rocket_TestSetState(pos, v.toFloat())) { c.fail("not flying"); return true; }
+            loaded = false;
+            S.placed = true; S.t0 = c.T;
+            return false;
+        }
+        DVec3 com; Vector3 vel; FramePos fp;
+        if (!Rocket_TestState(com, vel, nullptr, &fp)) { c.fail("the rocket stopped flying"); return true; }
+        if (!loaded) {
+            c.waitingFor("3 s of coasting on the frame path");
+            if (c.T - S.t0 < 3.0 || fp.frame.body == 0) return false;
+            before = fp;
+            if (!c.check("the save", SaveWorld(c.world))) return true;
+            if (!c.check("the load", LoadWorldSave(c.world), LastLoadError())) return true;
+            FramePos after;
+            if (!c.check("flying after the load", Rocket_TestState(com, vel, nullptr, &after))) return true;
+            c.check("the same frame after the load", after.frame == before.frame,
+                    TextFormat("netId %llu kind %d, was %llu kind %d", (unsigned long long)after.frame.body, (int)after.frame.kind, (unsigned long long)before.frame.body, (int)before.frame.kind));
+            c.lt("frame position moved by the load (m)", (after.pos - before.pos).length(), 1e-6);
+            c.lt("frame velocity changed by the load (m/s)", (after.vel - before.vel).length(), 1e-6);
+            loaded = true; S.t0 = c.T;
+            return false;
+        }
+        c.waitingFor("10 s of coasting after the load");
+        if (c.T - S.t0 < 10.0) return false;
+        const double rNow = (com - t.worldPos).length();
+        S.terra = tp;
+        c.note(TextFormat("10 s after the load: %.3f m from Terra's centre (the orbit's radius %.3f)", rNow, r));
+        c.lt("the orbit's radius after the load is off by (m)", fabs(rNow - r), 5.0);
+        return true;
+    });
+}
+
+SCENARIO("rocket/frame-save") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; FrameSave(s); s.tags = { "frames", "saves", "local" }; }
 SCENARIO("rocket/orbit-closure") { OrbitClosure(s); }
 SCENARIO("rocket/orbit-closure-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; OrbitClosure(s); s.tags = { "pose", "local" }; }
 SCENARIO("rocket/soi-trip") { SoiTrip(s); }

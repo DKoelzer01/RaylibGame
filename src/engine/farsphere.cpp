@@ -1,6 +1,7 @@
 #include "farsphere.h"
 #include "gpumem.h"
 #include "jobsystem.h"
+#include "biomevariants.h"
 #include "trees.h"
 #include "voxel.h"
 #include "world.h"
@@ -64,6 +65,7 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
     // Biomes (Plan 5 B), with the terrain shader's climate tints (lighting.fs biomeTint).
     const Biome biome = f.biomeAt(up, e);
     const PlanetField::Climate cl = f.climateAt(up, e);
+    const int vid = BiomeTintOn() ? f.variantAt(up, e) : -1; // (#2032) for the tints
     auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
     const float red = smooth(16.0f, 21.0f, cl.temp) * smooth(0.2f, 0.27f, cl.moist) * (1.0f - smooth(0.36f, 0.44f, cl.moist));
     if (biome == Biome::Desert) return kSand;
@@ -77,13 +79,16 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
         t = Mix(t, { 0.72f, 1.02f, 0.68f }, smooth(18.0f, 23.0f, cl.temp) * smooth(0.56f, 0.7f, cl.moist)); // lush
         t = Mix(t, { 0.92f, 0.92f, 0.95f }, smooth(9.0f, 3.0f, cl.temp));                                     // cold
         t = Mix(t, { 0.82f, 0.86f, 0.55f }, smooth(0.68f, 0.8f, cl.moist));                                   // swamp
+        // (#2032) The biome's own grass tint carries the main signal; the climate gradient keeps a share.
+        if (BiomeTintOn() && vid >= 0) t = Vector3Multiply(Mix({ 1, 1, 1 }, t, BiomeClimateWeight()), BiomeVariants().grassTint[vid]);
         c = Vector3Multiply(c, t);
         if (biome == Biome::Swamp) c = Mix(c, Vector3Scale(kDirt, 0.6f), 0.3f); // mud flats
     }
     if (foliage) {
         const float canopy = TreeCanopy(up, f.radius, e, foliageSeed, &f);
         const Vector3 dry = { 0.22f, 0.27f, 0.07f }, temperate = { 0.09f, 0.27f, 0.05f }, cold = { 0.05f, 0.17f, 0.08f };
-        const Vector3 crowns = Mix(Mix(temperate, dry, smooth(0.5f, 0.25f, cl.moist) * smooth(12.0f, 22.0f, cl.temp)), cold, smooth(8.0f, 0.0f, cl.temp));
+        Vector3 crowns = Mix(Mix(temperate, dry, smooth(0.5f, 0.25f, cl.moist) * smooth(12.0f, 22.0f, cl.temp)), cold, smooth(8.0f, 0.0f, cl.temp));
+        if (BiomeTintOn() && vid >= 0) crowns = Vector3Multiply(Mix(temperate, crowns, BiomeClimateWeight()), BiomeVariants().leafTint[vid]); // #2032, as the trees
         c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);
     }
     return c;
@@ -143,9 +148,10 @@ static void ShadeRows(FarSphere::Bake& b, int y0, int y1) {
             const float cl = std::max(cosf(((y + 0.5f) / H - 0.5f) * PI), 0.02f);
             const float dx = 2.0f * PI * R * cl / W, dy = PI * R / H;
             const float dedx = (E(x + 1, y) - E(x - 1, y)) / (2.0f * dx), dedy = (E(x, y + 1) - E(x, y - 1)) / (2.0f * dy);
-            Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
+            // East = the way x (longitude) grows in TexelDir: up x Y (#1859 L5: Y x up mirrored the east-west slope).
+            Vector3 east = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
             if (Vector3Length(east) < 0.5f) east = { 1, 0, 0 };
-            const Vector3 north = Vector3CrossProduct(up, east);
+            const Vector3 north = Vector3CrossProduct(east, up);
             Vector3 n = Vector3Normalize(Vector3Subtract(up, Vector3Add(Vector3Scale(east, dedx), Vector3Scale(north, dedy))));
             const float slope = 1.0f - Vector3DotProduct(n, up);
             bool water = false;

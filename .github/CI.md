@@ -5,7 +5,7 @@ Three places run checks, each for what it can do safely.
 | Where | Workflow | Triggers | What |
 | --- | --- | --- | --- |
 | GitHub-hosted runners | `workflows/pr-checks.yml` | every PR into `staging` / `develop` / `main` (forks too), pushes to `staging` / `develop`, manual | static checks, Windows build (w64devkit) + `game_tests`, Linux headless build + `game_tests` + a dedicated-server smoke test |
-| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop` / `staging`, nightly 05:00 UTC, manual. **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests` and the server package (their own job), the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
+| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop`, nightly 05:00 UTC, a batched `staging` run every 4 h, manual (tiers: see "Tiers", #1871). **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests` and the server package (their own job), the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
 | The user's PC | none (agents and the user) | by hand, the midnight regression | rendering, visual baselines and captures, perf timing (quiet windows), the local half of the regression (`tools/regression.sh planet --only local`; the full run when asked) |
 
 Why the split: the repo is public, so hosted runners are free and safe for code from anyone (read-only token, no
@@ -19,13 +19,20 @@ machine, which only the PC has.
   renumbers a NetMsg or bumps `kNetProtocol` says so in the job summary (a NetMsg change without a bump is a warning);
   erosion bake code changed without a `kErosionBakeVersion` bump is a warning; a new `gh project` command in `tools/` is
   an error; a `kNetProtocol` not reserved in `tools/ci/protocol_reservations.txt` (or one marked "(unused)") is an error
-  (#1480). It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
+  (#1480), and so is a `kSaveVersion` (`save <n>` lines, #1881) or a changed `kErosionBakeVersion` (`erosion <n>` lines,
+  #2009). Check 7 (`tools/ci/reservation_clash.sh`, #2009) fails a number this branch reserves when `origin/staging`,
+  `origin/ladder` or an open PR into them reserves it for another issue. It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
   skips them.
 - **Windows build + unit tests (w64devkit)**: w64devkit 2.0.0 (GCC 14.2, the shipping toolchain, SHA-256 pinned),
   MinGW Makefiles, `-DENABLE_GNS=ON`, targets `game` and `game_tests`, then `game_tests.exe` from the repo root.
 - **Linux build + unit tests (headless server, GNS)**: Ubuntu 24.04, `RAYLIBGAME_HEADLESS=ON` (the server's raylib
   backend), `-DENABLE_GNS=ON`, `game` + `game_tests`, then `game_tests` and `tools/test_server.sh` on the null GL.
-- **CI ok**: passes when every job above passed or was skipped. **Make this the required check** (branch protection on
+- **Null-GL scenarios 1/8 .. 8/8** (#1960): the sandbox-world scenarios that pass without a GPU
+  (`tools/ci/nogl_scenarios.sh`: world `sandbox`, minus the perf/visual/light/fx/local tags and
+  `tools/ci/nogl_exclude.txt`), in 8 parallel shards with the Linux job's game (passed through the cache). A scenario
+  that fails here but passes on the GPU runner (`scenario_history`) needs the GPU path: add it to the exclude list.
+  **Not** in `CI ok`'s needs yet (report-only), so it holds no merge and adds no wall time to the gate.
+- **CI ok**: passes when every job above (except the null-GL scenarios) passed or was skipped. **Make this the required check** (branch protection on
   `staging` and `develop`: "Require status checks to pass", check name `CI ok`). It is reported on every PR,
   also when the builds are skipped, so docs-only PRs are not left waiting.
 
@@ -33,7 +40,7 @@ Caches (actions/cache, 10 GB per repo, least recently used goes first): ccache p
 branch's, which the push runs keep warm), the toolchain downloads, the raylib / googletest sources
 (`tools/ci/fetch_deps.sh`, keyed on the tags in CMakeLists.txt) and the GameNetworkingSockets install (keyed on
 `tools/build_gns.sh`). A cold run builds GNS (protobuf) once per OS; later runs only compile what changed.
-`concurrency` cancels a PR's older run when it is pushed again.
+`concurrency` cancels a PR's older run when it is pushed again (and a pushed branch's older run on the next push).
 
 Timings (PR #1024, 2026-11-20): cold (nothing cached) Windows ~11.5 min (GNS 3.3 min + build 7.4 min), Linux ~5.5 min
 (GNS 1.5 min + build 2.8 min); warm (all cached, nothing to recompile) Windows 35 s, Linux 51 s. A PR touching a few
@@ -58,6 +65,13 @@ volume's device and inode, and its slot. (Before, concurrent jobs shared one `ou
 other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
 After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
 `tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
+**The merge bot's runner gate** (`runner-evidence` PRs, deweyserver `mergebot`) passes a red run when every failure is
+known: in the run's own `known_failures.txt` or the base branch's current one. **Known-flaky** (user, 2026-11-27): in a
+PR that touches nothing under `src/` or `resources/`, a NEW *scenario* failure also passes when that scenario passed at
+least 60% of its newest 20 runner results on staging (at least 5 results; `m84-integration` counts as staging). Such a
+PR can't have made a scenario fail, and each staging flake otherwise cost it another ~2 h runner round. Bench, join and
+server lines never qualify, nor a new scenario without 5 results; the bot's log names the flakes it let through. File
+the flake (an issue and a known line) all the same.
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
@@ -67,11 +81,46 @@ whose host and client logs go into the `selfhosted-test-results` artifact) and `
 request). **GPU steps only when needed (#1392):** on a push, `tools/ci/gpu_changes.sh` diffs the push against its base;
 the GPU bit-exact check (`--test-terrain-gpu`) and the fluid CPU = GPU parity run only when a shader, the terrain
 generation (voxel, noise, erosion, rivers, strata, the GPU terrain, meshing, world-gen data), fluid, render-target or
-build file changed. The headless scenarios and the server and join tests always run; a schedule or a manual run runs
+build file changed (the affected tier gates the same way on the PR's diff from its merge base). Which scenarios and
+whether the server and join tests run depends on the tier (see "Tiers"); a schedule or a manual run on staging runs
 everything, as does a push whose base isn't in the checkout's last 50 commits. The step summary says which and why. The
 host-side fetch script takes the newest push run whose `package` job succeeded, so a failing test elsewhere in the run
 no longer holds a server build back. Each later job rebuilds incrementally first (a no-op unless another branch's run
 used the build folder in between).
+
+## Tiers (#1871)
+
+The runner ran everything on every merge (~23 runner-hours a day). Now a `plan` job (`tools/ci/ci_plan.sh`) picks a
+tier first; its summary line says which and why.
+
+| Tier | When | What runs |
+|---|---|---|
+| **affected** | a dispatch on a PR's branch (`runner-evidence`; `tier=auto`) | build, unit tests, the GPU check if its paths changed (`gpu_changes.sh`, diffed from the merge base), and only the scenarios `tools/ci/scenario_map.txt` maps its changed files to; the server and join tests only when mapped (`SERVER`) |
+| **batch** | `staging` every 4 h (the second cron; skipped when staging hasn't moved since the last batch), or a dispatch on `staging`/`develop`/`main` | all headless scenarios, the server and join tests, the full-run steps (fluid parity, pose twins, perf budgets) |
+| **full** | the nightly, a push to `develop`, a dispatch with `tier=full` (before staging -> develop and develop -> main) | the batch plus the world generation metrics (`tag:worldgen`, also on manual batch dispatches) and the headless regression (nightly, or `regression=headless`) |
+
+- **The map** (`tools/ci/scenario_map.txt`): `<regex on a changed path> | <targets>`; targets are scenario names,
+  `tag:X`, `ALL` or `SERVER`. Every matching line adds its targets. A changed scenario file adds its own scenarios
+  (not local-only ones). A `src/` or `resources/` file no line matches adds `DEFAULT` (`tag:world`); docs and tools
+  alone run no scenario. A mapped name the branch doesn't have is dropped (the map serves staging and ladder). Map
+  wider when unsure: a miss surfaces only in the next batch. Dry run: `HEAD_SHA=<commit> EVENT=workflow_dispatch
+  REF=refs/heads/x bash tools/ci/ci_plan.sh --dry`.
+- **The batched run's range:** its summary names the commits it covers since the last batch. When it is red,
+  `tools/ci/bisect_scenario.sh <scenario> <last green> <red>` bisects the first-parent commits (the PR merges) in the
+  deweyserver build sandbox, about log2(N) sandbox runs, nothing on the PC (`--dry` lists the commits).
+- **Until `selfhosted.yml` is on `main`** no cron fires (see "The nightly trigger" below): the timed batch waits for
+  that (user, 2026-11-26: no outside trigger). A by-hand batch: `gh workflow run selfhosted.yml -r staging`
+  (`-f tier=scheduled` skips it when staging hasn't moved).
+- `vars.INTEGRATION_BRANCH` names the integration branch (default `staging`).
+- **Superseded runs are cancelled (#2117, user 2026-11-28).** `concurrency` groups runs by the branch they build and
+  by class: `full` (the nightly, a push to `develop`, `tier=full`), `timed` (the 4-h batch, `tier=scheduled`) and `run`
+  (everything else, e.g. a PR's evidence). In `full` and `run` the newer run cancels the older one, queued or running:
+  dispatching a PR branch again for a new head drops the old head's run, and the merge bot reads the new head's run.
+  Two dispatches on one branch in the same class also cancel each other, so don't start a second run on a branch
+  whose run you still need (e.g. an `extra_scenarios` run beside a PR's evidence run). `timed` runs never cancel:
+  a duplicate queues and its plan step skips a commit already covered (`ci_plan.sh` marks the commit for the next
+  timed batch after the nightly, a manual batch or a full run too). The 4-h cron leaves out 04:30, beside the
+  05:00 nightly. Hosted PR checks cancel per PR (or per pushed branch) the same way.
 
 ## The regression, split (#1028)
 

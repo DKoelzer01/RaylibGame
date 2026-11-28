@@ -16,8 +16,12 @@
 #   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
 #      two branches can't ship the same number for different wire formats.
 #   7. The integer simulation files (tools/ci/sim_integer_files.txt) use no float, double or libm (#1015): else an error.
+#   8. A kNetProtocol / kSaveVersion / kErosionBakeVersion number this branch reserves is not reserved for another issue on origin/staging,
+#      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
+#   8. Every tools/ci/known_failures.txt line's note starts "[<owner>, until <date>]", at most 7 days ahead (#2122): else an
+#      error; a line past its date is a warning.
 #
-# Exit code 1 only for errors (duplicate / unparsable ids, checks 3, 5, 6 and 7). Warnings never fail the job.
+# Exit code 1 only for errors (duplicate / unparsable ids, checks 3, 5, 6, 7 and 8). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
 set -uo pipefail
 export LC_ALL=C # sort and join must agree on the order
@@ -187,8 +191,9 @@ WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part3=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 3p | sed 's/--scenario //; s/tag://g; s/,/ /g')
-if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ]; then
-    echo "::error file=$WF::static check 5: the three headless scenario tag lists (part 1, part 2, pose twins) were not found in the workflow"
+part4=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 4p | sed 's/--scenario //; s/tag://g; s/,/ /g') # (#1882) world generation metrics: the full tier and manual runs
+if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ] || [ "$part4" != worldgen ]; then
+    echo "::error file=$WF::static check 5: the four headless scenario tag lists (part 1, part 2, pose twins, worldgen) were not found in the workflow, in that order"
     errors=$((errors + 1))
 else
     unplaced=""
@@ -196,22 +201,23 @@ else
         name=$(grep -o 'SCENARIO("[^"]*")' "$f" | head -1 | sed 's/SCENARIO("\(.*\)")/\1/')
         [ -n "$name" ] || continue
         tags=$(grep -o 's.tags = {[^}]*}' "$f" | head -1 | grep -o '"[a-z0-9_-]*"' | tr -d '"' | tr '\n' ' ')
-        in1=0; in2=0; in3=0; local=0
+        in1=0; in2=0; in3=0; in4=0; local=0
         for t in $tags; do
             for x in $part1; do [ "$t" = "$x" ] && in1=1; done
             for x in $part2; do [ "$t" = "$x" ] && in2=1; done
             for x in $part3; do [ "$t" = "$x" ] && in3=1; done
+            for x in $part4; do [ "$t" = "$x" ] && in4=1; done
             for x in $LOCAL_ONLY_TAGS; do [ "$t" = "$x" ] && local=1; done
         done
-        if [ $((in1 + in2 + in3)) -gt 1 ]; then
+        if [ $((in1 + in2 + in3 + in4)) -gt 1 ]; then
             echo "::error file=$f::scenario $name matches more than one runner scenario step (tags: $tags): it would run twice"
             errors=$((errors + 1))
-        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $local = 0 ]; then
+        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $in4 = 0 ] && [ $local = 0 ]; then
             echo "::error file=$f::scenario $name matches neither runner scenario step (tags: $tags): add a tag to a list in $WF or a local-only tag ($LOCAL_ONLY_TAGS)"
             errors=$((errors + 1)); unplaced="$unplaced $name"
         fi
     done
-    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
+    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`, world generation (full tier, manual runs) \`$part4\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
 fi
 
 # ---- 6. kNetProtocol is reserved (#1480) ----
@@ -255,6 +261,36 @@ elif [ -f "$RES" ]; then
         sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
     fi
 fi
+# (#2009) kErosionBakeVersion: an "erosion <n> | ..." line when the branch CHANGES the version against BASE (a branch
+# that keeps its base's version needs none, so ladder's older bake still passes). Two branches that bumped to one number
+# would each bake different terrain under it, and a cache baked by one loads in the other.
+if [ -n "$BASE" ] && [ -f "$RES" ]; then
+    ero_ver() { tr -d '\r' | grep -oE 'kErosionBakeVersion = [0-9]+' | head -1 | grep -oE '[0-9]+$'; }
+    ero_new=$(ero_ver < "$EROSION_H" 2>/dev/null)
+    ero_old=$(git show "$BASE:$EROSION_H" 2>/dev/null | ero_ver)
+    if [ -n "$ero_new" ] && [ "$ero_new" != "$ero_old" ]; then
+        line=$(tr -d '\r' < "$RES" | grep -E "^erosion[[:space:]]+${ero_new}[[:space:]]*\|" | head -1)
+        if [ -z "$line" ]; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion ${ero_old:-?} -> $ero_new is not reserved in $RES: add a line \"erosion $ero_new | <branch> | #<issue> | <what>\" (#2009)"
+            errors=$((errors + 1))
+        elif echo "$line" | grep -q "(unused)"; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion $ero_new is marked (unused) in $RES: reserve the next free number instead (#2009)"
+            errors=$((errors + 1))
+        else
+            sum ""; sum "**kErosionBakeVersion $ero_new** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+        fi
+    fi
+fi
+
+# ---- 7. (#2009) a number this branch reserves is not reserved for another issue on the other base or in an open PR ----
+# (check 6 reads only this branch's copy). RESERVATION_CLASH=0 skips it (offline).
+if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
+    rc_out=$(bash tools/ci/reservation_clash.sh "$BASE" 2>&1)
+    rc_rc=$?
+    printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
+    sum ""; sum "**Reservation clashes (check 8):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
+    [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
+fi
 
 # ---- 7. The integer simulation stays integer (#1015) ----
 # The files in tools/ci/sim_integer_files.txt use no float, double or libm before their unit-test block (comments ignored):
@@ -272,6 +308,35 @@ while read -r f; do
 done < <(tr -d '\r' < "$SIMLIST" | grep -v '^#' | grep -v '^[[:space:]]*$')
 errors=$((errors + sim_hits))
 sum ""; sum "**Integer simulation files** ($(tr -d '\r' < "$SIMLIST" | grep -vc '^#\|^[[:space:]]*$') listed): $sim_hits float/libm use(s)"
+
+# ---- 8. (#2122) every known-failure line names its owner and an expiry, at most 7 days ahead ----
+# The note starts "[<owner>, until <YYYY-MM-DD>]" (or "until never": a baseline by design). A line past its date is a
+# warning (its owner fixes it or renews it, at most 7 days ahead); a missing or malformed tag, or a date further out, is an
+# error. KNOWN_TODAY=<YYYY-MM-DD> overrides today (tests).
+KF=tools/ci/known_failures.txt
+if [ -f "$KF" ]; then
+    today="${KNOWN_TODAY:-$(date -u +%F)}"
+    latest=$(date -u -d "$today +7 days" +%F 2>/dev/null || echo 9999-12-31)
+    kf_out=$(tr -d '\r' < "$KF" | awk -F'|' -v today="$today" -v latest="$latest" -v kf="$KF" '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            note = $3; sub(/^[[:space:]]+/, "", note)
+            if (NF < 3 || note !~ /^\[(L&G|Water|UI\/UX|Progression|Space|Tools|Coordinator), until ([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|never)\]/) {
+                printf "::error file=%s,line=%d::known failure line without \"[<owner>, until <YYYY-MM-DD>]\" at the start of its note (owners: L&G, Water, UI/UX, Progression, Space, Tools, Coordinator; #2122)\n", kf, NR; bad++; next
+            }
+            d = note; sub(/^\[[^,]*, until /, "", d); sub(/\].*/, "", d)
+            o = note; sub(/^\[/, "", o); sub(/,.*/, "", o)
+            if (d == "never") { never++; next }
+            if (d > latest) { printf "::error file=%s,line=%d::known failure expiry %s is more than 7 days ahead (latest %s, #2122)\n", kf, NR, d, latest; bad++; next }
+            if (d < today) { printf "::warning file=%s,line=%d::known failure expired %s (%s): fix it, drop it, or renew it (#2122)\n", kf, NR, d, o; expired++ }
+            lines++
+        }
+        END { printf "known_lines: %d dated, %d never, %d expired, %d bad\n", lines, never, expired, bad; exit bad > 0 }')
+    kf_rc=$?
+    printf '%s\n' "$kf_out" | grep -E '^::'
+    sum ""; sum "**Known failures (check 8):** $(printf '%s\n' "$kf_out" | grep '^known_lines:' | sed 's/^known_lines: //')"
+    [ "$kf_rc" -ne 0 ] && errors=$((errors + 1))
+fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
 if [ "$errors" -gt 0 ]; then

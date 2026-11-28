@@ -6,7 +6,7 @@
 layout(location = 0) in vec3 vertexPosition;   // tuft space: y = 0 root .. 1 tip
 layout(location = 10) in vec4 instPosScale;    // chunk-local position, height (m) (half floats, #1603)
 layout(location = 11) in vec4 instUpHash;      // body-local up (unit), hash x 2 - 1 (signed bytes, #1603)
-layout(location = 12) in vec4 instClimate;     // (#1603) x: (temperature step + 1) / 255, 0 none; y: moisture (bytes)
+layout(location = 12) in vec4 instClimate;     // (#1603) x: (temperature step + 1) / 255, 0 none; y: moisture; z: biome variant id / 255 (#2032) (bytes)
 
 uniform mat4 matModel;     // chunk -> render space (Planetoid::chunkModel)
 uniform mat4 matViewProj;
@@ -21,6 +21,7 @@ out float fragHeight;      // 0 root .. 1 tip
 out float fragHash;
 out float fragLatitude;    // |body-local up.y|: 0 equator, 1 pole
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
+flat out float fragBiome; // (#2032) the biome variant id (biometint.glsl), 0 if none
 out float fragBlade;       // per-blade shade variation in [0, 1)
 
 void main()
@@ -73,6 +74,7 @@ void main()
     float step1 = floor(instClimate.x * 255.0 + 0.5); // (#1603) temperature step + 1, 0: no climate (it rode in the up vector's length)
     fragClimate = step1 > 0.5 ? vec3((step1 - 1.0) / 62.0 * 70.0 - 30.0, instClimate.y, 1.0) : vec3(0.0); // (#254)
     fragBlade = fract(float(gl_VertexID / 3) * 0.618034 + h * 7.0);
+    fragBiome = step1 > 0.5 ? floor(instClimate.z * 255.0 + 0.5) : 0.0; // (#2032) the variant id, its own byte
     gl_Position = matViewProj * vec4(p, 1.0);
     // Thin clumps with distance: past 30% of the draw distance drop a growing share of the blades (down to a third by
     // 85%), the same blades for all three corners so a dropped blade is clipped away whole.

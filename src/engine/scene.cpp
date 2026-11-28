@@ -1,4 +1,6 @@
 #include "scene.h"
+#include "biomevariants.h"
+#include "envflag.h"
 #include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
@@ -170,6 +172,11 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 static float FarForestOn() {
     static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 0.0f : 1.0f; }();
     return on;
+}
+// #1979: per-tree height, width, lean and leaf hue (trees.vs / trees.fs). On by default; RAYLIBGAME_TREE_VARIATION=0: off (A/B).
+static float TreeVariationOff() {
+    static const float off = [] { const char* e = getenv("RAYLIBGAME_TREE_VARIATION"); return e && e[0] && !EnvFlag("RAYLIBGAME_TREE_VARIATION") ? 1.0f : 0.0f; }();
+    return off;
 }
 
 static int SceneSamples() {
@@ -620,7 +627,7 @@ void Scene::drawScene(int gamestate) {
                     // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
                     tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
                     rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-                    { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+                    { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -648,6 +655,9 @@ void Scene::drawScene(int gamestate) {
     }
     GpuTimer_Mark("shadow");
     KickGpu();
+    // (#2143) The flush's own segment: no GPU commands, but when the CPU is behind the GPU idles here until the next
+    // submission, and that idle time read as ~0.7 ms of "sky" (factory-scale). Its own name keeps it off the next pass.
+    GpuTimer_Mark("kick-idle");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
@@ -662,6 +672,7 @@ void Scene::drawScene(int gamestate) {
           SetShaderValue(s, GetShaderLocation(s, "farCheapFrom"), &farCheap, SHADER_UNIFORM_FLOAT); }
         const float farForest = FarForestOn();
         SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
+        BiomeTint_Bind(s); // (#2032) ground grass and the canopy tint by biome
     }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
@@ -772,6 +783,7 @@ void Scene::drawScene(int gamestate) {
     // #142: the physical sky's look-up tables (on by default; RAYLIBGAME_SKY_PHYS=0: off), rebuilt as the camera height and the sun move.
     if (atmosphere.enabled && SkyPhys_On())
         SkyPhys_Update(atmosphere.radius, atmosphere.radius + atmosphere.height, Vector3Distance(camera.position, atmosphere.centre), Vector3DotProduct(atmUp, sun));
+    GpuTimer_Mark("sky:luts"); // (#2143) the sky's parts apart
     {   // #142: the physical haze colour on lit surfaces (skyphys_haze.glsl): its LUT (#819) on unit 15, by the air and weather.
         const unsigned lut = atmosphere.enabled ? SkyPhys_HazeTexture() : 0;
         const bool underwaterFog = effFogDensity >= 0.06f;
@@ -804,9 +816,11 @@ void Scene::drawScene(int gamestate) {
         SceneTarget_SetContact(sunView, strength);
         SceneTarget_SetHiZView(MatrixMultiply(view, rlGetMatrixProjection())); // #134: the view this frame's depth is drawn with
     }
+        GpuTimer_Mark("sky:target");
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
+        GpuTimer_Mark("sky:stars");
         if (drawSkybox) {
             // The sky (and the sun disc, also in space) blended over the stars.
             Shader& as = atmosphereShader.shader;
@@ -906,7 +920,7 @@ void Scene::drawScene(int gamestate) {
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3); // (#1859 L6: the sun, as their rings; lightDirection is the moon at night)
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -918,6 +932,7 @@ void Scene::drawScene(int gamestate) {
         }
         // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
         auto setFoliageLighting = [&](Shader& sh) {
+            BiomeTint_Bind(sh); // (#2032) the per-biome tints (grass.fs, trees.fs)
             const int slot = 6;
             rlActiveTextureSlot(slot);
             rlEnableTexture(shadowMap.depth.id);
@@ -1026,7 +1041,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-            { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+            { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
@@ -1089,7 +1104,9 @@ void Scene::drawScene(int gamestate) {
         drawTrees(-1);
         GpuTimer_Mark("trees");
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+        GpuTimer_Mark("terrain"); // after "parts" (world.cpp): the bodies' chunks
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+        GpuTimer_Mark("objects");
         if (drawPassExtra) drawPassExtra(ctx, revZ); // one pass: it also rebuilds (the mid pass did)
         GpuTimer_Mark("near");
         KickGpu();
@@ -1194,7 +1211,12 @@ void Scene::drawScene(int gamestate) {
         frameLighting = setFoliageLighting;
         frameSun = lightDirection; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+        frameFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection())); // (#2140) this pass's planes
+        // A/B switch: RAYLIBGAME_FRAME_CULL=0 draws these paths as before (distance cuts only).
+        static const bool frameCull = [] { const char* e = getenv("RAYLIBGAME_FRAME_CULL"); return !(e && e[0]) || EnvFlag("RAYLIBGAME_FRAME_CULL"); }();
+        frameFrustumOn = frameCull;
         if (onDraw3D) onDraw3D();
+        frameFrustumOn = false;
         frameLighting = nullptr;
     EndMode3D();
     GpuTimer_Mark("draw3d");

@@ -73,5 +73,7 @@ void Profiler_PrintSummary();            // "profile: ..." lines
 void Profiler_MeasureZoneCost(double& onNs, double& offNs);
 double Profiler_CommitMB();               // the process's commit charge now (MB; tests, #902)
 double Profiler_VramUsedMB();             // GPU memory in use now (MB; NVIDIA only, else 0)
+double Profiler_ThreadCpuSeconds();       // CPU seconds the calling thread has run (#1914: below its wall time = starved)
+void Profiler_MemoryHealth(double& freePhysMB, unsigned long long& pageFaults); // free RAM now, the process's page faults so far (#1914)
 
 #endif

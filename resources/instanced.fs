@@ -28,8 +28,10 @@ void main()
     if (fragGlow > 0.5) {
         color = albedo * 1.6;
     } else {
+        // The normal as the vertex shader gives it (its inverse-transpose already turns it for mirrored instances). No
+        // flip by gl_FrontFacing (#1962): the shapes' winding differs (cylinder sides vs caps) and mirroring reverses it,
+        // so visible sides counted as back faces, their normals turned inward and the sun dropped out (near-black).
         vec3 n = normalize(fragNormal);
-        if (!gl_FrontFacing) n = -n;
         // The planet's night side and how buried the instance is (#284): as parts.fs, so machine details match
         // the casings and parts around them.
         float sunVis = 1.0;

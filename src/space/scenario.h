@@ -37,6 +37,9 @@ class PlanetField;
 enum class ScenarioWorld { Sandbox, Planet };
 
 struct ScenarioCheck { std::string name, op, expected, detail; double value = 0.0; bool pass = false; };
+// (#2187) The verdict reason for failed checks: "<n> of <m> checks failed: <name>; <name>; <name> and N more". It names
+// the failed checks so a known-failure line (tools/ci/known_failures*.txt) can match one check, not the whole scenario.
+std::string FailedChecksReason(const std::vector<ScenarioCheck>& checks);
 struct ScenarioMetric { std::string name, unit; double value = 0.0; bool lowerIsBetter = true; };
 
 struct ScenarioCtx {
@@ -45,6 +48,8 @@ struct ScenarioCtx {
     const PlanetField* field = nullptr;   // its PlanetField (planet and sandbox worlds have one)
     double t = 0.0;                       // sim seconds since the current step began
     double T = 0.0;                       // sim seconds since the scenario began
+    double wall = 0.0;                    // wall seconds since the current step began
+    double clock = 0.0;                   // what the step's deadline counts: t, or the lesser of t and wall (realTime, #1972)
     long frame = 0;                       // frames since the scenario began
     int stepIndex = 0;
 
@@ -91,7 +96,7 @@ struct ScenarioCtx {
 
 struct ScenarioStep {
     std::string name;
-    double deadline = 60.0;                   // sim seconds after the step began
+    double deadline = 60.0;                   // sim seconds after the step began (ScenarioCtx::clock in a realTime scenario)
     std::function<bool(ScenarioCtx&)> run;    // true: done
 };
 
@@ -115,6 +120,14 @@ struct ScenarioDef {
     // (#1442) Every scenario reports camera_inside_solid_frames / player_inside_solid_frames (cliptelemetry.h); with this
     // set, a frame with the camera or the player inside solid ground or a built cube turns a PASS into a FAIL.
     bool expectNoClip = false;
+    // (#1972) The steps wait on wall-clock work (a join over real sockets, the factory's 20 Hz thread): a headless sim runs
+    // up to 50x real time, so a sim-time deadline expired before the work could finish, and a loaded machine runs it slower
+    // than real time. With this set, the step deadlines and the timeout count ScenarioCtx::clock, the lesser of sim and wall.
+    bool realTime = false;
+    // (#2126) Terrain detail (--lod, the default is 2.5): 1.5 builds ~2.6x fewer chunks and runs a settle-heavy scenario
+    // 20-38% faster. A coarser world than players see, so only for scenarios that check no terrain shape, lighting or
+    // rendering. 0: the game's default. A --lod on the command line still wins.
+    double lod = 0.0;
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }

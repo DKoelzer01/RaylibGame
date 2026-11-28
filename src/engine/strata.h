@@ -19,6 +19,9 @@ struct StrataColumn {
     uint8_t hardShare = 115; // of 255: the share of resistant layers (sedimentary / basalt flows)
     float offset = 0.0f;    // m: the layers' warp and tilt here (added to the height before layering)
     float thick = 80.0f;    // m: layer thickness
+    // (#1990) The biome's bake multipliers here (BiomeVariantTable::BakeMul; 1 = as before): only the erosion bake reads
+    // them, from its own strata callback (PlanetField::bakeStrataColumn).
+    float kMul = 1.0f, talusMul = 1.0f, creepMul = 1.0f, glacialMul = 1.0f;
 };
 
 // Province and layer geometry from the field's continent value at this place (c: < 0 ocean, > 0.3 well inland) and the

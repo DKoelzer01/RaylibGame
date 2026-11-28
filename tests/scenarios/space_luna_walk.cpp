@@ -7,6 +7,7 @@
 #include "scenario.h"
 #include "fluid.h"
 #include "player.h"
+#include "survival.h"
 #include "world.h"
 #include "worldtypes.h"
 #include <raymath.h>
@@ -18,6 +19,13 @@ namespace {
 struct State {
     Planetoid* luna = nullptr;
     double r0 = 0.0, apex = 0.0, pourAt = -1.0;
+    double spawnR = 0.0;                   // the feet's radius where spawnOn put them
+    double settleR = -1.0, settleAt = 0.0; // 'land': the feet's radius and since when it held still
+    int spawns0 = 0, deaths0 = 0;          // after the move to Luna: a change later is a respawn (#2000)
+    // (#2000) The landing as it went, for a death: the lowest feet radius, the fastest speed against the ground, and the
+    // time and speed at the first touchdown.
+    double minR = 1e30, maxRel = 0.0, touchAt = -1.0, touchRel = 0.0;
+    bool wasGrounded = false;
     float vol0 = 0.0f, poured = 0.0f;
     Fluid::Ledger l0{}; // the mass ledger (#1885) at the pour
     bool jumped = false, airborne = false;
@@ -25,6 +33,24 @@ struct State {
 } S;
 double FeetRadius() { return S.luna->toLocalD(player.position).length(); } // m from Luna's centre
 Vector3 UpLocal() { return Vector3Normalize(S.luna->toLocalD(player.position).toFloat()); }
+// (#2000) A respawn puts the player back on Terra, ~600 km from Luna's centre, and the jump then never "lands". Say so.
+bool Respawned(ScenarioCtx& c) {
+    if (player.spawns == S.spawns0 && !survival.dead) return false;
+    c.fail(TextFormat("the player died or was respawned (deaths %d -> %d, last harm '%s' at %.1f m/s, health %.0f, oxygen %.0f, vacuum %.0f s); "
+                      "spawned at r %.2f m, lowest %.2f, now %.2f; fastest against the ground %.2f m/s; first touchdown at %.2f s, %.2f m/s",
+                      S.deaths0, survival.deaths, survival.lastHarm, survival.lastFallSpeed, survival.health, survival.oxygen, survival.vacuumTime,
+                      S.spawnR, S.minR, FeetRadius(), S.maxRel, S.touchAt, S.touchRel));
+    return true;
+}
+// (#2000) Once a frame while landing: the radius and the speed against Luna's turning, orbiting ground.
+void TrackLanding(ScenarioCtx& c) {
+    const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
+    const double rel = Vector3Length(Vector3Subtract(player.velocity, S.luna->surfaceVelocity(feet)));
+    S.minR = std::min(S.minR, FeetRadius());
+    S.maxRel = std::max(S.maxRel, rel);
+    if (player.grounded && !S.wasGrounded && S.touchAt < 0.0) { S.touchAt = c.t; S.touchRel = rel; }
+    S.wasGrounded = player.grounded;
+}
 }
 
 SCENARIO("space/luna-walk") {
@@ -40,14 +66,28 @@ SCENARIO("space/luna-walk") {
         c.note(TextFormat("Luna: radius %.0f m, surface gravity %.3f m/s^2", S.luna->radius * S.luna->scale, S.luna->surfaceGravity));
         player.spawnOn(c.world, *S.luna, { 0, 1, 0 });
         player.flyMode = false;
+        S.spawns0 = player.spawns;
+        S.deaths0 = survival.deaths;
+        S.spawnR = FeetRadius();
         return true;
     });
+    // spawnOn used to raycast the terrain built so far: on the runner a coarse mesh put the feet 2 m inside Luna's ground,
+    // and the push out when the fine chunks came was a fatal "fall" (#2000; spawnOn now marches the field). Wait until the
+    // feet hold still on the ground for 1 s.
     s.step("land", 90.0, [](ScenarioCtx& c) {
-        c.waitingFor("standing on Luna in an idle world");
         player.flyMode = false;
-        return c.t > 2.0 && player.grounded && WorldIdle() && player.nearest == S.luna;
+        TrackLanding(c);
+        if (Respawned(c)) return true;
+        const double r = FeetRadius();
+        if (!(player.grounded && WorldIdle() && player.nearest == S.luna) || std::fabs(r - S.settleR) > 0.05) { S.settleR = r; S.settleAt = c.t; }
+        c.waitingFor(TextFormat("standing still on Luna in an idle world for 1 s (grounded %d, idle %d, still for %.1f s)", (int)player.grounded,
+                                (int)WorldIdle(), c.t - S.settleAt));
+        if (c.t <= 2.0 || c.t - S.settleAt <= 1.0) return false;
+        c.note(TextFormat("spawnOn put the feet at %.1f m from Luna's centre; they stand at %.1f m", S.spawnR, r));
+        return true;
     });
     s.step("jump (5 m/s up)", 30.0, [](ScenarioCtx& c) {
+        if (Respawned(c)) return true;
         if (!S.jumped) {
             S.jumped = true;
             S.r0 = FeetRadius();
@@ -71,6 +111,7 @@ SCENARIO("space/luna-walk") {
             S.poured = Fluid::Pour(*S.luna, at, 0.5f);
             return false;
         }
+        if (Respawned(c)) return true;
         c.waitingFor("10 s of water on the moon");
         return c.t - S.pourAt > 10.0;
     });

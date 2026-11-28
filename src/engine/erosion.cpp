@@ -1,5 +1,8 @@
 #include "erosion.h"
+#include "detmath.h" // (#1905) expf/logf/powf/asinf with the same bits everywhere
 #include "utils/logger.h"
+#include "profiler.h"
+#include "envflag.h"
 #include <raymath.h>
 #include <algorithm>
 #include <chrono>
@@ -79,7 +82,7 @@ namespace {
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t) pool.emplace_back([&, t] {
         for (size_t c = t; c < d.cells; c += T) {
-            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c]);
+            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c], h0[c]);
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
             d.hardness[c] = ValueNoise(q, seed ^ 0xA11u);
             d.strata[c] = std::clamp((ValueNoise(Vector3Scale(q, 0.7f), seed ^ 0x57Au) - 0.55f) / 0.15f, 0.0f, 1.0f);
@@ -102,12 +105,13 @@ namespace {
     // Seconds per part of Simulate (#605): setup, flood, glacial, stream power, talus, wind.
     struct SimProfile { double s[6] = {}; void add(const SimProfile& o) { for (int k = 0; k < 6; ++k) s[k] += o.s[k]; } };
     const char* const kSimParts[6] = { "setup", "flood", "glacial", "stream", "talus", "wind" };
-    // Faces refined at once (a face's working set is ~250 MB): 6, 3, 2 or 1 (whole rounds), at least 2 threads each. Each
-    // face's simulation runs on one thread, so 3 at a time left 13 of 16 threads idle through it (#605).
+    // Faces refined at once (a face's working set is ~250 MB): one per thread, up to all 6, each starting as soon as one
+    // finishes. Most of a face's simulation (flood, talus, glacial) runs on one thread, so 3 at a time left 13 of 16
+    // threads idle through it (#605), and the old rule of 2 threads a face ran 2 at a time on 4 threads, half the CPU
+    // idle (faces 76.5 s wall, now 64.3, #1914). The result doesn't depend on it (each face alone; their threads are exact).
     int kParallelFaces(int T) {
         if (gBakeOld) return std::clamp(T / 4, 1, 3);
-        for (int k : { 6, 3, 2 }) if (T >= 2 * k) return k;
-        return 1;
+        return std::clamp(T, 1, 6);
     }
 
     // A monotone radix heap for the priority flood (#605): it pops (height, cell) pairs in exactly the order the binary
@@ -255,13 +259,15 @@ namespace {
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
         const bool layered = !d.col.empty(); // #587: the rock column's layer at the cell's current height
         auto erodibility = [&](size_t c, float hc) {
-            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed));
+            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed)) * d.col[c].kMul; // #1990: x the biome's
             const float k = d.rockK[c] * kScale;
             if (d.strata[c] <= 0.0f) return k;
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
             return k * (1.0f + (bandK - 1.0f) * d.strata[c]);
         };
-        std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells);
+        std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells),
+                           areaMemo(gBakeOld ? 0 : cells, -1.0f); // #1914: the area areaM/areaG were computed for
+        std::vector<int> recvMemo(gBakeOld ? 0 : cells, -1);
         std::vector<int> receiver(cells), order;
         std::vector<float> hsDelta; // #1884: the hillslope pass's changes (applied after it, so the scan order doesn't matter)
         // Wind (#370): per cell its downwind and upwind neighbours (latitude bands: trade winds blowing west and toward the
@@ -278,7 +284,7 @@ namespace {
                 if (Vector3LengthSqr(east) < 1e-6f) continue; // the poles: calm
                 east = Vector3Normalize(east);
                 const Vector3 north = Vector3CrossProduct(up, east);
-                const float latDeg = asinf(std::clamp(up.y, -1.0f, 1.0f)) * RAD2DEG, a = fabsf(latDeg), hemi = latDeg >= 0.0f ? 1.0f : -1.0f;
+                const float latDeg = det::Asinf(std::clamp(up.y, -1.0f, 1.0f)) * RAD2DEG, a = fabsf(latDeg), hemi = latDeg >= 0.0f ? 1.0f : -1.0f;
                 Vector3 w; float speed;
                 if (a < 30.0f) { w = Vector3Add(Vector3Scale(east, -1.0f), Vector3Scale(north, -0.35f * hemi)); speed = 1.0f; }      // trades: west, equatorward
                 else if (a < 60.0f) { w = Vector3Add(east, Vector3Scale(north, 0.3f * hemi)); speed = 1.2f; }                         // westerlies: east, poleward
@@ -293,9 +299,19 @@ namespace {
                     if (dot < bestUp) { bestUp = dot; upwind[c] = o; }
                 }
                 windSpeed[c] = speed;
-                dryLat[c] = expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
+                dryLat[c] = det::Expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * det::Expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
             }
         }
+        // #1914: the unit-sphere distance to each of the 8 neighbours, once (the talus took 8 square roots a cell every other
+        // step). The same bits as computing it in place. Only for the coarse grid (43 MB); a fine face's table would be
+        // 130 MB more on its ~250 MB, six at once, so the faces still compute it.
+        std::vector<float> nbD;
+        if (cells <= (size_t)2000000) {
+            nbD.resize(cells * 8);
+            for (size_t c = 0; c < cells; ++c)
+                for (int k = 0; k < 8; ++k) { const int o = nbOf(c, k); nbD[c * 8 + k] = o < 0 ? 0.0f : Vector3Distance(d.dir[c], d.dir[o]); }
+        }
+        auto nbDist = [&](size_t c, int k, int o) { return nbD.empty() ? Vector3Distance(d.dir[c], d.dir[o]) : nbD[c * 8 + k]; };
         std::vector<uint8_t> seen(cells);
         std::unique_ptr<StreamPool> pool; // #605: the stream power on `threads` threads (the coarse pass; the faces run side by side)
         if (threads > 1 && !gBakeOld) pool = std::make_unique<StreamPool>(threads);
@@ -339,7 +355,7 @@ namespace {
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf((size_t)c, k);
                         if (o < 0 || hf[o] >= hf[c]) continue;
-                        const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
+                        const float s = (hf[c] - hf[o]) / (nbDist((size_t)c, k, o) * R);
                         slope[n] = s * s; // (squared: the steepest still wins most rolls, so channels stay single threads; GUESS)
                         sum += slope[n]; lower[n++] = o;
                     }
@@ -354,7 +370,7 @@ namespace {
                 for (int k = 0; k < 8; ++k) {
                     const int o = nbOf((size_t)c, k);
                     if (o < 0 || hf[o] >= hf[c]) continue; // not lower: never steeper than 0 (#605: skips the distance)
-                    const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
+                    const float s = (hf[c] - hf[o]) / (nbDist((size_t)c, k, o) * R);
                     if (s > best) { best = s; receiver[c] = o; }
                 }
             }
@@ -362,9 +378,10 @@ namespace {
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
             if (!gBakeOld) // #605: what the stream power needs per cell changes only here; once per flood, not every step
                 for (size_t c = 0; c < cells; ++c) {
-                    areaM[c] = powf(area[c], p.m);
-                    areaG[c] = powf(area[c], 0.25f);
-                    recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R;
+                    // #1914: recomputed only where the area or the receiver changed since the last flood (the same bits:
+                    // pure functions of them); most hillslope cells keep their own area, and the powers are the cost.
+                    if (area[c] != areaMemo[c]) { areaM[c] = det::Powf(area[c], p.m); areaG[c] = det::Root4f(area[c]); areaMemo[c] = area[c]; }
+                    if (receiver[c] != recvMemo[c]) { recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R; recvMemo[c] = receiver[c]; }
                 }
         };
         lap(0);
@@ -382,7 +399,7 @@ namespace {
                     for (int c : order) {
                         const float g = d.glacier[c];
                         if (g <= 0.0f || d.outlet[c]) continue;
-                        const float ice = g * std::min(200.0f, 1.4f * powf(area[c], 0.25f));
+                        const float ice = g * std::min(200.0f, 1.4f * det::Root4f(area[c]));
                         if (ice < 5.0f) continue;
                         const float top = d.h[c] + ice;
                         for (int k = 0; k < 8; ++k) {
@@ -399,11 +416,11 @@ namespace {
                 const int r = receiver[c];
                 const float L = gBakeOld ? Vector3Distance(d.dir[c], d.dir[r]) * R : recvL[c];
                 const float ek = erodibility(c, d.h[c]);
-                float f = ek * (gBakeOld ? powf(area[c], p.m) : areaM[c]) / L;
+                float f = ek * (gBakeOld ? det::Powf(area[c], p.m) : areaM[c]) / L;
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? powf(area[c], 0.25f) : areaG[c]) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L * (layered ? d.col[c].glacialMul : 1.0f); // #1990: alpine ice carves deeper
                     f += (fg - f) * g;
                 }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
@@ -422,7 +439,7 @@ namespace {
             if (fine && !gBakeOld && step % 2 == 0)
                 for (int c : wide) {
                     if (hf[c] > d.h[c] + 1e-3f) continue; // lakes: no banks to wear
-                    const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * log2f(area[c] / 5.0e6f));
+                    const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * det::Log2f(area[c] / 5.0e6f));
                     for (int k = 0; k < 4; ++k) {
                         const int o = nbOf((size_t)c, k);
                         if (o < 0 || d.outlet[o] || o == receiver[c] || area[o] >= area[c]) continue;
@@ -435,17 +452,32 @@ namespace {
             // at 0.1 a neighbour for stability. Crests round over and V shoulders soften; the sea floor stays put.
             if (p.hillslope > 0.0f && step % 2 == 0) {
                 hsDelta.assign(cells, 0.0f);
-                for (size_t c = 0; c < cells; ++c) {
-                    if (d.outlet[c]) continue;
-                    float dh = 0.0f;
-                    for (int k = 0; k < 4; ++k) {
-                        const int o = nbOf(c, k);
-                        if (o < 0) continue;
-                        const float L = Vector3Distance(d.dir[c], d.dir[o]) * R;
-                        dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                auto hillslopeCells = [&](size_t c0, size_t c1) { // reads the heights only: any split, the same result
+                    for (size_t c = c0; c < c1; ++c) {
+                        if (d.outlet[c]) continue;
+                        float dh = 0.0f;
+                        for (int k = 0; k < 4; ++k) {
+                            const int o = nbOf(c, k);
+                            if (o < 0) continue;
+                            const float L = nbDist(c, k, o) * R;
+                            // #1990: the pair's mean biome creep (symmetric, so the pass still conserves mass)
+                            const float D = layered ? p.hillslope * 0.5f * (d.col[c].creepMul + d.col[o].creepMul) : p.hillslope;
+                            dh += std::min(2.0f * D / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                        }
+                        // #1965: on the fine pass creep never fills a closed hollow's deep floor (the flood filled it 0.4 m+,
+                        // half a bake pond's 0.8 m minimum): it filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it
+                        // off, 223 on). Rims and shallow pits still round over: a 5 cm guard kept every pit on a slope, and
+                        // their puddles never drained (#2018: fluid/slope-drain, fluid/flow).
+                        if (fine && dh > 0.0f && hf[c] > d.h[c] + 0.4f) dh = 0.0f;
+                        hsDelta[c] = dh;
                     }
-                    hsDelta[c] = dh;
-                }
+                };
+                if (threads > 1) { // #1914: on threads (it was serial: the coarse pass ran it on one of 16)
+                    std::vector<std::thread> team;
+                    const size_t per = (cells + threads - 1) / threads;
+                    for (int t = 0; t < threads; ++t) team.emplace_back(hillslopeCells, std::min(cells, per * t), std::min(cells, per * (t + 1)));
+                    for (auto& th : team) th.join();
+                } else hillslopeCells(0, cells);
                 for (size_t c = 0; c < cells; ++c) d.h[c] += hsDelta[c];
             }
             lap(3);
@@ -455,11 +487,12 @@ namespace {
                     const float hard = layered ? Strata_Hardness(Strata_RockAt(d.col[c], d.h[c], d.strataSeed))
                                                : std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
                     float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
+                    if (layered) maxSlope *= d.col[c].talusMul; // #1990
                     if (!talusVar.empty()) maxSlope *= talusVar[c] * (0.8f + 0.45f * Hash3((int)floorf((d.h[c] + talusBandOff[c]) / 30.0f), 0, 0, seed ^ 0x7A4u));
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
                         if (o < 0) continue;
-                        const float excess = d.h[c] - d.h[o] - maxSlope * Vector3Distance(d.dir[c], d.dir[o]) * R;
+                        const float excess = d.h[c] - d.h[o] - maxSlope * nbDist(c, k, o) * R;
                         if (excess > 0.0f) { const float mv = 0.5f * excess; d.h[c] -= mv; if (!d.outlet[o]) d.h[o] += mv; }
                     }
                 }
@@ -475,7 +508,7 @@ namespace {
                 auto windCell = [&](size_t c, float& e, int& n, int& dropAt) {
                     const int dn = downwind[c], un = upwind[c];
                     if (dn < 0 || un < 0 || d.outlet[c] || d.h[c] <= 0.0f) return false;
-                    const float wet = std::clamp((logf(std::max(area[c], 1.0f)) - logf(2.0e6f)) / (logf(2.0e7f) - logf(2.0e6f)), 0.0f, 1.0f);
+                    const float wet = std::clamp((det::Logf(std::max(area[c], 1.0f)) - det::Logf(2.0e6f)) / (det::Logf(2.0e7f) - det::Logf(2.0e6f)), 0.0f, 1.0f);
                     const float dry = dryLat[c] * (1.0f - wet);
                     if (dry < 0.02f) return false;
                     const float L = Vector3Distance(d.dir[c], d.dir[un]) * R;
@@ -597,6 +630,21 @@ namespace {
     }
     bool DumpOn() { const char* e = getenv("RAYLIBGAME_EROSION_DUMP"); return e && e[0] == '1'; }
 
+    // #1905: RAYLIBGAME_BAKE_STAGE_HASH=1 logs an FNV hash of the bake's state after each stage, so two platforms' logs
+    // show the first stage where their bits part.
+    bool StageHashOn() { static const bool on = EnvFlag("RAYLIBGAME_BAKE_STAGE_HASH"); return on; }
+    template <class T> uint64_t HashBits(const std::vector<T>& v, uint64_t h = 1469598103934665603ull) {
+        const unsigned char* b = reinterpret_cast<const unsigned char*>(v.data());
+        for (size_t k = 0; k < v.size() * sizeof(T); ++k) h = (h ^ b[k]) * 1099511628211ull;
+        return h;
+    }
+    void StageHash(const char* stage, int face, const Domain& d, const std::vector<float>& h0) {
+        if (!StageHashOn()) return;
+        LOG_INFO("Erosion", "stage hash %s face %d: dir %016llx h0 %016llx h %016llx U %016llx rockK %016llx strata %016llx glacier %016llx\n", stage, face,
+            (unsigned long long)HashBits(d.dir), (unsigned long long)HashBits(h0), (unsigned long long)HashBits(d.h), (unsigned long long)HashBits(d.U),
+            (unsigned long long)HashBits(d.rockK), (unsigned long long)HashBits(d.strata), (unsigned long long)HashBits(d.glacier));
+    }
+
     // Before/after/difference of one face (#358 evidence): `beforePath` holds an earlier run's heights (int side, then
     // floats). Writes erosion_compare.png (the 512-cell window with the most change: before | after | difference, 2x)
     // and erosion_compare_face.png (the whole face, difference over the after hillshade). Difference: red = lowered,
@@ -679,11 +727,17 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
+    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (mixed only when != 1)
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
+    if (p.biomeKey) mix(&p.biomeKey, sizeof p.biomeKey); // #1990 (0 mixes nothing)
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
+    if (p.bFace >= 0) { // #1988: B faces bake their own (A, -1, mixes nothing); v2: basins breached (RAYLIBGAME_B_BREACH)
+        const int b = 0x19880 + p.bFace; mix(&b, sizeof b);
+        const float br = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f; const int v = 2; mix(&br, sizeof br); mix(&v, sizeof v);
+    }
     if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
@@ -692,7 +746,9 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     gBakeProgress.store(0.0f, std::memory_order_relaxed);
     struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
+    bFace = p.bFace; // #1988
     const auto t0 = std::chrono::steady_clock::now();
+    double freeMB0 = 0.0; unsigned long long faults0 = 0; Profiler_MemoryHealth(freeMB0, faults0); // #1914: the machine's state, for the profile
     R = planetRadius; seed = seedIn;
     const int T = std::max(1, threads);
     static const int di[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, dj[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -709,7 +765,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             for (int i = 0; i < N; ++i) {
                 const float u = -1.0f + (i + 0.5f) * du, v = -1.0f + (j + 0.5f) * du;
                 d.dir[idx(f, i, j)] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
-                d.cellArea[idx(f, i, j)] = side * side / powf(1.0f + u * u + v * v, 1.5f);
+                d.cellArea[idx(f, i, j)] = side * side / det::Powf(1.0f + u * u + v * v, 1.5f);
             }
     }
     auto cellOf = [&](Vector3 dv) -> int {
@@ -750,12 +806,26 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     float maxH0 = 1.0f;
     for (float v : h0) maxH0 = std::max(maxH0, v);
     const double tSample = pt();
-    SetRock(d, h0, maxH0, R, seed, p, &strata, T);
+    StageHash("sampled", -1, d, h0);
+    // #1957: the coarse pass takes coarseDt-times larger steps. The stream-power step is implicit (stable at any step), so
+    // steps / dt with the per-step rates x dt (erodibility, uplift, hillslope, wind; glacial follows the erodibility)
+    // reaches the same balance with dt-times fewer floods: 400 steps -> 100 gave the same ridges and valley network at
+    // 128 m/px, coarse pass 21 s -> 6 s (seed 42, -O3). The 50 m faces keep p.
+    ErosionParams pc = p;
+    if (p.coarseDt > 1.0f) {
+        pc.steps = std::max(1, (int)lroundf((float)p.steps / p.coarseDt));
+        const float dt = (float)p.steps / (float)pc.steps; // the exact ratio after rounding
+        pc.k *= dt; pc.uplift *= dt; pc.hillslope *= dt; pc.wind *= dt;
+    }
+    SetRock(d, h0, maxH0, R, seed, pc, &strata, T);
     const double tRock = pt();
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
-    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
-    const double tSim = pt();
+    StageHash("rock", -1, d, h0);
+    const double cpuSim0 = Profiler_ThreadCpuSeconds(); // #1914: the flood is serial: CPU well below wall = the thread waited (paging, other load); CPU = wall but slow = slow clocks
+    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, pc.steps, pc, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
+    const double tSim = pt(), cpuSim = Profiler_ThreadCpuSeconds() - cpuSim0;
+    StageHash("simulated", -1, d, h0);
     // Back to the input's height range: the 99th percentile of land as high as the input's. (Matching only the highest
     // peak left the ranges ~30% lower than the input: p90 1041 -> 723 m on seed 42.)
     float scale = 1.0f;
@@ -771,10 +841,12 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     heightScale = scale; // #587: the strata are laid in simulation heights (materials divide final heights by this)
     n = N;
     coarse.resize(d.cells);
+    cut.resize(d.cells); // #1989: the erosion field (biome input)
     maxCut = maxRaise = 0.0f;
     for (size_t c = 0; c < d.cells; ++c) {
         const float hb = d.outlet[c] ? h0[c] : std::max(0.5f, d.h[c] * scale);
         coarse[c] = Q(hb);
+        cut[c] = Q(h0[c] - hb);
         maxCut = std::max(maxCut, h0[c] - hb); maxRaise = std::max(maxRaise, hb - h0[c]);
     }
     int dumpFace = 0;
@@ -820,7 +892,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
         };
         // Finer cells drain smaller areas: K is scaled by refine^(2m) so the coarse steady state holds, and the finer
         // valleys appear on top of it.
-        const float kScale = powf((float)(p.refine * p.refine), p.m);
+        const float kScale = det::Powf((float)(p.refine * p.refine), p.m);
         auto refineFace = [&, FE](int f, int sampleThreads) {
             Vector3 nrm, a1, a2; FaceAxes(f, nrm, a1, a2);
             Domain fd;
@@ -830,7 +902,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 for (int i = 0; i < FE; ++i) {
                     const float u = -span + (i + 0.5f) * duf, v = -span + (j + 0.5f) * duf;
                     fd.dir[(size_t)j * FE + i] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v))));
-                    fd.cellArea[(size_t)j * FE + i] = sideF * sideF / powf(1.0f + u * u + v * v, 1.5f);
+                    fd.cellArea[(size_t)j * FE + i] = sideF * sideF / det::Powf(1.0f + u * u + v * v, 1.5f);
                 }
             auto ft = std::chrono::steady_clock::now();
             auto flap = [&](int k) { const auto t = std::chrono::steady_clock::now(); faceT[f][k] += std::chrono::duration<double>(t - ft).count(); ft = t; };
@@ -842,6 +914,16 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 for (auto& th : pool) th.join();
             }
             flap(0);
+            StageHash("sampled", f, fd, fh0);
+            if (f == p.bFace || p.bFace == 6) { // (6: every face)
+                // #1988 (option B): no 50 m simulation. The fine grid is the coarse result resampled (Catmull-Rom, so C1
+                // across the 200 m cells; land and sea from this face's own input as on the other faces); the chunks add
+                // the detail (TerrainBDetail) and the final drainage routes rivers and lakes over it. No ponds: those came
+                // from the refinement's flood.
+                for (size_t c = 0; c < fd.cells; ++c) fine[(size_t)f * FE * FE + c] = Q(fh0[c] <= 0.0f ? fh0[c] : std::max(0.5f, coarseAt(fd.dir[c])));
+                flap(3);
+                return;
+            }
             SetRock(fd, fh0, maxH0, R, seed, p, &strata, sampleThreads);
             flap(1);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
@@ -852,11 +934,18 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.outlet[c] = fh0[c] <= 0.0f || rim;
                     fd.h[c] = fh0[c] <= 0.0f ? fh0[c] : coarseUnscaledAt(fd.dir[c]);
                 }
-            Simulate(fd, [FE](size_t c, int k) {
+            StageHash("rock", f, fd, fh0);
+            // #1914: a cell off the rim (every rim cell is an outlet) has all 8 neighbours inside the face: an offset, not
+            // the two integer divisions per lookup (8 lookups a cell in the flood, the talus and the receivers).
+            const int nbOff[8] = { 1, -1, FE, -FE, 1 + FE, 1 - FE, -1 + FE, -1 - FE };
+            const uint8_t* rimOrSea = fd.outlet.data();
+            Simulate(fd, [FE, nbOff, rimOrSea](size_t c, int k) {
+                if (!rimOrSea[c]) return (int)c + nbOff[k];
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
             }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads, true); // #605: the face's share of the threads; fine (#633)
             flap(2);
+            StageHash("simulated", f, fd, fh0);
             {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
                 // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,
                 // disagreed with the near ground (a lake 130 m under it). Fine = coarse + the high-pass part of
@@ -955,18 +1044,25 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             flap(3);
         };
         const int parallelFaces = kParallelFaces(T);
-        for (int f0 = 0; f0 < 6; f0 += parallelFaces) {
-            std::vector<std::thread> pool;
-            for (int f = f0; f < std::min(6, f0 + parallelFaces); ++f) pool.emplace_back(refineFace, f, std::max(1, T / parallelFaces));
-            for (auto& th : pool) th.join();
-            gBakeProgress.store(0.3f + 0.7f * (float)std::min(6, f0 + parallelFaces) / 6.0f, std::memory_order_relaxed);
-        }
+        std::atomic<int> nextFace{ 0 }, facesDone{ 0 };
+        std::vector<std::thread> pool;
+        for (int w = 0; w < parallelFaces; ++w)
+            pool.emplace_back([&] {
+                for (int f; (f = nextFace.fetch_add(1)) < 6;) {
+                    refineFace(f, std::max(1, T / parallelFaces));
+                    gBakeProgress.store(0.3f + 0.7f * (float)(facesDone.fetch_add(1) + 1) / 6.0f, std::memory_order_relaxed);
+                }
+            });
+        for (auto& th : pool) th.join();
     }
     pondList.clear();
     for (const auto& fp2 : facePonds) pondList.insert(pondList.end(), fp2.begin(), fp2.end()); // face order: deterministic
     refineSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t1r).count();
     flow.clear(); filled.clear(); routeSeconds = 0.0f;
+    if (StageHashOn()) LOG_INFO("Erosion", "stage hash grids: coarse %016llx fine %016llx, %d ponds\n", (unsigned long long)HashBits(coarse), (unsigned long long)HashBits(fine), (int)pondList.size());
     if (fe > 0 && !BakeRiversOld()) routeFinal(T); // #547: drainage and channels on the final terrain
+    if (StageHashOn()) LOG_INFO("Erosion", "stage hash routed: flow %016llx, %d filled\n", (unsigned long long)HashBits(flow), (int)filled.size());
+    computeWet(); // #1989
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
     {   // #605: where the time went (wall seconds; the faces' parts are summed over the faces = thread seconds)
@@ -978,6 +1074,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
         snprintf(pbuf, sizeof pbuf, "]); faces %.1f s wall, %d at a time; summed over faces: sampling %.2f, rock %.2f, simulate %.2f [", refineSeconds, kParallelFaces(T), ft4[0], ft4[1], ft4[2]); s += pbuf;
         for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], fs.s[k]); s += pbuf; }
         snprintf(pbuf, sizeof pbuf, "], drift+ponds %.2f; final drainage %.1f s; total %.1f s", ft4[3], routeSeconds, buildSeconds); s += pbuf;
+        double freeMB1 = 0.0; unsigned long long faults1 = 0; Profiler_MemoryHealth(freeMB1, faults1);
+        snprintf(pbuf, sizeof pbuf, "; machine (#1914): bake thread CPU %.1f s of %.1f s in the coarse simulate, free RAM %.0f -> %.0f MB, %llu page faults", cpuSim, tSim, freeMB0, freeMB1, faults1 - faults0); s += pbuf;
         profile = s;
     }
 }
@@ -1031,9 +1129,67 @@ float PlanetErosion::flowArea(int g) const {
     return cls == 0 ? 0.0f : kFlowArea0 * ldexpf(1.41421356f, cls - 1);
 }
 
+float PlanetErosion::drainOf(int g) const { const float a = flowArea(g); return a > 0.0f ? 0.30103f * det::Log2f(a) : 4.7f; }
+
+float PlanetErosion::drainageAt(Vector3 dv) const {
+    // Bilinear over the 4 nearest flow cells of dir's face, in log10 area, so masks built on it are continuous (the
+    // nearest cell's class jumps at every 50 m border: visible steps in the B detail, #1988). Off the network: 4.7, just
+    // under its 1e5 m^2 start (a 0 there made a 0 -> 5 step across one cell beside every channel).
+    if (flow.empty()) return 0.0f;
+    return flowBilinear(dv, &PlanetErosion::drainOf);
+}
+
+float PlanetErosion::flowBilinear(Vector3 dv, float (PlanetErosion::*cell)(int) const) const {
+    const int f = FaceOf(dv);
+    Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+    const float s = Vector3DotProduct(dv, nrm), duf = 2.0f / nf;
+    const float x = std::clamp((Vector3DotProduct(dv, t1) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const float y = std::clamp((Vector3DotProduct(dv, t2) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const int i0 = std::min((int)x, nf - 2), j0 = std::min((int)y, nf - 2);
+    float fx = x - i0, fy = y - j0;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); // C1: linear weights leave kinks a hillshade shows
+    auto L = [&](int i, int j) { return (this->*cell)((f * nf + j) * nf + i); };
+    return (1 - fy) * ((1 - fx) * L(i0, j0) + fx * L(i0 + 1, j0)) + fy * ((1 - fx) * L(i0, j0 + 1) + fx * L(i0 + 1, j0 + 1));
+}
+
+void PlanetErosion::computeWet() {
+    // #1989: a breadth-first spread from every filled cell (lakes, ponds) over the flow cells' 8 neighbours, 3 rings out
+    // (150 m): 255, 170, 85, then 0. Integer, in cell order: deterministic, and the same after a cache load.
+    wet.clear();
+    if (flow.empty()) return;
+    wet.assign(flow.size(), 0);
+    std::vector<int> ring, next;
+    for (const auto& fc : filled) if (fc.first >= 0 && fc.first < (int)wet.size()) { wet[fc.first] = 255; ring.push_back(fc.first); }
+    int nb[8];
+    for (int step = 1; step <= 3 && !ring.empty(); ++step) {
+        const uint8_t v = (uint8_t)(255 - 85 * step);
+        next.clear();
+        for (int g : ring) {
+            flowNeighbours(g, nb);
+            for (int o : nb) if (o >= 0 && wet[o] < v) { wet[o] = v; next.push_back(o); }
+        }
+        ring.swap(next);
+    }
+}
+
+PlanetErosion::BakeFields PlanetErosion::fieldsAt(Vector3 dv) const {
+    BakeFields b;
+    if (n <= 0) return b;
+    if (!flow.empty()) { b.drainage = flowBilinear(dv, &PlanetErosion::drainOf); b.wetness = flowBilinear(dv, &PlanetErosion::wetOf); }
+    const Slope s = slopeAt(dv, 1e6f); // a footprint past the fine grid: the coarse surface
+    b.slope = det::Atanf(Vector3Length(s.grad)) * RAD2DEG;
+    if (!cut.empty()) {
+        const int f = FaceOf(dv);
+        Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+        const float sd = Vector3DotProduct(dv, nrm);
+        b.erosion = FaceBilinear(cut, f, n, Vector3DotProduct(dv, t1) / sd, Vector3DotProduct(dv, t2) / sd, 1.0f);
+    }
+    return b;
+}
+
 float PlanetErosion::IncisionDepth(float area) {
     // Light: 0.5 m where a stream starts (0.1 km^2), ~2 m at 10 km^2, at most 4 m.
-    return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * powf(area / kFlowArea0, 0.3f));
+    return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * det::Powf(area / kFlowArea0, 0.3f));
 }
 
 void PlanetErosion::routeFinal(int threads) {
@@ -1056,7 +1212,12 @@ void PlanetErosion::routeFinal(int threads) {
     // One routing: priority flood over 8 neighbours (the bake's own connectivity: its valleys run diagonally too), steepest
     // descent on the filled surface - with preferD4, the steepest of the 4 side neighbours when one is lower, else of all
     // 8 - and the drainage area, downstream in reverse flood order.
-    auto route = [&](bool preferD4) {
+    // #1988: option B's faces, and how deep a breach may cut (m; GUESS 8, RAYLIBGAME_B_BREACH=0: fill as on A)
+    auto isB = [&](int g) { return bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace); };
+    static const float kBreach = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f;
+    std::vector<float> breachCut(bFace >= 0 ? G : 0, 0.0f);
+    std::vector<uint8_t> keepPond; // #2039: B's pond cells, never breached (filled; empty: none)
+    auto route = [&](bool preferD4, bool breach) {
         RadixHeap heap;
         std::fill(seen.begin(), seen.end(), 0);
         std::fill(recv.begin(), recv.end(), -1);
@@ -1071,6 +1232,25 @@ void PlanetErosion::routeFinal(int threads) {
                 const int o = nb[k];
                 if (o < 0 || seen[o]) continue;
                 seen[o] = 1;
+                // #1988: on option B's faces a shallow closed basin is breached rather than filled (Barnes' carving
+                // priority flood): the path back toward the outlet is lowered just under this cell, when no cell on it
+                // must drop more than kBreach. The smooth 100-200 m surface leaves hollows the 50 m simulation would have
+                // worn an outlet through on A; filled, they stood as still ponds where A had a stream. Deeper basins
+                // stay lakes.
+                if (breach && h[o] < hf[c] - 0.05f && isB(o) && (keepPond.empty() || !keepPond[o])) { // (a hollow, not the jitter across a flat; not a pond, #2039)
+                    float need = 0.0f, t = h[o];
+                    int p = c, steps = 0;
+                    // need counts the cut earlier breaches already made (#2069): measured on the lowered heights alone,
+                    // a smooth basin passed step by step and its rim was cut to the basin's full depth.
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, breachCut[p] + h[p] - t);
+                    if (need <= kBreach && steps < 400) {
+                        t = h[o];
+                        for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
+                        hf[o] = h[o]; recv[o] = c;
+                        heap.push(RadixHeap::Key(hf[o], o));
+                        continue;
+                    }
+                }
                 hf[o] = std::max(h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, 0, 13, seed))); // jittered across flats
                 recv[o] = c;
                 heap.push(RadixHeap::Key(hf[o], o));
@@ -1103,11 +1283,43 @@ void PlanetErosion::routeFinal(int threads) {
         for (int g = 0; g < G; ++g) {
             const int r = g % (nf * nf), j = r / nf, i = r % nf;
             const float u = -1.0f + (i + 0.5f) * duf, v = -1.0f + (j + 0.5f) * duf;
-            area[g] = side * side / powf(1.0f + u * u + v * v, 1.5f);
+            area[g] = side * side / det::Powf(1.0f + u * u + v * v, 1.5f);
         }
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
     };
-    route(false);
+    if (bFace >= 0 && kBreach > 0.0f) {
+        // #2039: option B's ponds. B has no 50 m simulation, whose flood left the hollows A's ponds come from (#360), and
+        // the breach drains shallow basins. A first routing without breaching finds the closed basins: a small one (A's
+        // pond rule: <= 12 cells, 0.8 m+ deep) that no stream runs through (its catchment under kFlowArea0) becomes a pond
+        // and is filled, not breached. Basins a stream crosses are still breached (#1988 pose 2); shallower pits drain
+        // or stay dry, as fluid/flow and fluid/slope-drain need (Water, 2026-11-27).
+        route(false, false);
+        keepPond.assign(G, 0);
+        std::vector<uint8_t> done(G, 0);
+        std::vector<int> stack, members;
+        auto pit = [&](int g) { return !outlet[g] && isB(g) && hf[g] - h[g] > 0.05f; };
+        int nb[8];
+        const size_t before = pondList.size();
+        for (int g0 = 0; g0 < G; ++g0) { // cell order: deterministic
+            if (done[g0] || !pit(g0)) continue;
+            members.clear(); stack.assign(1, g0); done[g0] = 1;
+            while (!stack.empty()) {
+                const int q = stack.back(); stack.pop_back();
+                members.push_back(q);
+                nbs(q, nb);
+                for (int k = 0; k < 8; ++k) if (const int o = nb[k]; o >= 0 && !done[o] && pit(o)) { done[o] = 1; stack.push_back(o); }
+            }
+            if (members.size() > 12) continue;
+            float level = -1e9f, low = 1e9f, inflow = 0.0f; Vector3 sum{ 0, 0, 0 };
+            for (int q : members) { level = std::max(level, hf[q]); low = std::min(low, h[q]); inflow = std::max(inflow, area[q]); sum = Vector3Add(sum, flowDir(q)); }
+            if (level - low < 0.8f || inflow >= kFlowArea0) continue;
+            for (int q : members) keepPond[q] = 1;
+            const float r = std::clamp(sqrtf((float)members.size() * side * side / PI) + 6.0f, 12.0f, 60.0f);
+            pondList.push_back({ Vector3Normalize(sum), r, level, level - low });
+        }
+        LOG_INFO("Erosion", "option B ponds (#2039): %d from the routing's closed basins\n", (int)(pondList.size() - before));
+    }
+    route(false, bFace >= 0 && kBreach > 0.0f);
     // Diagonal channel links (#547): the line between two diagonal cells crosses the corner of the two cells beside them,
     // where the bilinear ground stands at the four cells' mean - up to half a V valley's side over the channel, which the
     // river then cut as a slot. The lower of those two side cells is worn down to the link's middle height, so the
@@ -1127,19 +1339,23 @@ void PlanetErosion::routeFinal(int threads) {
             h[s] = std::min(h[s], 0.5f * (h[c] + h[r]));
         }
     }
-    route(true);
+    route(true, false);
     // Classes, the filled cells, and the incision (channel cells off the filled surface, by their drainage).
     flow.assign(G, 0);
     filled.clear();
     std::vector<float> cut(G, 0.0f);
     for (int g = 0; g < G; ++g) {
         int cls = 0;
-        if (area[g] >= kFlowArea0) cls = std::min(15, 1 + (int)floorf(log2f(area[g] / kFlowArea0)));
+        if (area[g] >= kFlowArea0) cls = std::min(15, 1 + (int)floorf(det::Log2f(area[g] / kFlowArea0)));
         flow[g] = (uint8_t)((outlet[g] ? 15 : (dirK[g] & 15)) | (cls << 4));
         if (outlet[g]) continue;
         cut[g] = h0[g] - h[g]; // the corners worn above
         if (hf[g] - h[g] > 0.05f) filled.push_back({ g, hf[g] });
         else if (cls > 0) cut[g] += IncisionDepth(flowArea(g));
+        // #1988: no groove on the B face. Its grid is the smooth coarse surface, where 50 m D4/D8 paths run straight, and
+        // a cut along them showed as ruled lines and staircases (on A the refined valleys hide the path). Rivers keep
+        // their routing and classes; the drainage mask keeps their floors smooth.
+        if (isB(g)) cut[g] = breachCut[g]; // (only the breaches, #1988)
     }
     // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
     for (int f = 0; f < 6; ++f) {
@@ -1203,12 +1419,54 @@ float PlanetErosion::heightAt(Vector3 dv, float footprint) const {
     return fineAt(dv);
 }
 
+namespace {
+    // #1989: bytes deflated as kPieces pieces on threads (#362's pattern): per piece its raw and deflated length, then the bytes.
+    void WritePieces(FILE* f, const std::vector<unsigned char>& raw) {
+        std::vector<unsigned char*> c(kPieces, nullptr);
+        std::vector<int> cs(kPieces, 0), len(kPieces, 0);
+        const size_t per = (raw.size() + kPieces - 1) / kPieces;
+        std::vector<std::thread> pool;
+        for (int k = 0; k < kPieces; ++k) {
+            const size_t a = std::min(raw.size(), per * k), b = std::min(raw.size(), per * (k + 1));
+            len[k] = (int)(b - a);
+            pool.emplace_back([&, k, a] { if (len[k] > 0) c[k] = CompressData(raw.data() + a, len[k], &cs[k]); });
+        }
+        for (auto& t : pool) t.join();
+        for (int k = 0; k < kPieces; ++k) {
+            const int z = c[k] ? cs[k] : 0, rl = c[k] ? len[k] : 0;
+            fwrite(&rl, sizeof(int), 1, f); fwrite(&z, sizeof(int), 1, f);
+            if (z > 0) fwrite(c[k], 1, z, f);
+            if (c[k]) MemFree(c[k]);
+        }
+    }
+    bool ReadPieces(FILE* f, std::vector<unsigned char>& out, size_t total) {
+        out.assign(total, 0);
+        size_t at = 0;
+        for (int k = 0; k < kPieces; ++k) {
+            int rl = 0, cs = 0;
+            if (fread(&rl, sizeof(int), 1, f) != 1 || fread(&cs, sizeof(int), 1, f) != 1 || rl < 0 || cs < 0 || at + (size_t)rl > total) return false;
+            if (cs == 0) { if (rl != 0) return false; continue; }
+            std::vector<unsigned char> buf(cs);
+            if (fread(buf.data(), 1, cs, f) != (size_t)cs) return false;
+            int got = 0;
+            unsigned char* d = DecompressData(buf.data(), cs, &got);
+            const bool good = d && got == rl;
+            if (good) memcpy(out.data() + at, d, (size_t)rl);
+            if (d) MemFree(d);
+            if (!good) return false;
+            at += (size_t)rl;
+        }
+        return at == total;
+    }
+}
+
 void PlanetErosion::computeHash() {
     uint64_t hv = 1469598103934665603ull; // FNV-1a over the stored grids
     for (int16_t q : coarse) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (int16_t q : fine) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (const Pond& pd : pondList) for (float v : { pd.dir.x, pd.dir.y, pd.dir.z, pd.r, pd.level, pd.depth }) { uint32_t b; memcpy(&b, &v, 4); hv = (hv ^ b) * 1099511628211ull; }
     for (uint8_t q : flow) hv = (hv ^ q) * 1099511628211ull; // #547
+    for (int16_t q : cut) hv = (hv ^ (uint16_t)q) * 1099511628211ull; // #1989
     for (const auto& fc : filled) { uint32_t b; memcpy(&b, &fc.second, 4); hv = ((hv ^ (uint32_t)fc.first) * 1099511628211ull ^ b) * 1099511628211ull; }
     hashValue = hv;
 }
@@ -1242,7 +1500,7 @@ bool PlanetErosion::save(const std::string& path) const {
     const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { freeAll(); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '8' }; // ERO7 (#587): + heightScale after the hash; ERO8 (#547): + the final drainage
+    const char magic[4] = { 'E', 'R', 'O', '9' }; // ERO7 (#587): + heightScale after the hash; ERO8 (#547): + the final drainage; ERO9 (#1989): + the cut grid
     fwrite(magic, 1, 4, f);
     fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
@@ -1279,6 +1537,14 @@ bool PlanetErosion::save(const std::string& path) const {
         fwrite(&nfill, sizeof(nfill), 1, f);
         for (const auto& fl : filled) { fwrite(&fl.first, sizeof(int), 1, f); fwrite(&fl.second, sizeof(float), 1, f); }
     }
+    {   // ERO9 (#1989): the cut grid, each value minus the one before, low bytes then high, deflated whole (~10 MB raw)
+        std::vector<unsigned char> cr(cut.size() * 2);
+        int16_t pv = 0;
+        for (size_t k = 0; k < cut.size(); ++k) { const uint16_t dq = (uint16_t)(cut[k] - pv); pv = cut[k]; cr[k] = (unsigned char)(dq & 0xFF); cr[cut.size() + k] = (unsigned char)(dq >> 8); }
+        const int total = (int)cr.size();
+        fwrite(&total, sizeof(total), 1, f);
+        WritePieces(f, cr);
+    }
     const bool written = !ferror(f);
     fclose(f);
     freeAll();
@@ -1291,7 +1557,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0, hs = 1.0f; unsigned int s = 0; uint64_t hv = 0, key = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO8", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO9", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
               fread(&hv, sizeof(hv), 1, f) == 1 && fread(&hs, sizeof(hs), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && pieces > 0 && pieces <= 256 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
@@ -1329,9 +1595,21 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
         if (ok) fill.resize(nfill);
         for (int k = 0; ok && k < nfill; ++k) ok = fread(&fill[k].first, sizeof(int), 1, f) == 1 && fread(&fill[k].second, sizeof(float), 1, f) == 1;
     }
+    std::vector<int16_t> ct;                       // ERO9 (#1989): the cut grid
+    if (ok) {
+        int total = 0;
+        std::vector<unsigned char> d;
+        ok = fread(&total, sizeof(total), 1, f) == 1 && total == 12 * N * N && ReadPieces(f, d, (size_t)total);
+        if (ok) {
+            const size_t m = (size_t)total / 2;
+            ct.resize(m);
+            int16_t pv = 0;
+            for (size_t k = 0; k < m; ++k) { pv = (int16_t)(pv + (int16_t)(d[k] | (d[m + k] << 8))); ct[k] = pv; }
+        }
+    }
     fclose(f);
     if (!ok) return false;
-    flow = std::move(fl); filled = std::move(fill);
+    flow = std::move(fl); filled = std::move(fill); cut = std::move(ct);
     const size_t nc = (size_t)6 * N * N, fe2 = NF > 0 ? (size_t)NF + 2 * FM : 0, nfine = (size_t)6 * fe2 * fe2;
     size_t rawSize = 0;
     for (int len : rawLen) rawSize += (size_t)len;
@@ -1365,7 +1643,8 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key; heightScale = hs;
     pondList = std::move(pl);
     computeHash();
-    if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged
+    if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); cut.clear(); fe = 0; return false; } // damaged
+    computeWet(); // #1989 (derived, not saved)
     return true;
 }
 
@@ -1397,7 +1676,7 @@ namespace {
     }
 }
 
-float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength) {
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength, int firstOctave) {
     static const float kLambda[6] = { 900.0f, 420.0f, 190.0f, 85.0f, 38.0f, 17.0f };
     constexpr float kTwoPi = 6.28318531f;
     static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.14f; // tuning (0.11 read as smooth ridges, user 2026-11-14)
@@ -1415,6 +1694,7 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         const float lam = kLambda[o];
         const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
         if (fade <= 0.0f) break;
+        if (o < firstOctave) continue;
         const float slope = Vector3Length(grad);
         if (slope < 1e-4f) continue;
         const Vector3 across = Vector3Scale(Vector3CrossProduct(dir, grad), 1.0f / slope); // unit, along the contour
@@ -1439,7 +1719,7 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         val /= wsum; dval /= wsum;
         // Sharp crests, V gullies (user 2026-11-14: ridges were too smooth): x = 0 at a crest, 1 at a gully floor;
         // x^0.6 rises steeply from the crest. (The bending below keeps the plain stripes' slope.)
-        { const float x = std::clamp(0.5f * (1.0f - val), 0.0f, 1.0f); val = 1.0f - 2.0f * powf(x, 0.6f); }
+        { const float x = std::clamp(0.5f * (1.0f - val), 0.0f, 1.0f); val = 1.0f - 2.0f * det::Powf(x, 0.6f); }
         const float amp = octaveAmp * lam * sf * fade * strength;
         h += amp * val;
         // The ribs' own slope across the contour bends the next octave: finer gullies run into these.
@@ -1447,3 +1727,212 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
     }
     return h;
 }
+
+float PlanetErosion::bWeight(Vector3 dir) const {
+    // 1 on the B face, 0 off it, a smoothstep across its edge (gnomonic 0.97..1.03, ~1.5 km each side): the detail
+    // functions differ, and a hard switch drew the face edge as a straight line in the terrain.
+    if (bFace < 0) return 0.0f;
+    if (bFace == 6) return 1.0f; // every face
+    Vector3 nrm, t1, t2; FaceAxes(bFace, nrm, t1, t2);
+    const float s = Vector3DotProduct(dir, nrm);
+    if (s <= 0.0f) return 0.0f;
+    const float m = std::max(fabsf(Vector3DotProduct(dir, t1)), fabsf(Vector3DotProduct(dir, t2))) / s;
+    const float t = std::clamp((1.03f - m) / 0.06f, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+namespace {
+    // Value noise in [-1, 1] with its gradient (per unit of p): trilinear over lattice hashes, smoothstep-eased.
+    float ValueNoiseD(Vector3 p, unsigned int seed, Vector3& g) {
+        const int x0 = (int)floorf(p.x), y0 = (int)floorf(p.y), z0 = (int)floorf(p.z);
+        const float fx = p.x - x0, fy = p.y - y0, fz = p.z - z0;
+        const float u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+        const float du = 6 * fx * (1 - fx), dv = 6 * fy * (1 - fy), dw = 6 * fz * (1 - fz);
+        auto H = [&](int i, int j, int k) { return 2.0f * Hash3(x0 + i, y0 + j, z0 + k, seed) - 1.0f; };
+        const float a = H(0, 0, 0), b = H(1, 0, 0), c = H(0, 1, 0), d = H(1, 1, 0), e = H(0, 0, 1), f = H(1, 0, 1), gg = H(0, 1, 1), h = H(1, 1, 1);
+        const float k1 = b - a, k2 = c - a, k3 = e - a, k4 = a - b - c + d, k5 = a - c - e + gg, k6 = a - b - e + f, k7 = -a + b + c - d + e - f - gg + h;
+        g = { du * (k1 + k4 * v + k6 * w + k7 * v * w), dv * (k2 + k5 * w + k4 * u + k7 * w * u), dw * (k3 + k6 * u + k5 * v + k7 * u * v) };
+        return a + k1 * u + k2 * v + k3 * w + k4 * u * v + k5 * v * w + k6 * w * u + k7 * u * v * w;
+    }
+    float EnvTune(const char* name, float def) { const char* e = getenv(name); return e ? (float)atof(e) : def; } // live tuning (#1988)
+}
+
+float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage) {
+    if (h <= 0.0f) return 0.0f;
+    static const float kGully = EnvTune("RAYLIBGAME_B_GULLY", 1.5f); // GUESS: x the A faces' gully strength
+    static const int kFirst = (int)EnvTune("RAYLIBGAME_B_FIRST_OCTAVE", 2.0f); // GUESS: the gullies from 190 m (0: from 900 m as on A)
+    static const float kFbm = EnvTune("RAYLIBGAME_B_FBM", 6.0f);     // GUESS: m, the first fBm octave's amplitude
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    // Valley floors stay smooth: full detail up to ~0.3 km^2, none from 10 km^2 (the small streams run straight along the 50 m grid: a mask on them drew ruled lines).
+    const float dry = 1.0f - smooth(5.5f, 7.0f, drainage);
+    if (dry <= 0.0f) return 0.0f;
+    const float coast = smooth(2.0f, 15.0f, h); // as the A faces' gullies: the shore stays a shore
+    float out = ErosionGullies(p, dir, grad, footprint, seed, coast * kGully * dry, kFirst);
+    // Derivative fBm (the octaves' running slope damps the next ones): on gentle ground only, where the gullies are weak.
+    const float gentle = 1.0f - smooth(0.12f, 0.45f, Vector3Length(grad));
+    if (gentle > 0.0f && kFbm > 0.0f) {
+        float amp = kFbm, sum = 0.0f; Vector3 dsum{ 0, 0, 0 };
+        for (int o = 0; o < 5; ++o, amp *= 0.5f) {
+            const float lam = 320.0f / (float)(1 << o); // 320, 160, 80, 40, 20 m
+            const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
+            if (fade <= 0.0f) break;
+            Vector3 g;
+            const float n = ValueNoiseD(Vector3Scale(p, 1.0f / lam), seed ^ (0x1988u + 977u * o), g);
+            dsum = Vector3Add(dsum, Vector3Scale(g, amp * fade / lam)); // m per m
+            sum += amp * fade * n / (1.0f + Vector3DotProduct(dsum, dsum) / (0.15f * 0.15f));
+        }
+        out += sum * gentle * dry * coast;
+    }
+    return out;
+}
+
+Vector3 PlanetErosion::meanderShift(Vector3 dir, float area) const {
+    // #1988 (user 2026-11-27: option a, valleys that meander): the river network's nodes move along a smooth noise field
+    // (700 m and 230 m, projected onto the tangent plane: no face axes, so no seams), so the rivers wind off the 50 m grid
+    // path, and valleyCut digs their valleys along the moved line: the water and its valley stay together.
+    const float wb = bWeight(dir);
+    if (wb <= 0.0f) return dir;
+    static const float kM = EnvTune("RAYLIBGAME_B_MEANDER", 1.0f); // x the swing (GUESS 20 m x (A / 1 km^2)^0.25, 15-60 m)
+    const float amp = std::clamp(20.0f * det::Powf(area / 1.0e6f, 0.25f), 15.0f, 60.0f) * kM * wb;
+    if (amp <= 0.0f) return dir;
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    auto nv = [&](float lam, unsigned int s) {
+        const Vector3 q = Vector3Scale(p, 1.0f / lam);
+        return Vector3{ ValueNoiseD(q, seed ^ s, gd), ValueNoiseD(q, seed ^ (s + 101u), gd), ValueNoiseD(q, seed ^ (s + 202u), gd) };
+    };
+    Vector3 w = Vector3Add(nv(700.0f, 0x7A11u), Vector3Scale(nv(230.0f, 0x7B22u), 0.2f)); // swing slope under 1: no loops
+    w = Vector3Subtract(w, Vector3Scale(dir, Vector3DotProduct(w, dir)));
+    return Vector3Normalize(Vector3Add(p, Vector3Scale(w, amp)));
+}
+
+float PlanetErosion::valleyCut(Vector3 dir, float h, float dist, float level, float halfWidth) const {
+    // #1988: the valley around a river (dist m from its centreline, its water at level): the ground is lowered toward a floor
+    // just above the water, across a half width that grows with the river; width, depth cap and cross-profile (a narrow
+    // V-floor to a wide U-floor, the rim always smooth) vary along the valley on 400-500 m. The bake's 100-200 m grid
+    // resolves only the larger valleys; these are the ones under that.
+    const float wb = bWeight(dir);
+    const float floorY = level + 0.6f;
+    if (wb <= 0.0f || h <= floorY) return 0.0f;
+    static const float kW = EnvTune("RAYLIBGAME_B_VALLEY_W", 1.0f); // x the half width (GUESS 40 m + 4 x the river's, <= 170 m)
+    static const float kD = EnvTune("RAYLIBGAME_B_VALLEY_D", 1.0f); // x the depth cap (GUESS 25 m + 1.5 x the river's half width)
+    if (dist >= std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * 1.3f)) return 0.0f; // past the widest the noise allows: skip it
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    const float nW = ValueNoiseD(Vector3Scale(p, 1.0f / 450.0f), seed ^ 0x7C33u, gd);
+    const float nD = ValueNoiseD(Vector3Scale(p, 1.0f / 520.0f), seed ^ 0x7D44u, gd);
+    const float nP = ValueNoiseD(Vector3Scale(p, 1.0f / 380.0f), seed ^ 0x7E55u, gd);
+    const float W = std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * (1.0f + 0.3f * nW)); // the index reaches 180 m
+    if (dist >= W) return 0.0f;
+    const float D = (25.0f + 1.5f * halfWidth) * kD * (1.0f + 0.35f * nD);
+    const float floorShare = 0.2f + 0.12f * nP, wallExp = 1.6f + 0.6f * nP;
+    const float u = std::max(0.0f, (dist - floorShare * W) / ((1.0f - floorShare) * W)); // 0 on the floor, 1 at the rim
+    const float s = 1.0f - det::Powf(u, wallExp);
+    return std::min(h - floorY, D) * s * s * wb;
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+#include <cstring>
+
+// #1905: the bake's transcendentals are within a float ulp of the C library's, and give the same bits on every platform.
+// The hash is over inputs like the bake's (drainage areas to a stream-power exponent, latitudes, wetness logs); hosted CI
+// runs this on Windows (MinGW) and Linux (glibc), whose own powf/expf/logf/asinf disagree in the last bit.
+TEST(DetMath, CloseToLibmAndTheSameBitsEverywhere) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 1099511628211ull; } };
+    auto rel = [](double a, double b) { return std::fabs(a - b) / std::max(std::fabs(b), 1e-30); };
+    double worst[4] = {};
+    for (int i = 1; i <= 200000; ++i) {
+        const float x = (float)i * 1.37f + 0.11f;
+        const float p = det::Powf(x * 1000.0f, 0.45f), q = det::Powf(x * 1000.0f, 0.25f), e = det::Expf(-x * 0.01f), l = det::Logf(1.0f + x * 37.0f);
+        const float a = det::Asinf(std::fmod(x * 0.001f, 2.0f) - 1.0f);
+        worst[0] = std::max(worst[0], rel(p, std::pow((double)(x * 1000.0f), (double)0.45f)));
+        worst[1] = std::max(worst[1], rel(e, std::exp(-(double)(x * 0.01f))));
+        worst[2] = std::max(worst[2], rel(l, std::log(1.0 + (double)(x * 37.0f))));
+        worst[3] = std::max(worst[3], std::fabs(a - std::asin((double)(std::fmod(x * 0.001f, 2.0f) - 1.0f))));
+        mix(p); mix(q); mix(e); mix(l); mix(a);
+    }
+    EXPECT_LT(worst[0], 1.2e-7) << "Powf";  // float rounding: below 2^-23
+    EXPECT_LT(worst[1], 1.2e-7) << "Expf";
+    EXPECT_LT(worst[2], 1.2e-7) << "Logf";
+    EXPECT_LT(worst[3], 2.4e-7) << "Asinf"; // absolute, |asin| <= pi/2
+    EXPECT_FLOAT_EQ(det::Powf(0.0f, 0.45f), 0.0f);
+    EXPECT_FLOAT_EQ(det::Asinf(1.5f), 1.57079633f); // clamped
+    EXPECT_EQ(h, 0x6fedff241edf6da0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+}
+
+// #1905: the terrain's sin/cos (canyon and river headings, spawn search) and tan/atan (the river grid's cube-sphere cells).
+TEST(DetMath, TrigCloseToLibmAndTheSameBitsEverywhere) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 1099511628211ull; } };
+    double worst[4] = {};
+    for (int i = -100000; i <= 100000; ++i) {
+        const float x = (float)i * 0.00137f; // +-137 rad: many turns of the reduction
+        const float t = (float)i * 7.85e-6f; // +-0.785: the river grid's angles
+        const float s = det::Sinf(x), c = det::Cosf(x), tn = det::Tanf(t), at = det::Atanf(x);
+        worst[0] = std::max(worst[0], std::fabs(s - std::sin((double)x)));
+        worst[1] = std::max(worst[1], std::fabs(c - std::cos((double)x)));
+        worst[2] = std::max(worst[2], std::fabs(tn - std::tan((double)t)));
+        worst[3] = std::max(worst[3], std::fabs(at - std::atan((double)x)));
+        mix(s); mix(c); mix(tn); mix(at);
+    }
+    EXPECT_LT(worst[0], 6.0e-8) << "Sinf"; // absolute, below half a float ulp at 1
+    EXPECT_LT(worst[1], 6.0e-8) << "Cosf";
+    EXPECT_LT(worst[2], 6.0e-8) << "Tanf";
+    EXPECT_LT(worst[3], 1.2e-7) << "Atanf"; // |atan| <= pi/2
+    EXPECT_EQ(h, 0x5ebe982caa1a1756ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+}
+
+// #1989: the bake fields the biome reads. A small planet (3 km) bakes in moments: every field in its range, filled cells
+// wet, the bake cut somewhere, and a cache round trip giving the same hash and the same fields bit for bit.
+TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
+    const float R = 3000.0f;
+    const ErosionParams p;
+    PlanetErosion b;
+    // A sea in the south (with no outlet the routing floods nothing and no cell is filled) and a crater on a plateau in
+    // the north: closed basins for the wetness check. The coarse pass wears an outlet through the crater's rim; the filled
+    // cells are the basins the noise leaves elsewhere.
+    auto height = [](Vector3 d, float) {
+        const float dc = Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f });
+        const float crater = 120.0f * std::max(0.0f, 1.0f - dc / 0.3f) - 250.0f * std::clamp((0.6f - dc) / 0.2f, 0.0f, 1.0f); // (on a plateau)
+        const float sea = 500.0f * std::max(0.0f, -0.2f - d.y); // the south under the sea: the routing's outlets
+        return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater - sea;
+    };
+    b.build(height, R, 5u, p, 2);
+    ASSERT_TRUE(b.ready());
+    ASSERT_TRUE(b.hasFlow());
+    std::vector<Vector3> dirs;
+    const int K = 3000;
+    for (int k = 0; k < K; ++k) { // a Fibonacci sphere
+        const float y = 1.0f - 2.0f * (k + 0.5f) / K, r = std::sqrt(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * k;
+        dirs.push_back({ r * std::cos(a), y, r * std::sin(a) });
+    }
+    float maxErosion = -1e9f, maxSlope = 0.0f;
+    for (Vector3 d : dirs) {
+        const PlanetErosion::BakeFields f = b.fieldsAt(d);
+        EXPECT_GE(f.wetness, 0.0f); EXPECT_LE(f.wetness, 1.0f);
+        EXPECT_GE(f.slope, 0.0f); EXPECT_LT(f.slope, 90.0f);
+        EXPECT_GE(f.drainage, 4.7f - 1e-4f); EXPECT_LT(f.drainage, 12.0f);
+        maxErosion = std::max(maxErosion, f.erosion); maxSlope = std::max(maxSlope, f.slope);
+    }
+    EXPECT_GT(maxErosion, 1.0f) << "the bake cut nowhere";
+    EXPECT_GT(maxSlope, 1.0f);
+    // 5 filled cells; 1 while the breach limit ignored earlier cuts and drained deep basins step by step (#2069).
+    ASSERT_GE(b.filledCells().size(), 3u) << "the breach drained the test planet's basins (#2069)";
+    int wet = 0;
+    for (const auto& fc : b.filledCells()) wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f;
+    EXPECT_EQ(wet, (int)b.filledCells().size()) << "a filled cell's wetness fell under 0.6";
+
+    const std::string path = ::testing::TempDir() + "test-1989.erosion";
+    ASSERT_TRUE(b.save(path));
+    PlanetErosion c;
+    ASSERT_TRUE(c.load(path, R, 5u, ErosionParamsKey(p)));
+    std::remove(path.c_str());
+    EXPECT_EQ(c.hash(), b.hash());
+    for (Vector3 d : dirs) {
+        const PlanetErosion::BakeFields f = b.fieldsAt(d), g = c.fieldsAt(d);
+        ASSERT_EQ(std::memcmp(&f, &g, sizeof f), 0) << "the fields differ after a cache load";
+    }
+}
+#endif

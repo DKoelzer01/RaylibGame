@@ -11,13 +11,106 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 
 // ---------------------------------------------------------------------------------------------
 // Part definitions
 // ---------------------------------------------------------------------------------------------
+
+namespace {
+// (#1881) Save names, in enum order: a new type gets its name here, where it goes in the enum.
+constexpr const char* kPartSaveNames[] = {
+    "Cube", "Block", "Slope", "Corner", "Beam2", "Beam4", "Beam8",
+    "Conveyor", "Cable",
+    "Chest", "Generator", "Furnace", "Macerator", "Battery",
+    "Campfire", "Kiln", "CokeOven", "BlastFurnace", "Boiler", "ForgeHammer", "AlloySmelter", "SteamMacerator",
+    "RocketEngine", "FuelTank", "Cockpit", "Guidance", "LandingLeg",
+    "OreWasher", "Centrifuge", "WaterPump",
+    "MvGenerator", "Electrolyzer", "ChemicalReactor", "Miner",
+    "HvGenerator", "ArcFurnace", "Refinery", "PrecisionAssembler",
+    "Farmland",
+    "Fence", "Gate",
+    "Cabin",
+    "StationCore",
+    "Slab", "Panel", "Pane", "Post",
+    "Pipe", "Outlet",
+    "FusionReactor", "MassDriver",
+    "HandPump",
+    "Torch",
+    "Snare",
+    "Meteorite",
+    "PressurePlate", "GasVent",
+    "Bed",
+    "ClaimBanner", "ClaimBanner2", "ClaimBanner3", "ClaimBanner4",
+    "Shaft", "Cogwheel", "LargeCogwheel", "Gearbox", "HandCrank", "StressGauge",
+    "Millstone", "Saw", "Press",
+    "WaterWheel", "Windmill",
+    "LvLab", "MvLab", "HvLab",
+    "ResearchTable", "ManaSiphon", "ManaDynamo",
+    "Distillery", "EssenceTank", "Cauldron",
+    "Ladder",
+    "Lever",
+    "RuinCache",
+    // the ladder branch's parts, after staging's (#1271, #1427, #1614, #1429, #1734, #2071)
+    "SteamEngine", "Dynamo", "Motor",
+    "SteamLab",
+    "Bloomery", "Bellows", "Anvil",
+    "SteamAssembler",
+    "LvAssembler",
+    "Compressor", "Cutter",
+    "Lathe", "Wiremill",
+    "MbController", "MbCasing", "MbHatch",
+    "TripHammer", "Mixer", "RotarySieve", "RotaryPump",
+    "BoreholeRig", "LvBoreholeRig",
+};
+static_assert(sizeof(kPartSaveNames) / sizeof(kPartSaveNames[0]) == (size_t)PartType::Count, "a part type without a save name (kPartSaveNames)");
+std::vector<PartType> gPalette; // empty: identity
+}
+
+const char* PartSaveName(PartType t) { return t < PartType::Count ? kPartSaveNames[(int)t] : "-"; }
+PartType PartFromSaveName(const std::string& name) {
+    for (int t = 0; t < (int)PartType::Count; ++t) if (name == kPartSaveNames[t]) return (PartType)t;
+    return PartType::Count;
+}
+std::string PartPalette_Line() {
+    std::string s = "part_palette " + std::to_string((int)PartType::Count);
+    for (const char* n : kPartSaveNames) { s += ' '; s += n; }
+    return s;
+}
+bool PartPalette_Parse(const std::string& line, std::vector<PartType>& out) {
+    std::istringstream in(line);
+    std::string tag; int n = 0;
+    if (!(in >> tag >> n) || tag != "part_palette" || n < 0 || n > 4096) return false;
+    out.assign(n, PartType::Count);
+    for (int i = 0; i < n; ++i) { std::string name; if (!(in >> name)) return false; out[i] = PartFromSaveName(name); }
+    return true;
+}
+void PartPalette_Set(std::vector<PartType> map) { gPalette = std::move(map); }
+PartType PartPalette_MapWith(const std::vector<PartType>& map, int saved) {
+    if (map.empty()) return saved >= 0 && saved < (int)PartType::Count ? (PartType)saved : PartType::Count;
+    return saved >= 0 && saved < (int)map.size() ? map[saved] : PartType::Count;
+}
+PartType PartPalette_Map(int saved) { return PartPalette_MapWith(gPalette, saved); }
+
+// The order of save version 13 and older (and of blueprints before names), frozen: never edit it. A new type goes in
+// kPartSaveNames; this keeps mapping the old numbers.
+const char* PartPalette_V13Line() {
+    return "part_palette 84 Cube Block Slope Corner Beam2 Beam4 Beam8 Conveyor Cable Chest Generator Furnace Macerator Battery "
+           "Campfire Kiln CokeOven BlastFurnace Boiler ForgeHammer AlloySmelter SteamMacerator RocketEngine FuelTank Cockpit "
+           "Guidance LandingLeg OreWasher Centrifuge WaterPump MvGenerator Electrolyzer ChemicalReactor Miner HvGenerator "
+           "ArcFurnace Refinery PrecisionAssembler Farmland Fence Gate Cabin StationCore Slab Panel Pane Post Pipe Outlet "
+           "FusionReactor MassDriver HandPump Torch Snare Meteorite PressurePlate GasVent Bed ClaimBanner ClaimBanner2 "
+           "ClaimBanner3 ClaimBanner4 Shaft Cogwheel LargeCogwheel Gearbox HandCrank StressGauge Millstone Saw Press "
+           "WaterWheel Windmill LvLab MvLab HvLab ResearchTable ManaSiphon ManaDynamo Distillery EssenceTank Cauldron Ladder Lever";
+}
+const std::vector<PartType>& PartPalette_V13() {
+    static const std::vector<PartType> map = [] { std::vector<PartType> m; PartPalette_Parse(PartPalette_V13Line(), m); return m; }();
+    return map;
+}
 
 const char* PartName(PartType t) {
     switch (t) {
@@ -70,6 +163,7 @@ const char* PartName(PartType t) {
         case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::Lever: return "lever"; // (#1641 slice 2c)
+        case PartType::RuinCache: return "sealed cache"; // (#2072)
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam assembler"; // (#1271 L6b-2)
@@ -197,6 +291,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
         case PartType::Lever: return "stone"; // (#1641 slice 2c) a dungeon lever (not placed from the hand; never broken)
+        case PartType::RuinCache: return "stone"; // (#2072) placed by ruins only; never broken
         case PartType::Shaft: return "shaft"; // (#1269)
         case PartType::Cogwheel: return "cogwheel";
         case PartType::LargeCogwheel: return "large_cogwheel";
@@ -326,6 +421,7 @@ static Color PartColor(PartType t) {
         case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
         case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
         case PartType::Lever: return { 74, 70, 66, 255 }; // (#1641 slice 2c) dark iron
+        case PartType::RuinCache: return { 96, 84, 62, 255 }; // (#2072) old bronze-banded iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -394,6 +490,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
         case PartType::Ladder: return PatLadder; // (#1105)
         case PartType::Lever: return PatMetal; // (#1641 slice 2c)
+        case PartType::RuinCache: return PatMetal; // (#2072)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
@@ -412,6 +509,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
         case PartType::Gearbox: case PartType::StressGauge: // (#1269)
+        case PartType::RuinCache: // (#2072) a 0.5 m strongbox (every kind, for now)
         case PartType::Bellows: case PartType::Anvil: // (#1271 L2) one cell each
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
@@ -1293,9 +1391,12 @@ bool PlotSet::load(FILE* f) {
             if (fscanf(f, " %d %d %d %d", &x, &y, &z, &o) != 4) return false;
             if (materials && fscanf(f, " %d", &m) != 1) return false;
             // Old saves: beams were iron.
-            if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
+            // (#1881) the saved number through the file's palette; a type this build doesn't have keeps its slot, empty
+            const PartType type = PartPalette_Map(t);
+            if (type == PartType::Count) { p->parts.push_back(dead); continue; }
+            if (!materials && IsBeam(type)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
-            Part part{ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
+            Part part{ type, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
             if (IsBeam(part.type)) { // beams are single cubes now (#200): the first takes the slot, the rest go on the end
                 std::vector<Part> cubes;
                 Plot::SplitBeam(part, cubes);
@@ -1460,5 +1561,42 @@ TEST(PlotBelts, AddRemoveSaveLoad) {
         EXPECT_TRUE(got[i].kind == ConduitKind::Belt);
         EXPECT_TRUE(got[i].points == want[i].points) << "run " << want[i].id;
     }
+}
+
+// #1881: part types are saved by name. Every type has its own name, the palette line maps back to itself, the frozen
+// version-13 order still holds every type it had, and a palette with a type inserted mid-list (or one this build lacks)
+// maps each saved number to the right type.
+TEST(PartPalette, NamesRoundTripAndOldOrdersMap) {
+    std::set<std::string> names;
+    for (int t = 0; t < (int)PartType::Count; ++t) {
+        EXPECT_EQ(PartFromSaveName(PartSaveName((PartType)t)), (PartType)t) << PartSaveName((PartType)t);
+        names.insert(PartSaveName((PartType)t));
+    }
+    EXPECT_EQ(names.size(), (size_t)PartType::Count) << "two part types share a save name";
+    EXPECT_STREQ(PartSaveName(PartType::Cube), "Cube");
+    EXPECT_STREQ(PartSaveName(PartType::LandingLeg), "LandingLeg");
+    EXPECT_STREQ(PartSaveName(PartType::Lever), "Lever");
+
+    std::vector<PartType> now;
+    ASSERT_TRUE(PartPalette_Parse(PartPalette_Line(), now));
+    ASSERT_EQ(now.size(), (size_t)PartType::Count);
+    for (int t = 0; t < (int)PartType::Count; ++t) EXPECT_EQ(now[t], (PartType)t);
+
+    const std::vector<PartType>& v13 = PartPalette_V13();
+    ASSERT_EQ(v13.size(), 84u) << "the frozen version-13 order changed: it must never be edited";
+    for (size_t i = 0; i < v13.size(); ++i) EXPECT_NE(v13[i], PartType::Count) << "v13 type " << i << " has no type in this build";
+    EXPECT_EQ(v13[0], PartType::Cube);
+    EXPECT_EQ(v13[26], PartType::LandingLeg);
+    EXPECT_EQ(v13[83], PartType::Lever);
+
+    std::vector<PartType> shifted; // a save made by a build with a type ("Gizmo") before Chest, and one that is gone
+    ASSERT_TRUE(PartPalette_Parse("part_palette 4 Cube Gizmo Chest Lever", shifted));
+    EXPECT_EQ(PartPalette_MapWith(shifted, 0), PartType::Cube);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 1), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 2), PartType::Chest);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 3), PartType::Lever);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 4), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith({}, (int)PartType::Chest), PartType::Chest); // no palette: identity
+    EXPECT_FALSE(PartPalette_Parse("camera 1 2 3", shifted));
 }
 #endif

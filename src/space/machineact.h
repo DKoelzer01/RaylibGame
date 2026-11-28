@@ -33,6 +33,9 @@ int MachineAct_CursorMoves();                    // (#854 tests) cursor takes co
 // (#1684) MsgMachineAction codes for a dungeon's parts (not machines): the host unlocks a vault door (taking a dungeon_key
 // from the requester) or pulls a lever, and sends the part changes to everyone.
 constexpr int kMachineActUnlockVault = 11, kMachineActPullLever = 12;
+// (#2072) A ruin cache, its hold done: the host opens it (spending the requester's power cell, as its kind needs), rolls,
+// gives the parts, marks it opened for everyone and sends the requester the result lines.
+constexpr int kMachineActOpenCache = 13;
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;

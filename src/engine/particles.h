@@ -6,8 +6,8 @@
 // (a planet or moon), so it stays put on the spinning ground and across floating-origin shifts;
 // gravity pulls toward that body's centre (scaled per kind; smoke rises). One pooled array (oldest
 // replaced when full), updated on the main thread; drawn in two batches (alpha-blended, sorted far to
-// near, lit by the day/night light; then additive glow for fire, sparks and fireflies), depth-tested
-// without depth writes.
+// near, lit by the day/night light times the sky they see, plus the headlamp, torches and lamps (particles.fs, #2087);
+// then additive glow for fire, sparks and fireflies), depth-tested without depth writes.
 
 #include <raylib.h>
 #include "dvec3.h"
@@ -34,7 +34,7 @@ struct ParticleBurst {
     float life = 1.0f;             // s (each particle +-30%)
     float speed = 1.0f;            // m/s, along `dir` plus a random cone of `spread`
     float spread = 0.6f;           // 0 = straight along dir, 1 = any direction
-    Vector3 dir = { 0, 1, 0 };     // body-local; zero = away from the body centre ("up")
+    Vector3 dir = { 0, 0, 0 };     // body-local; zero (the default, #1859 L8) = away from the body centre ("up")
     Vector3 baseVel = { 0, 0, 0 }; // body-local velocity added to every particle (a moving emitter)
 };
 
@@ -49,5 +49,10 @@ void Particles_Unload();
 // (#1126) A billboard of `size` m whose centre is `dist` m from the eye: 1 shown, falling to 0 as it nears the eye, so a
 // puff drifting into the camera fades instead of filling the screen. RAYLIBGAME_PARTICLE_NEAR_FADE=0: always 1 (A/B).
 float Particles_NearFade(float dist, float size);
+// (#2087, tests) The sky a burst emitted there sees (1 open .. 0 buried); whether the last draw lit its smoke and dust
+// through particles.fs (false: RAYLIBGAME_PARTICLE_LIGHT=0, the shader failed, or none drawn).
+float Particles_SkyAt(const Planetoid& body, Vector3 local);
+bool Particles_LastDrawLit();
+int Particles_DrawnCount(); // tests (#2140): particles past the distance and view culls in the last Particles_Draw
 
 #endif

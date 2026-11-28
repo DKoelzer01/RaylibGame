@@ -46,6 +46,20 @@ namespace fs = std::filesystem;
 void Scenario_LegacySetup();  // (below: the legacyDrives mode)
 void Scenario_LegacyFinish();
 
+std::string FailedChecksReason(const std::vector<ScenarioCheck>& checks) {
+    constexpr int kNamed = 3; // more names would push the timing tail of the verdict line out of the logs' grep width
+    int failed = 0;
+    std::string names;
+    for (const auto& k : checks) {
+        if (k.pass) continue;
+        if (failed++ < kNamed) names += (names.empty() ? "" : "; ") + k.name;
+    }
+    std::string r = std::to_string(failed) + " of " + std::to_string(checks.size()) + " checks failed";
+    if (failed > 0) r += ": " + names;
+    if (failed > kNamed) r += " and " + std::to_string(failed - kNamed) + " more";
+    return r;
+}
+
 namespace {
 
 struct Entry { std::string name, file; ScenarioBuild build; };
@@ -424,6 +438,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
         for (const char* x : { "--record", R.capture.c_str(), "--record-every", "4", "--record-continue", "--sheet", "--record-hud", "0" }) a.push_back(x);
         a.push_back("--frames"); a.push_back(std::to_string(frames));
     } else { a.push_back("--fixed-dt"); a.push_back("0.0166666667"); }
+    if (R.def.lod > 0.0) { a.push_back("--lod"); a.push_back(Num(R.def.lod)); } // (#2126) before args and rest: a later --lod wins
     for (const std::string& x : R.def.args) a.push_back(x);
     for (const std::string& x : rest) a.push_back(x);
     for (size_t i = 1; i < a.size(); ++i) R.args += (i > 1 ? " " : "") + a[i];
@@ -469,6 +484,8 @@ bool Scenario_Frame(Scene& world) {
     c.field = c.body ? dynamic_cast<const PlanetField*>(c.body->field.get()) : nullptr;
     c.T = SimTime() - R.simStart;
     c.t = SimTime() - R.stepSim;
+    c.wall = now - R.stepWall;
+    c.clock = R.def.realTime ? std::min(c.t, c.wall) : c.t;
     c.frame = R.frames++;
     c.stepIndex = R.step;
     if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
@@ -476,8 +493,9 @@ bool Scenario_Frame(Scene& world) {
         if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
         return false;
     }
-    if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
-        const bool wall = c.T <= R.def.timeout;
+    const double runClock = R.def.realTime ? std::min(c.T, now - R.wallStart) : c.T; // (#1972) as c.clock
+    if (runClock > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
+        const bool wall = runClock <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
                               (wall ? " x " + Num(WallFactor()) + " of wall time (sim only " + Num(c.T) + " s: the run stopped advancing)" : " of sim time") +
                               (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
@@ -507,11 +525,12 @@ bool Scenario_Frame(Scene& world) {
         R.stepSim = SimTime(); R.stepWall = now;
         if (++R.step >= (int)R.def.steps.size()) {
             int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
-            Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " checks failed" : R.checks.empty() ? "no checks" : "");
+            Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? FailedChecksReason(R.checks) : R.checks.empty() ? "no checks" : "");
             return false;
         }
-    } else if (c.t > st.deadline) {
-        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + " s sim" + (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
+    } else if (c.clock > st.deadline) {
+        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + (R.def.realTime ? " s of both sim and wall time" : " s sim") +
+                           (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
         return false;
     }
     return true;
@@ -523,13 +542,15 @@ void Scenario_Loading() {
     if (!R.active || R.finished || R.simStart < 0.0) return;
     const double now = Wall();
     gLastTouch = now;
+    // A legacy scenario (a bench drives it) has no steps: don't index past the list.
+    const std::string stepName = R.step >= 0 && R.step < (int)R.def.steps.size() ? R.def.steps[R.step].name : std::string("(legacy bench)");
     if (now - R.lastBeat >= 5.0) {
         R.lastBeat = now;
         printf("scenario: %s heartbeat: a loading screen during step %d/%zu '%s' (wall %.0f s)\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
-               R.def.steps[R.step].name.c_str(), now - R.wallStart);
+               stepName.c_str(), now - R.wallStart);
     }
     if (now - R.wallStart > R.def.timeout * WallFactor()) {
-        Finish("TIMEOUT", "a loading screen held step '" + R.def.steps[R.step].name + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
+        Finish("TIMEOUT", "a loading screen held step '" + stepName + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
         fflush(stdout);
         std::_Exit(3);
     }
@@ -810,3 +831,19 @@ void Scenario_LegacyFinish() {
     int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
     Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " shots differ from their baselines" : "");
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#2187) ----
+#include <gtest/gtest.h>
+
+TEST(ScenarioVerdict, FailedChecksAreNamed) {
+    auto check = [](const char* name, bool pass) { ScenarioCheck k; k.name = name; k.pass = pass; return k; };
+    // the prefix stays "<n> of <m> checks failed", so the known lines written before the names keep matching
+    EXPECT_EQ(FailedChecksReason({ check("hash cranked edits", true), check("hash flowing water", false) }),
+              "1 of 2 checks failed: hash flowing water");
+    EXPECT_EQ(FailedChecksReason({ check("a", false), check("b", true), check("c", false) }), "2 of 3 checks failed: a; c");
+    EXPECT_EQ(FailedChecksReason({ check("a", false), check("b", false), check("c", false), check("d", false), check("e", false) }),
+              "5 of 5 checks failed: a; b; c and 2 more");
+    EXPECT_EQ(FailedChecksReason({ check("a", true) }), "0 of 1 checks failed");
+}
+#endif

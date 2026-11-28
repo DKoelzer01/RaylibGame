@@ -1,6 +1,7 @@
 #include "rivers.h"
 #include "envflag.h"
 #include "erosion.h"
+#include "detmath.h"
 #include <unordered_map>
 
 #include <raymath.h>
@@ -49,7 +50,7 @@ int RiverNetwork::cellOf(Vector3 d) const {
     int face = 0; float best = -2.0f;
     for (int f = 0; f < 6; ++f) { const float v = Vector3DotProduct(d, kN[f]); if (v > best) { best = v; face = f; } }
     const float da = 0.5f * PI / n;
-    const float a = atanf(Vector3DotProduct(d, kU[face]) / best), b = atanf(Vector3DotProduct(d, kV[face]) / best);
+    const float a = det::Atanf(Vector3DotProduct(d, kU[face]) / best), b = det::Atanf(Vector3DotProduct(d, kV[face]) / best);
     const int i = std::clamp((int)floorf((a + 0.25f * PI) / da), 0, n - 1), j = std::clamp((int)floorf((b + 0.25f * PI) / da), 0, n - 1);
     return (face * n + i) * n + j;
 }
@@ -58,7 +59,7 @@ Vector3 RiverNetwork::centre(int c) const {
     const int face = c / (n * n), i = (c / n) % n, j = c % n;
     const float da = 0.5f * PI / n;
     const float a = -0.25f * PI + (i + 0.5f) * da, b = -0.25f * PI + (j + 0.5f) * da;
-    return Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], tanf(a)), Vector3Scale(kV[face], tanf(b)))));
+    return Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], det::Tanf(a)), Vector3Scale(kV[face], det::Tanf(b)))));
 }
 
 void RiverNetwork::neighbours(int c, int out[8]) const {
@@ -69,7 +70,7 @@ void RiverNetwork::neighbours(int c, int out[8]) const {
         for (int dj = -1; dj <= 1; ++dj) {
             if (di == 0 && dj == 0) continue;
             const float a = -0.25f * PI + (i + di + 0.5f) * da, b = -0.25f * PI + (j + dj + 0.5f) * da;
-            const Vector3 d = Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], tanf(a)), Vector3Scale(kV[face], tanf(b)))));
+            const Vector3 d = Vector3Normalize(Vector3Add(kN[face], Vector3Add(Vector3Scale(kU[face], det::Tanf(a)), Vector3Scale(kV[face], det::Tanf(b)))));
             const int m = cellOf(d);
             out[k++] = m == c ? -1 : m;
         }
@@ -251,7 +252,7 @@ RiverNetwork::RiverNetwork(float radius, unsigned int seed, const std::function<
             const Vector3 up = Vector3Normalize(q2);
             const Vector3 tan = Vector3Subtract(CatmullRom(P0, P1, P2, P3, std::min(1.0f, t + 0.01f)), CatmullRom(P0, P1, P2, P3, std::max(0.0f, t - 0.01f)));
             const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, tan));
-            q2 = Vector3Add(q2, Vector3Scale(side, amp * sinf(PI * t)));
+            q2 = Vector3Add(q2, Vector3Scale(side, amp * det::Sinf(PI * t)));
             curvePts.push_back(Vector3Scale(Vector3Normalize(q2), R));
         }
     }
@@ -430,7 +431,7 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         // Less flow than its natural (#656): a lower, narrower river; none, the water at its bed (drawn as nothing: a dry bed).
         if (flowAny.load(std::memory_order_relaxed) && flowCur && !tNatural) {
             const float f = flowCur[i].load(std::memory_order_relaxed);
-            if (f < 0.999f) { h.level -= h.depth * (1.0f - powf(std::max(f, 0.0f), 0.4f)) + 0.3f * (1.0f - std::min(1.0f, f * 10.0f)); h.halfWidth *= sqrtf(std::max(f, 0.0f)); h.depth *= powf(std::max(f, 0.0f), 0.4f); }
+            if (f < 0.999f) { h.level -= h.depth * (1.0f - det::Powf(std::max(f, 0.0f), 0.4f)) + 0.3f * (1.0f - std::min(1.0f, f * 10.0f)); h.halfWidth *= sqrtf(std::max(f, 0.0f)); h.depth *= det::Powf(std::max(f, 0.0f), 0.4f); }
         }
     };
     for (int i : list) {
@@ -461,7 +462,7 @@ float RiverNetwork::distToCell(Vector3 d, int c) const {
     const float dn = Vector3DotProduct(d, kN[face]);
     if (dn < 0.2f) return 1e30f;
     const float da = 0.5f * PI / n;
-    const float a = atanf(Vector3DotProduct(d, kU[face]) / dn), b = atanf(Vector3DotProduct(d, kV[face]) / dn);
+    const float a = det::Atanf(Vector3DotProduct(d, kU[face]) / dn), b = det::Atanf(Vector3DotProduct(d, kV[face]) / dn);
     const float a0 = -0.25f * PI + i * da, b0 = -0.25f * PI + j * da;
     const float ea = std::max({ a0 - a, 0.0f, a - (a0 + da) }), eb = std::max({ b0 - b, 0.0f, b - (b0 + da) });
     return sqrtf(ea * ea + eb * eb) * R;
@@ -705,6 +706,9 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
+    // #1988 (option B): the meander. Every node moves along the bake's noise field, so the links wind off the 50 m grid
+    // path (lake nodes stay: the lake is the bake's); the valley carve follows the moved line.
+    if (params.meanderShift) for (int k = 0; k < M; ++k) if (!fineLake.count(nodeCell[k])) pos[k] = params.meanderShift(pos[k], area[k]);
     // Widths and depths by drainage. A head's trickle is at least 2 m wide and 0.5 m deep (#631: a 1.6 m x 0.3 m one showed
     // as an empty trench - the water mesh draws nothing under 0.15 m, and coarser terrain never resolved the channel).
     // Discharge (#637, user: most rivers 10-20 m wide, the big ones where several join 30-50 m and several metres deep): each
@@ -947,6 +951,19 @@ bool RiverNetwork::nearestHead(Vector3 dir, float minLevel, Vector3& head, Vecto
     head = Vector3Normalize(pc.a);
     down = Vector3Normalize(Vector3Subtract(pc.b, pc.a));
     return true;
+}
+
+void RiverNetwork::forEachPieceNear(Vector3 dir, float reach, const std::function<void(float, float, float)>& fn) const {
+    const auto& list = index[cellOf(dir)];
+    const Vector3 p = Vector3Scale(dir, R);
+    for (int i : list) {
+        const Piece& pc = pieces[i];
+        if (pc.inLake || Vector3Distance(p, pc.mid) - pc.halfLen >= reach) continue;
+        float t;
+        const float d = SegDist(p, pc.a, pc.b, t);
+        if (d >= reach) continue;
+        fn(d, pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb, pc.wa + (pc.wb - pc.wa) * t);
+    }
 }
 
 float RiverNetwork::carve(Vector3 dir, float h) const {

@@ -13,8 +13,8 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem";
-        case NetMsg::BeltSnapshot: return "belt snapshot"; case NetMsg::BeltSteps: return "belt steps"; case NetMsg::BeltResync: return "belt resync"; // (#1735)
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem"; case NetMsg::TeamStore: return "team store";
+        case NetMsg::MapPin: return "map pin"; case NetMsg::ResearchQueue: return "research queue"; case NetMsg::BeltSnapshot: return "belt snapshot"; case NetMsg::BeltSteps: return "belt steps"; case NetMsg::BeltResync: return "belt resync"; // (#1735)
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -560,6 +560,9 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
         case NetMsg::Graves: { MsgGraves m; return NetRead(r, m); }
         case NetMsg::QuestBook: { MsgQuestBook m; return NetRead(r, m); }
+        case NetMsg::TeamStore: { MsgTeamStore m; return NetRead(r, m); }
+        case NetMsg::MapPin: { MsgMapPin m; return NetRead(r, m); }
+        case NetMsg::ResearchQueue: { MsgResearchQueue m; return NetRead(r, m); }
         case NetMsg::CraftRequest: { MsgCraftRequest m; return NetRead(r, m); }
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
@@ -766,6 +769,16 @@ bool NetProto_Test() {
         }
         MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
         check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
+        { // #1886
+            MsgTeamStore a{ 7, "section research\ndone smelting\nsection_end\n" }, b; std::vector<uint8_t> s;
+            check(RoundTrip(a, b, &s) && b.team == 7 && b.text == a.text, "team store"); samples.push_back(s);
+            MsgMapPin pa, pb; std::vector<uint8_t> s2;
+            pa.add = false; pa.body = "terra"; pa.name = "Copper hill"; pa.dir[0] = 0.6f; pa.dir[1] = 0.0f; pa.dir[2] = -0.8f;
+            check(RoundTrip(pa, pb, &s2) && !pb.add && pb.body == "terra" && pb.name == pa.name && pb.dir[0] == 0.6f && pb.dir[2] == -0.8f, "map pin");
+            samples.push_back(s2);
+            MsgResearchQueue ra{ 3, "steam_power" }, rb; std::vector<uint8_t> s3;
+            check(RoundTrip(ra, rb, &s3) && rb.op == 3 && rb.node == "steam_power", "research queue"); samples.push_back(s3);
+        }
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
             a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
@@ -996,6 +1009,20 @@ bool NetRead(NetReader& r, MsgGraves& m) {
 }
 void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w.u32(m.team); w.str(m.text.substr(0, 65536)); }
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
+// (#1886) A longer text is the sender's bug (the host drops the map section first): written cut, and then read as broken.
+void NetWrite(NetWriter& w, const MsgTeamStore& m) { Id(w, NetMsg::TeamStore); w.u32(m.team); w.str(m.text.substr(0, MsgTeamStore::kMaxText)); }
+bool NetRead(NetReader& r, MsgTeamStore& m) { m.team = r.u32(); m.text = r.str(MsgTeamStore::kMaxText); return Done(r); }
+void NetWrite(NetWriter& w, const MsgMapPin& m) {
+    Id(w, NetMsg::MapPin); w.boolean(m.add); w.str(m.body.substr(0, 64)); w.str(m.name.substr(0, MsgMapPin::kMaxName));
+    w.f32(m.dir[0]); w.f32(m.dir[1]); w.f32(m.dir[2]);
+}
+bool NetRead(NetReader& r, MsgMapPin& m) {
+    m.add = r.boolean(); m.body = r.str(64); m.name = r.str(MsgMapPin::kMaxName);
+    m.dir[0] = r.f32(); m.dir[1] = r.f32(); m.dir[2] = r.f32();
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgResearchQueue& m) { Id(w, NetMsg::ResearchQueue); w.u8(m.op); w.str(m.node.substr(0, 64)); }
+bool NetRead(NetReader& r, MsgResearchQueue& m) { m.op = r.u8(); m.node = r.str(64); return Done(r); }
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items

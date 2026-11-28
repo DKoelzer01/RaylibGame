@@ -40,8 +40,9 @@ struct Params {
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
     // The pressure pass (#1168): full cells carry the head of the free surface they connect to, so water climbs the far leg
-    // of a U-bend. CPU-only and opt-in (RAYLIBGAME_FLUID_PRESSURE=1) until fluid_step.comp has it: the two must agree.
-    bool pressure = EnvFlag("RAYLIBGAME_FLUID_PRESSURE");
+    // of a U-bend. CPU and GPU (fluid_step.comp) run the same pass; on by default since #1898, RAYLIBGAME_FLUID_PRESSURE=0
+    // turns it off (the fluid/u-bend-off baselines).
+    bool pressure = EnvFlagOr("RAYLIBGAME_FLUID_PRESSURE", true);
     void setCell(float cs, int column) {
         cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column;
         wakeUnits = std::max(4, (int)(0.016f * hu + 0.5f));
@@ -69,6 +70,9 @@ struct Grid {
     std::vector<uint32_t> dem, cap;
     std::vector<uint16_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
+    // Per slot: the root of its body's gravity over Terra's (#1942; 1 on Terra): G k k drives the momentum, k scales the
+    // levelling share. The GPU reads it from inS.
+    std::vector<float> gRoot;
     // The pressure pass (#1168), per cell: the head H of the free surface a water cell is connected to, in fill units (255 a
     // row) above the cell's own bottom. pr: the last substep's (read by the vertical pass), prN: this substep's (written by it);
     // the apply pass copies prN to pr per cell. The host carries pr per brick between ticks, as faceP.

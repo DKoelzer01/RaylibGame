@@ -710,6 +710,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (id == "rebreather") { Module(cv, c, Sym::Drop); return; }
     if (id == "thruster_pack") { Module(cv, c, Sym::Arrow); return; }
     if (id == "thermal_regulator") { Module(cv, c, Sym::Snow); return; }
+    if (id == "cooling_vest") { Module(cv, c, Sym::Drop); return; } // (#1472) coolant
     if (id == "grip_boots") { cv.paint(Poly({ { 20, 10 }, { 36, 10 }, { 36, 40 }, { 54, 44 }, { 54, 54 }, { 18, 54 } }), Lin(c)); cv.paint(Box(36, 55, 19, 2.5f), Flat(kDark), 0.5f); return; }
     // By kind.
     switch (d.kind) {

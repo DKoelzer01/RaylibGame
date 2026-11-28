@@ -72,8 +72,12 @@ struct NetClient {
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
+    int teamStores = 0, teamStoreTeam = 0;      // (#1886) team progression stores heard, and the team of the last one
+    std::string teamStoreText;                  // ...and its text
+    int mapPinsSent = 0;                        // (#1886) map pins added or removed for the team (NetClient_SendMapPin)
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     BeltClient belts;                           // (#1735) the near plots' belts, replayed from the server's (beltsync.h)
+    MsgMachineView lastMachineView;             // (#2181) the last one, as sent (tests: a cache's lock charge from the host)
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
@@ -171,6 +175,10 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here does), handle messages, ping, time out
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
+// (#1886) a map pin placed (add) or removed, for the team's shared pins; false when not joined (it stays a local waypoint)
+bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vector3 dir, const std::string& name);
+// (#1886) a research queue change (op: ResearchQueueOp 1 add, 2 remove, 3 up); the host's next team store shows the result
+bool NetClient_SendResearchQueue(NetClient& c, uint8_t op, const std::string& node);
 void NetClient_HitAnimal(NetClient& c, uint64_t netId, int flags = 0); // (#334) a swing at an animal: the server checks and applies it; flags (#1509): 1 heavy, 2 from behind
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
