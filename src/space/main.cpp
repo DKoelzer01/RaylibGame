@@ -1510,6 +1510,12 @@ int main(int argc, char** argv)
         if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1);
         if (worldDifficulty == 0) inventory.add("berries", 6);
     });
+    GameSave_SetServerSpawnHook([&world] { // (#2157) a dedicated server's player: at the start, as on a new world
+        Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        if (start) player.spawnOn(world, *start, StartSpawnDir(*start));
+    });
 
     bool windowKeepAlive = true;
 
@@ -1619,6 +1625,8 @@ int main(int argc, char** argv)
         // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
         gAnimalsReplicated = true; Animals_Reset();
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
+        gNavSharePin = [](bool add, const NavPin& p) { return NetClient_SendMapPin(gJoin, add, p.body, p.dir, p.name); }; // (#1886) the team's map pins
+        gResearchQueueRequest = [](ResearchQueueOp op, const std::string& node) { NetClient_SendResearchQueue(gJoin, (uint8_t)op, node); }; // (#1886) and its research queue
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gDropRequest = [](const std::string& item, int64_t centi) { NetClient_DropItems(gJoin, item, centi); }; // (#865)
@@ -1679,7 +1687,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Flares_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
+    // GPU timer marks between the groups (no-ops unless timing; the culling audit's per-path costs).
+    world.onDraw3D = [&world] { Farm_Draw3D(world); GpuTimer_Mark("3d:farm"); Animals_Draw3D(world); GpuTimer_Mark("3d:animals"); Flares_Draw3D(world); Machines_Draw3D(world); GpuTimer_Mark("3d:machines"); Avatar_Draw3D(world, gAvatars); GpuTimer_Mark("3d:avatars"); InstanceBatch_Flush(world); GpuTimer_Mark("3d:instances"); Weather_Draw3D(world); GpuTimer_Mark("3d:weather"); Waterfalls_Draw3D(world); GpuTimer_Mark("3d:waterfalls"); Particles_Draw(world); GpuTimer_Mark("3d:particles"); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
@@ -13810,7 +13819,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gNavSharePin = nullptr; gResearchQueueRequest = nullptr; Nav_SetTeamPins(""); gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }

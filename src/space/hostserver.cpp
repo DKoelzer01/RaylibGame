@@ -25,6 +25,7 @@
 #include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
+#include "research.h"
 #include "teamquests.h"
 #include "teamstore.h"
 #include "navigation.h"
@@ -467,7 +468,13 @@ namespace {
     // goes without its map section (the client keeps the map it has; a known gap: the map needs deltas).
     std::map<int, std::string> teamStoreSent;  // team -> the store text its online members have
     std::map<int, long long> teamStoreSentAt;  // team -> SimTick of that send
+    std::set<int> teamStoreNow;                // teams to send at the next tick (SendUrgentTeamStores)
+    // A changed store at most every 5 s: exploring grows the map's tiles often and each send is the whole text (research
+    // done right now waits up to 5 s; a map pin goes at the next tick)
+    constexpr long long kTeamStoreEvery = 5 * 60; // ticks
     int teamStoreMsgs = 0;
+    int mapPins = 0, mapPinsRefused = 0;       // (#1886) MsgMapPin taken, and refused (no team, a bad name or direction, 256 pins)
+    int researchQueueActs = 0, researchQueueRefused = 0; // (#1886) MsgResearchQueue applied, and refused (Research_QueueAction)
     // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
     bool TeamStoreTextForNet(int team, std::string& text) {
         text = TeamStore_Text(team);
@@ -851,6 +858,13 @@ namespace {
         SendChangedItems(conn, rm.inventory, before);
     }
 
+    // (#1886) The store to a team's online members if it changed since their last one.
+    void SendChangedTeamStore(int team, const std::vector<std::pair<uint32_t, uint32_t>>& members) {
+        std::string store;
+        if (!TeamStoreTextForNet(team, store) || store == teamStoreSent[team]) return;
+        teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
+        for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
+    }
     void StepTeamQuests(Scene& world) {
         if (SimTick() - lastQuestTick < 60) return; // once a second
         lastQuestTick = SimTick();
@@ -898,15 +912,19 @@ namespace {
             }
             // (#1886) the progression store when it changed, at most every 5 s: exploring grows the map's tiles often and
             // each send is the whole text (research done right now waits up to 5 s)
-            constexpr long long kStoreEvery = 5 * 60; // ticks
-            if (SimTick() - teamStoreSentAt[team] >= kStoreEvery) {
-                std::string store;
-                if (TeamStoreTextForNet(team, store) && store != teamStoreSent[team]) {
-                    teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
-                    for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
-                }
-            }
+            if (SimTick() - teamStoreSentAt[team] >= kTeamStoreEvery) SendChangedTeamStore(team, members);
         }
+    }
+    // (#1886) Teams whose store a member changed (a map pin, a research queue change): sent at the next tick, every tick,
+    // not with StepTeamQuests' once a second (a pin waited up to 1 s; a member joining then could have it first).
+    void SendUrgentTeamStores() {
+        if (teamStoreNow.empty()) return;
+        for (const int team : teamStoreNow) {
+            std::vector<std::pair<uint32_t, uint32_t>> members;
+            for (const auto& [conn, p] : peers) if (p.joined && TeamOfSession(p.session) == team) members.push_back({ p.session, conn });
+            if (!members.empty()) SendChangedTeamStore(team, members);
+        }
+        teamStoreNow.clear();
     }
 
     void SendVitals() {
@@ -2335,6 +2353,28 @@ namespace {
                 OnAnimalHit(world, it->second.session, h.netId, h.action);
                 return;
             }
+            case NetMsg::MapPin: { // (#1886) a player's map pin, for their team's shared pins
+                MsgMapPin p;
+                if (!it->second.joined || !NetRead(r, p)) return;
+                const int team = TeamOfSession(it->second.session);
+                if (!team) { ++mapPinsRefused; return; }
+                if (!TeamQuests_SetPin(team, p.add, p.body, Vector3{ p.dir[0], p.dir[1], p.dir[2] }, p.name)) { ++mapPinsRefused; return; }
+                ++mapPins;
+                if (p.add) TeamEvent(it->second.session, "count", "waypoint"); // (the team's "place a waypoint" task)
+                teamStoreNow.insert(team); // to the team at the next tick, not in up to 5 s
+                return;
+            }
+            case NetMsg::ResearchQueue: { // (#1886) the research tab's queue changes: the team's research is kept here
+                MsgResearchQueue q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                const int team = TeamOfSession(it->second.session);
+                const bool ok = team && q.op >= 1 && q.op <= 3 &&
+                                Research_QueueAction(Research_Team(team), (ResearchQueueOp)q.op, q.node, TeamQuests_Book(team).tier);
+                if (!ok) { ++researchQueueRefused; return; } // (the client's mirror is put right by the next store)
+                ++researchQueueActs;
+                teamStoreNow.insert(team);
+                return;
+            }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone
                 MsgChat c;
                 if (!it->second.joined || !NetRead(r, c) || c.text.empty()) return;
@@ -2470,6 +2510,7 @@ void Host_Update(Scene& world) {
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
     StepGraves(world);         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
+    SendUrgentTeamStores(); // (#1886) a pin or research queue change: the team's store now
     StepMachines(world);  // (#332) machines: near points, watched views, working states
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     StepClaims();         // (#343) claim decay, enter/leave lines

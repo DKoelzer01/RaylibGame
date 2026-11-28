@@ -137,6 +137,12 @@ class Scene {
         Vector3 lightDirection{ 1, 0, 0 };     // the directional light this frame: the sun, or the moon at night (#224); the sky keeps sunDirection
         float moonLight = 0.0f, moonPhase = 0.0f; // the moon's share as the light (0..1) and its lit fraction (#224)
         Vector4 frameFogShell{};
+        // (#2140) The main view's frustum (render space) while onDraw3D runs, so its paths (animals, machine details, crops,
+        // avatars, flares, waterfalls, particles) skip what is out of view. True outside onDraw3D, with frustum culling off
+        // (the F-key debug toggle), and for the shadow passes, which never call it.
+        bool inView(Vector3 centre, float radius) const { return !frameFrustumOn || !frustumCullingEnabled || frameFrustum.sphereVisible(centre, radius); }
+        Frustum frameFrustum{};
+        bool frameFrustumOn = false;
         // Extra geometry in the depth passes (rings, ring.h): range and draw in the far pass, draw in
         // the mid and near passes (rebuild = the first of the frame).
         std::function<bool(double& dmin, double& dmax)> farExtraRange;

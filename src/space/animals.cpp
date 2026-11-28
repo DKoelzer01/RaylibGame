@@ -2155,8 +2155,12 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     }
 }
 
+static int drawnLast = 0;
+int Animals_DrawnCount() { return drawnLast; }
+
 void Animals_Draw3D(Scene& world) {
     DrawProjectiles(world); // (#1225) stones and spears in flight
+    drawnLast = 0;
     if (animals.empty()) return;
     static std::vector<AvatarState> humanoids; humanoids.clear(); // (#1225) drawn after the loop, through the avatar rig
     static std::vector<Matrix> shieldMats; shieldMats.clear(); // (#1227) plank shields, drawn after the avatars
@@ -2185,6 +2189,11 @@ void Animals_Draw3D(Scene& world) {
         const Vector3 u = body->dirToWorld(a.clinging ? Vector3Negate(lup) : lup); // (#1224) upside down on a ceiling
         const Vector3 r = Vector3CrossProduct(u, f); // right-handed (r, u, f)
         const float k = 0.6f + 0.4f * a.age;
+        {   // (#2140) Out of view: the body's box (a humanoid: 2 m tall), with room for swinging limbs, a held torch and a shield.
+            const Vector3 ext = s.humanoid ? Vector3{ 1.0f, 2.0f, 1.0f } : Vector3Scale(s.size, k);
+            if (!world.inView(Vector3Add(base, Vector3Scale(u, ext.y * 0.5f)), Vector3Length(ext) * 0.75f + 0.5f)) continue;
+        }
+        ++drawnLast;
         const float light = 1.0f; // lit by the instance batch shader (sun, shadows, headlamp)
         auto shade = [&](Color c, float m) { return Color{ (unsigned char)(c.r * light * m), (unsigned char)(c.g * light * m), (unsigned char)(c.b * light * m), 255 }; };
         if (s.humanoid) { // (#1225) a cave scavenger: the avatar rig in ragged colours, a torch in hand (the thrower: a stone)

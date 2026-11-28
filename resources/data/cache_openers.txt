@@ -1,0 +1,16 @@
+# What opens a ruin cache (#2072, src/engine/cacheopeners.h). User, 2026-11-27: power from a real grid (not the suit
+# battery), a specific part, or a tool; later a key dropped by an enemy or hidden in the ruin.
+#   opener <n> <id> power <EU> <cap EU/t> <min V>   the factory charges the lock up to the cap, at that voltage or more
+#   opener <n> <id> tool <item>                     needed and kept
+#   opener <n> <id> part <item>                     spent
+#   default <small|vault|deep_vault> <id>           a cache whose structure line names no opener
+# n (1-7) is saved in the cache part: never renumber an opener once used, append new ones.
+# Power numbers: GUESS (Progression's table on #2072, the user confirms): a small cache from a battery bank (tier 3),
+# a vault from an LV line or a dynamo, a deep vault from an MV cable run down into the caves.
+opener 1 small_power power 2000 8 8
+opener 2 vault_power power 20000 32 32
+opener 3 deep_power power 100000 128 128
+opener 4 crowbar tool crowbar
+default small small_power
+default vault vault_power
+default deep_vault deep_power

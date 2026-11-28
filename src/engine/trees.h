@@ -194,6 +194,9 @@ public:
 
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
+    // Instances the main view's GPU cull kept in the last frame (frustum + Hi-Z, #2141): reads the indirect commands
+    // back, a stall; tests only. -1 without the GPU cull.
+    int visibleInstances() const;
     // Tests: trees per species in loaded tiles within `range` of a body-local point.
     void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes = nullptr) const; // classes: kTreeClasses counts (#274)
 
@@ -222,6 +225,10 @@ private:
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeMeshes] = {}, culledVbo[2 * kTreeMeshes] = {}, cmdBuf = 0;
     int culledCapacity[2 * kTreeMeshes] = {};
+    // (#2141) The main view's placement in the frame it was drawn (the Hi-Z pyramid's frame, next frame): model and anchor.
+    Matrix hizModel{};
+    DVec3 hizAnchor{};
+    long long hizFrame = -1;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;

@@ -37,6 +37,9 @@ class PlanetField;
 enum class ScenarioWorld { Sandbox, Planet };
 
 struct ScenarioCheck { std::string name, op, expected, detail; double value = 0.0; bool pass = false; };
+// (#2187) The verdict reason for failed checks: "<n> of <m> checks failed: <name>; <name>; <name> and N more". It names
+// the failed checks so a known-failure line (tools/ci/known_failures*.txt) can match one check, not the whole scenario.
+std::string FailedChecksReason(const std::vector<ScenarioCheck>& checks);
 struct ScenarioMetric { std::string name, unit; double value = 0.0; bool lowerIsBetter = true; };
 
 struct ScenarioCtx {

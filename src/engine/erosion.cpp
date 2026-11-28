@@ -843,10 +843,12 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     heightScale = scale; // #587: the strata are laid in simulation heights (materials divide final heights by this)
     n = N;
     coarse.resize(d.cells);
+    cut.resize(d.cells); // #1989: the erosion field (biome input)
     maxCut = maxRaise = 0.0f;
     for (size_t c = 0; c < d.cells; ++c) {
         const float hb = d.outlet[c] ? h0[c] : std::max(0.5f, d.h[c] * scale);
         coarse[c] = Q(hb);
+        cut[c] = Q(h0[c] - hb);
         maxCut = std::max(maxCut, h0[c] - hb); maxRaise = std::max(maxRaise, hb - h0[c]);
     }
     int dumpFace = 0;
@@ -1062,6 +1064,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     if (StageHashOn()) LOG_INFO("Erosion", "stage hash grids: coarse %016llx fine %016llx, %d ponds\n", (unsigned long long)HashBits(coarse), (unsigned long long)HashBits(fine), (int)pondList.size());
     if (fe > 0 && !BakeRiversOld()) routeFinal(T); // #547: drainage and channels on the final terrain
     if (StageHashOn()) LOG_INFO("Erosion", "stage hash routed: flow %016llx, %d filled\n", (unsigned long long)HashBits(flow), (int)filled.size());
+    computeWet(); // #1989
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
     {   // #605: where the time went (wall seconds; the faces' parts are summed over the faces = thread seconds)
@@ -1128,11 +1131,17 @@ float PlanetErosion::flowArea(int g) const {
     return cls == 0 ? 0.0f : kFlowArea0 * ldexpf(1.41421356f, cls - 1);
 }
 
+float PlanetErosion::drainOf(int g) const { const float a = flowArea(g); return a > 0.0f ? 0.30103f * det::Log2f(a) : 4.7f; }
+
 float PlanetErosion::drainageAt(Vector3 dv) const {
     // Bilinear over the 4 nearest flow cells of dir's face, in log10 area, so masks built on it are continuous (the
     // nearest cell's class jumps at every 50 m border: visible steps in the B detail, #1988). Off the network: 4.7, just
     // under its 1e5 m^2 start (a 0 there made a 0 -> 5 step across one cell beside every channel).
     if (flow.empty()) return 0.0f;
+    return flowBilinear(dv, &PlanetErosion::drainOf);
+}
+
+float PlanetErosion::flowBilinear(Vector3 dv, float (PlanetErosion::*cell)(int) const) const {
     const int f = FaceOf(dv);
     Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
     const float s = Vector3DotProduct(dv, nrm), duf = 2.0f / nf;
@@ -1141,8 +1150,43 @@ float PlanetErosion::drainageAt(Vector3 dv) const {
     const int i0 = std::min((int)x, nf - 2), j0 = std::min((int)y, nf - 2);
     float fx = x - i0, fy = y - j0;
     fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); // C1: linear weights leave kinks a hillshade shows
-    auto L =[&](int i, int j) { const float a = flowArea((f * nf + j) * nf + i); return a > 0.0f ? 0.30103f * det::Log2f(a) : 4.7f; };
+    auto L = [&](int i, int j) { return (this->*cell)((f * nf + j) * nf + i); };
     return (1 - fy) * ((1 - fx) * L(i0, j0) + fx * L(i0 + 1, j0)) + fy * ((1 - fx) * L(i0, j0 + 1) + fx * L(i0 + 1, j0 + 1));
+}
+
+void PlanetErosion::computeWet() {
+    // #1989: a breadth-first spread from every filled cell (lakes, ponds) over the flow cells' 8 neighbours, 3 rings out
+    // (150 m): 255, 170, 85, then 0. Integer, in cell order: deterministic, and the same after a cache load.
+    wet.clear();
+    if (flow.empty()) return;
+    wet.assign(flow.size(), 0);
+    std::vector<int> ring, next;
+    for (const auto& fc : filled) if (fc.first >= 0 && fc.first < (int)wet.size()) { wet[fc.first] = 255; ring.push_back(fc.first); }
+    int nb[8];
+    for (int step = 1; step <= 3 && !ring.empty(); ++step) {
+        const uint8_t v = (uint8_t)(255 - 85 * step);
+        next.clear();
+        for (int g : ring) {
+            flowNeighbours(g, nb);
+            for (int o : nb) if (o >= 0 && wet[o] < v) { wet[o] = v; next.push_back(o); }
+        }
+        ring.swap(next);
+    }
+}
+
+PlanetErosion::BakeFields PlanetErosion::fieldsAt(Vector3 dv) const {
+    BakeFields b;
+    if (n <= 0) return b;
+    if (!flow.empty()) { b.drainage = flowBilinear(dv, &PlanetErosion::drainOf); b.wetness = flowBilinear(dv, &PlanetErosion::wetOf); }
+    const Slope s = slopeAt(dv, 1e6f); // a footprint past the fine grid: the coarse surface
+    b.slope = det::Atanf(Vector3Length(s.grad)) * RAD2DEG;
+    if (!cut.empty()) {
+        const int f = FaceOf(dv);
+        Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+        const float sd = Vector3DotProduct(dv, nrm);
+        b.erosion = FaceBilinear(cut, f, n, Vector3DotProduct(dv, t1) / sd, Vector3DotProduct(dv, t2) / sd, 1.0f);
+    }
+    return b;
 }
 
 float PlanetErosion::IncisionDepth(float area) {
@@ -1198,7 +1242,9 @@ void PlanetErosion::routeFinal(int threads) {
                 if (breach && h[o] < hf[c] - 0.05f && isB(o) && (keepPond.empty() || !keepPond[o])) { // (a hollow, not the jitter across a flat; not a pond, #2039)
                     float need = 0.0f, t = h[o];
                     int p = c, steps = 0;
-                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, h[p] - t);
+                    // need counts the cut earlier breaches already made (#2069): measured on the lowered heights alone,
+                    // a smooth basin passed step by step and its rim was cut to the basin's full depth.
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, breachCut[p] + h[p] - t);
                     if (need <= kBreach && steps < 400) {
                         t = h[o];
                         for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
@@ -1375,12 +1421,54 @@ float PlanetErosion::heightAt(Vector3 dv, float footprint) const {
     return fineAt(dv);
 }
 
+namespace {
+    // #1989: bytes deflated as kPieces pieces on threads (#362's pattern): per piece its raw and deflated length, then the bytes.
+    void WritePieces(FILE* f, const std::vector<unsigned char>& raw) {
+        std::vector<unsigned char*> c(kPieces, nullptr);
+        std::vector<int> cs(kPieces, 0), len(kPieces, 0);
+        const size_t per = (raw.size() + kPieces - 1) / kPieces;
+        std::vector<std::thread> pool;
+        for (int k = 0; k < kPieces; ++k) {
+            const size_t a = std::min(raw.size(), per * k), b = std::min(raw.size(), per * (k + 1));
+            len[k] = (int)(b - a);
+            pool.emplace_back([&, k, a] { if (len[k] > 0) c[k] = CompressData(raw.data() + a, len[k], &cs[k]); });
+        }
+        for (auto& t : pool) t.join();
+        for (int k = 0; k < kPieces; ++k) {
+            const int z = c[k] ? cs[k] : 0, rl = c[k] ? len[k] : 0;
+            fwrite(&rl, sizeof(int), 1, f); fwrite(&z, sizeof(int), 1, f);
+            if (z > 0) fwrite(c[k], 1, z, f);
+            if (c[k]) MemFree(c[k]);
+        }
+    }
+    bool ReadPieces(FILE* f, std::vector<unsigned char>& out, size_t total) {
+        out.assign(total, 0);
+        size_t at = 0;
+        for (int k = 0; k < kPieces; ++k) {
+            int rl = 0, cs = 0;
+            if (fread(&rl, sizeof(int), 1, f) != 1 || fread(&cs, sizeof(int), 1, f) != 1 || rl < 0 || cs < 0 || at + (size_t)rl > total) return false;
+            if (cs == 0) { if (rl != 0) return false; continue; }
+            std::vector<unsigned char> buf(cs);
+            if (fread(buf.data(), 1, cs, f) != (size_t)cs) return false;
+            int got = 0;
+            unsigned char* d = DecompressData(buf.data(), cs, &got);
+            const bool good = d && got == rl;
+            if (good) memcpy(out.data() + at, d, (size_t)rl);
+            if (d) MemFree(d);
+            if (!good) return false;
+            at += (size_t)rl;
+        }
+        return at == total;
+    }
+}
+
 void PlanetErosion::computeHash() {
     uint64_t hv = 1469598103934665603ull; // FNV-1a over the stored grids
     for (int16_t q : coarse) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (int16_t q : fine) hv = (hv ^ (uint16_t)q) * 1099511628211ull;
     for (const Pond& pd : pondList) for (float v : { pd.dir.x, pd.dir.y, pd.dir.z, pd.r, pd.level, pd.depth }) { uint32_t b; memcpy(&b, &v, 4); hv = (hv ^ b) * 1099511628211ull; }
     for (uint8_t q : flow) hv = (hv ^ q) * 1099511628211ull; // #547
+    for (int16_t q : cut) hv = (hv ^ (uint16_t)q) * 1099511628211ull; // #1989
     for (const auto& fc : filled) { uint32_t b; memcpy(&b, &fc.second, 4); hv = ((hv ^ (uint32_t)fc.first) * 1099511628211ull ^ b) * 1099511628211ull; }
     hashValue = hv;
 }
@@ -1414,7 +1502,7 @@ bool PlanetErosion::save(const std::string& path) const {
     const std::string tmp = path + ".tmp"; // written whole, then renamed: a crash mid-save leaves the old cache (#355 review)
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) { freeAll(); return false; }
-    const char magic[4] = { 'E', 'R', 'O', '8' }; // ERO7 (#587): + heightScale after the hash; ERO8 (#547): + the final drainage
+    const char magic[4] = { 'E', 'R', 'O', '9' }; // ERO7 (#587): + heightScale after the hash; ERO8 (#547): + the final drainage; ERO9 (#1989): + the cut grid
     fwrite(magic, 1, 4, f);
     fwrite(&paramsKey, sizeof(paramsKey), 1, f);
     fwrite(&n, sizeof(n), 1, f); fwrite(&nf, sizeof(nf), 1, f); fwrite(&fm, sizeof(fm), 1, f); fwrite(&fineMetres, sizeof(fineMetres), 1, f);
@@ -1451,6 +1539,14 @@ bool PlanetErosion::save(const std::string& path) const {
         fwrite(&nfill, sizeof(nfill), 1, f);
         for (const auto& fl : filled) { fwrite(&fl.first, sizeof(int), 1, f); fwrite(&fl.second, sizeof(float), 1, f); }
     }
+    {   // ERO9 (#1989): the cut grid, each value minus the one before, low bytes then high, deflated whole (~10 MB raw)
+        std::vector<unsigned char> cr(cut.size() * 2);
+        int16_t pv = 0;
+        for (size_t k = 0; k < cut.size(); ++k) { const uint16_t dq = (uint16_t)(cut[k] - pv); pv = cut[k]; cr[k] = (unsigned char)(dq & 0xFF); cr[cut.size() + k] = (unsigned char)(dq >> 8); }
+        const int total = (int)cr.size();
+        fwrite(&total, sizeof(total), 1, f);
+        WritePieces(f, cr);
+    }
     const bool written = !ferror(f);
     fclose(f);
     freeAll();
@@ -1463,7 +1559,7 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4]; int N = 0, NF = 0, FM = 0, pieces = 0; float fmet = 0, r = 0, hs = 1.0f; unsigned int s = 0; uint64_t hv = 0, key = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO8", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "ERO9", 4) == 0 && fread(&key, sizeof(key), 1, f) == 1 && key == wantKey && fread(&N, sizeof(N), 1, f) == 1 && fread(&NF, sizeof(NF), 1, f) == 1 &&
               fread(&FM, sizeof(FM), 1, f) == 1 && fread(&fmet, sizeof(fmet), 1, f) == 1 && fread(&r, sizeof(r), 1, f) == 1 && fread(&s, sizeof(s), 1, f) == 1 &&
               fread(&hv, sizeof(hv), 1, f) == 1 && fread(&hs, sizeof(hs), 1, f) == 1 && fread(&pieces, sizeof(pieces), 1, f) == 1 &&
               N > 0 && N < 4096 && NF >= 0 && NF < 16384 && FM >= 0 && FM < 1024 && pieces > 0 && pieces <= 256 && s == wantSeed && fabsf(r - planetRadius) < 1.0f;
@@ -1501,9 +1597,21 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
         if (ok) fill.resize(nfill);
         for (int k = 0; ok && k < nfill; ++k) ok = fread(&fill[k].first, sizeof(int), 1, f) == 1 && fread(&fill[k].second, sizeof(float), 1, f) == 1;
     }
+    std::vector<int16_t> ct;                       // ERO9 (#1989): the cut grid
+    if (ok) {
+        int total = 0;
+        std::vector<unsigned char> d;
+        ok = fread(&total, sizeof(total), 1, f) == 1 && total == 12 * N * N && ReadPieces(f, d, (size_t)total);
+        if (ok) {
+            const size_t m = (size_t)total / 2;
+            ct.resize(m);
+            int16_t pv = 0;
+            for (size_t k = 0; k < m; ++k) { pv = (int16_t)(pv + (int16_t)(d[k] | (d[m + k] << 8))); ct[k] = pv; }
+        }
+    }
     fclose(f);
     if (!ok) return false;
-    flow = std::move(fl); filled = std::move(fill);
+    flow = std::move(fl); filled = std::move(fill); cut = std::move(ct);
     const size_t nc = (size_t)6 * N * N, fe2 = NF > 0 ? (size_t)NF + 2 * FM : 0, nfine = (size_t)6 * fe2 * fe2;
     size_t rawSize = 0;
     for (int len : rawLen) rawSize += (size_t)len;
@@ -1537,7 +1645,8 @@ bool PlanetErosion::load(const std::string& path, float planetRadius, unsigned i
     n = N; nf = NF; fm = FM; fe = (int)fe2; fineMetres = fmet; R = r; seed = s; paramsKey = key; heightScale = hs;
     pondList = std::move(pl);
     computeHash();
-    if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); fe = 0; return false; } // damaged
+    if (hashValue != hv) { n = 0; coarse.clear(); fine.clear(); cut.clear(); fe = 0; return false; } // damaged
+    computeWet(); // #1989 (derived, not saved)
     return true;
 }
 
@@ -1775,5 +1884,57 @@ TEST(DetMath, TrigCloseToLibmAndTheSameBitsEverywhere) {
     EXPECT_LT(worst[2], 6.0e-8) << "Tanf";
     EXPECT_LT(worst[3], 1.2e-7) << "Atanf"; // |atan| <= pi/2
     EXPECT_EQ(h, 0x5ebe982caa1a1756ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+}
+
+// #1989: the bake fields the biome reads. A small planet (3 km) bakes in moments: every field in its range, filled cells
+// wet, the bake cut somewhere, and a cache round trip giving the same hash and the same fields bit for bit.
+TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
+    const float R = 3000.0f;
+    const ErosionParams p;
+    PlanetErosion b;
+    // A sea in the south (with no outlet the routing floods nothing and no cell is filled) and a crater on a plateau in
+    // the north: closed basins for the wetness check. The coarse pass wears an outlet through the crater's rim; the filled
+    // cells are the basins the noise leaves elsewhere.
+    auto height = [](Vector3 d, float) {
+        const float dc = Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f });
+        const float crater = 120.0f * std::max(0.0f, 1.0f - dc / 0.3f) - 250.0f * std::clamp((0.6f - dc) / 0.2f, 0.0f, 1.0f); // (on a plateau)
+        const float sea = 500.0f * std::max(0.0f, -0.2f - d.y); // the south under the sea: the routing's outlets
+        return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater - sea;
+    };
+    b.build(height, R, 5u, p, 2);
+    ASSERT_TRUE(b.ready());
+    ASSERT_TRUE(b.hasFlow());
+    std::vector<Vector3> dirs;
+    const int K = 3000;
+    for (int k = 0; k < K; ++k) { // a Fibonacci sphere
+        const float y = 1.0f - 2.0f * (k + 0.5f) / K, r = std::sqrt(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * k;
+        dirs.push_back({ r * std::cos(a), y, r * std::sin(a) });
+    }
+    float maxErosion = -1e9f, maxSlope = 0.0f;
+    for (Vector3 d : dirs) {
+        const PlanetErosion::BakeFields f = b.fieldsAt(d);
+        EXPECT_GE(f.wetness, 0.0f); EXPECT_LE(f.wetness, 1.0f);
+        EXPECT_GE(f.slope, 0.0f); EXPECT_LT(f.slope, 90.0f);
+        EXPECT_GE(f.drainage, 4.7f - 1e-4f); EXPECT_LT(f.drainage, 12.0f);
+        maxErosion = std::max(maxErosion, f.erosion); maxSlope = std::max(maxSlope, f.slope);
+    }
+    EXPECT_GT(maxErosion, 1.0f) << "the bake cut nowhere";
+    EXPECT_GT(maxSlope, 1.0f);
+    // 5 filled cells; 1 while the breach limit ignored earlier cuts and drained deep basins step by step (#2069).
+    ASSERT_GE(b.filledCells().size(), 3u) << "the breach drained the test planet's basins (#2069)";
+    int wet = 0;
+    for (const auto& fc : b.filledCells()) wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f;
+    EXPECT_EQ(wet, (int)b.filledCells().size()) << "a filled cell's wetness fell under 0.6";
+
+    const std::string path = ::testing::TempDir() + "test-1989.erosion";
+    ASSERT_TRUE(b.save(path));
+    PlanetErosion c;
+    ASSERT_TRUE(c.load(path, R, 5u, ErosionParamsKey(p)));
+    std::remove(path.c_str());
+    EXPECT_EQ(c.hash(), b.hash());
+    for (Vector3 d : dirs) {
+        const PlanetErosion::BakeFields f = b.fieldsAt(d), g = c.fieldsAt(d);
+        ASSERT_EQ(std::memcmp(&f, &g, sizeof f), 0) << "the fields differ after a cache load";
+    }
 }
 #endif
