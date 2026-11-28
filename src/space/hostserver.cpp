@@ -690,7 +690,9 @@ namespace {
             OnCacheAction(conn, session, rit->second, *b, *plot, a.part);
             return;
         }
-        if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
+        // (#2181) a client aiming at a sealed cache watches it (6, 7) for its lock's charge: the factory simulates its lock
+        const bool cacheWatch = plot && a.part >= 0 && a.part < (int)plot->parts.size() && plot->parts[a.part].type == PartType::RuinCache && (a.action == 6 || a.action == 7);
+        if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !(IsMachine(plot->parts[a.part].type) || cacheWatch)) { refuse("That machine isn't there any more"); return; }
         const Factory::MachineKey key{ b->id, plot->id, a.part };
         if (a.action == 7) { machineWatch[session].on = false; return; }
         // Reach: the machine's origin cell from the player (body-local)
