@@ -301,10 +301,10 @@ void CaveGas_Reset() {
     nextNear = nextFlames = -1.0; stats = {};
 }
 
-void CaveGas_TestAdd(const CaveGasPocket& p) {
+void CaveGas_TestAdd(const Planetoid& body, const CaveGasPocket& p) {
     CaveGasPocket q = p;
     q.id = 0xF0000000u + (uint32_t)testPockets.size();
-    testPockets.push_back({ player.nearest, q });
+    testPockets.push_back({ &body, q });
     for (CacheEntry& c : cache) c = CacheEntry{};
     nextNear = -1.0;
 }

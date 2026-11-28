@@ -31,11 +31,11 @@ void StandAt(ScenarioCtx& c, float d) {
     player.velocity = c.body->surfaceVelocity(feet);
 }
 // A pocket of this kind `d` m along the walk, its centre `lift` m over the start's feet.
-void AddPocket(CaveGasKind kind, float d, float lift, float radius) {
+void AddPocket(const Planetoid& body, CaveGasKind kind, float d, float lift, float radius) {
     CaveGasPocket p;
     p.kind = kind; p.radius = radius; p.up = S.up;
     p.centre = Vector3Add(Vector3Add(S.start, Vector3Scale(S.ahead, d)), Vector3Scale(S.up, lift));
-    CaveGas_TestAdd(p);
+    CaveGas_TestAdd(body, p);
 }
 }
 
@@ -65,11 +65,12 @@ SCENARIO("hazards/cave-gas") {
             const Vector3 f = c.body->dirToLocal(player.forward);
             S.ahead = Vector3Normalize(Vector3Subtract(f, Vector3Scale(S.up, Vector3DotProduct(f, S.up))));
             // r 6 m, its centre 1 m over the ground: the gas reaches 2.8 m up, over the head (1.6 m).
-            AddPocket(CaveGasKind::CO2, 12.0f, 1.0f, 6.0f);
+            AddPocket(*c.body, CaveGasKind::CO2, 12.0f, 1.0f, 6.0f);
         };
         static bool added = false;
         if (!added) { added = true; place(); }
-        c.waitingFor("the gas update to see the pocket (the spawn's loading screen holds it)");
+        c.waitingFor(std::string("the gas update to see the pocket (the spawn's loading screen holds it); the player's nearest body ") +
+                     (player.nearest == c.body ? "is" : player.nearest ? "is NOT" : "is unset, not") + " the scenario's");
         if (CaveGas_Stats().pockets == 0) return false;
         place(); // again from where the player stands now the world runs (the spawn may have settled them meanwhile)
         survival.oxygen = 100.0f; survival.health = 100.0f;
@@ -115,7 +116,7 @@ SCENARIO("hazards/cave-gas") {
         CaveGas_Reset();
         survival.oxygen = 100.0f; survival.health = 100.0f;
         // Methane rises: its centre 2 m up, r 5 m (down to 0.5 m over the ground, the head in it).
-        AddPocket(CaveGasKind::Methane, 10.0f, 2.0f, 5.0f);
+        AddPocket(*c.body, CaveGasKind::Methane, 10.0f, 2.0f, 5.0f);
         inventory.add("torch", 3);
         Hotbar_Bind(4, "torch");
         Hotbar_Press(4, false);

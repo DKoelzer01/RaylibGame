@@ -48,8 +48,9 @@ void CaveGas_Reset();         // a new world: no burnt pockets, no test pockets
 // (a blast id; updated). 0 when none reaches them.
 float CaveGas_BlastDamage(Vector3 renderPos, uint32_t& lastSeen);
 
-// Tests: pockets added by hand (body-local, on the player's body; ids from 0xF0000000 up); what the warning shows.
-void CaveGas_TestAdd(const CaveGasPocket& p);
+// Tests: pockets added by hand (local to `body`; ids from 0xF0000000 up); what the warning shows. (#2109: the body is given,
+// not player.nearest: under a spawn's loading screen the player isn't updated and nearest can be unset yet.)
+void CaveGas_TestAdd(const Planetoid& body, const CaveGasPocket& p);
 struct CaveGasStats { int pockets = 0; int blasts = 0; int puffs = 0; /* haze puffs emitted (since the start) */ int warnKind = 0; float warnDist = -1.0f; float edgeDist = -1.0f; bool hissing = false; }; // edgeDist: the head to the nearest live pocket's gas (m, 0 in it)
 const CaveGasStats& CaveGas_Stats();
 
