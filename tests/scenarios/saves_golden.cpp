@@ -139,11 +139,16 @@ SCENARIO("saves/golden-load") {
         if (!L.listed) {
             L.listed = true;
             std::error_code ec;
-            for (const auto& e : fs::directory_iterator("tests/saves", ec))
+            // The runner's run folder links only resources/ and assets/ from the checkout: find tests/ beside the real
+            // resources/ when it isn't in the working directory (the first runner run found none and checked nothing).
+            fs::path saves = "tests/saves";
+            if (!fs::is_directory(saves, ec)) saves = fs::canonical("resources", ec).parent_path() / "tests" / "saves";
+            for (const auto& e : fs::directory_iterator(saves, ec))
                 if (e.is_directory() && e.path().filename().string().rfind("v", 0) == 0) L.dirs.push_back(e.path());
             std::sort(L.dirs.begin(), L.dirs.end());
             L.oldPath = WorldSavePath();
-            if (L.dirs.empty()) { c.note("no tests/saves/v*/ yet: nothing to load (make one with saves/golden-write)"); return true; }
+            // The goldens are in git (tests/saves/v13 on): none found is a broken run, not a pass.
+            if (!c.check("tests/saves/v*/ found", !L.dirs.empty(), saves.string())) return true;
         }
         if (L.i >= L.dirs.size()) { SetWorldSavePath(L.oldPath.c_str()); return true; }
         const fs::path& dir = L.dirs[L.i];
@@ -153,7 +158,10 @@ SCENARIO("saves/golden-load") {
             std::error_code ec;
             fs::remove_all(L.copy, ec);
             fs::create_directories(L.copy, ec);
-            fs::copy(dir, L.copy, fs::copy_options::recursive, ec);
+            // Entry by entry: a directory copied onto an existing one fails on MinGW's libstdc++ ("File exists") and the
+            // load found no file there (#1881: the scenario had only run on Linux).
+            for (const auto& e : fs::directory_iterator(dir, ec))
+                fs::copy(e.path(), L.copy / e.path().filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
             L.facts = ReadFacts(L.copy / "facts.txt");
             SetWorldSavePath((L.copy / "world.sav").string().c_str());
             const bool loaded = LoadWorldSave(c.world);

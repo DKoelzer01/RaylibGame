@@ -43,12 +43,14 @@
 #include "ship.h"
 #include "camera.h"
 #include "survival.h"
+#include "biomevariants.h"
 #include "combat.h"
 #include "claims.h"
 #include "teamquests.h"
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
+#include "ruincache.h" // (#2072)
 #include "recorder.h"
 #include "scenario.h"
 #include "cliptelemetry.h"
@@ -63,12 +65,14 @@
 #include "particles.h"
 #include "ambience.h"
 #include "lightlevel.h"
+#include "flares.h"
 #include "waterfalls.h"
 #include "gpumem.h"
 #include "structures.h"
 #include "fishing.h"
 #include "trapping.h"
 #include "dungeontraps.h"
+#include "cavegas.h"
 #include "playerrecord.h"
 #include "commandline.h"
 #include "locate.h"
@@ -316,10 +320,12 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Flares_Clear(); // (#2062)
         Structures_Reset();
         Fishing_Reset();
         Trapping_Reset();
         DungeonTraps_Reset();
+        CaveGas_Reset();
         Combat_Reset();
         Blueprint_ResetGhosts(); // (#1018)
         Claims_Reset(); // (#343)
@@ -848,6 +854,7 @@ int main(int argc, char** argv)
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
+    bool hasBenchToward = false; Vector3 benchToward{}; // --bench-toward x y z: the bench view faces this body-local direction (#1988)
     float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
     float benchTurn = 0.0f; // --bench-turn DEG_PER_S (#134): the camera yaws on the spot through the timed run (Hi-Z pop checks)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
@@ -928,10 +935,12 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-turn" && i + 1 < argc) benchTurn = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-uphill") benchUphill = true;
+        if (std::string(argv[i]) == "--bench-toward" && i + 3 < argc) { hasBenchToward = true; benchToward = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
-            if (gSpawnBiome < 0) printf("bench: --bench-biome: unknown biome %s\n", argv[i + 1]);
+            if (gSpawnBiome < 0) gSpawnVariant = BiomeVariants().find(argv[i + 1]); // or a variant: forest.birch_grove (#1977)
+            if (gSpawnBiome < 0 && gSpawnVariant < 0) printf("bench: --bench-biome: unknown biome or variant %s\n", argv[i + 1]);
         }
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
@@ -1463,7 +1472,7 @@ int main(int argc, char** argv)
     gSaveNoticeHook = [](const std::string& note) { GameUI_Toast(note.c_str()); }; // (#1693) a save upgraded on load: one toast
     // (#902) Pointers into a world being unloaded (a body, a plot, a hit) dropped before its bodies go: frames go on drawing
     // while the next world loads, and a reload crashed in TerrainTool_Draw3D / Wind_Bind on the old, freed planet.
-    World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); });
+    World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); Flares_Clear(); }); // (#2062) a burning flare stays in its world
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
@@ -1668,7 +1677,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Flares_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
@@ -2154,7 +2163,7 @@ int main(int argc, char** argv)
             float mpp = 1.0f;
             for (int k = 1; k + 1 < argc; ++k) if (std::string(argv[k]) == "--hillshade-mpp") mpp = (float)atof(argv[k + 1]);
             const int N = 1024;
-            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 home = hasSpawnDir ? spawnDir : pf->findSpawnDir(p->seed); // --spawn-dir: anywhere (#1988: a face edge)
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
             std::vector<float> h((size_t)N * N);
             std::vector<std::thread> team;
@@ -2182,7 +2191,7 @@ int main(int argc, char** argv)
                 }
             ExportImage(img, "bench_hillshade.png");
             UnloadImage(img);
-            printf("bench: hillshade: %d px at %.2f m/px, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, curv / std::max<long long>(1, nc));
+            printf("bench: hillshade: %d px at %.2f m/px around dir %.4f %.4f %.4f, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, home.x, home.y, home.z, curv / std::max<long long>(1, nc));
             return 0;
         }
 
@@ -2270,8 +2279,19 @@ int main(int argc, char** argv)
         if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
             // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
             // offset below put the camera under the terrain). It rides the planet from here (#127).
+            const auto* pfs = dynamic_cast<const PlanetField*>(benchPlanet->field.get());
+            if (hasSpawnDir && !spawnDirLocal) { // --spawn-dir (body-local here, as --shot-hillshade): the player and the view there (#1988 A/B poses)
+                const DVec3 at = benchPlanet->toWorldD(DVec3(spawnDir) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(spawnDir, 1.0f)) + 1.0f));
+                player.position = at;
+                player.up = benchPlanet->dirToWorld(spawnDir);
+                player.forward = Vector3Normalize(Vector3CrossProduct(player.up, { 1, 0, 0 }));
+            }
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            if (hasBenchToward) { // --bench-toward x y z: face a body-local direction (a mountain, a valley)
+                const Vector3 d = (benchPlanet->toWorldD(DVec3(benchToward) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(benchToward, 1.0f)))) - player.position).toFloat(), dt = Vector3Subtract(d, Vector3Scale(player.up, Vector3DotProduct(d, player.up)));
+                if (Vector3Length(dt) > 1e-3f) ahead = Vector3Normalize(dt);
+            }
             if (benchUphill) // --bench-uphill (#357): face up the eroded slope, toward the cliff above
                 if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
                     const Vector3 dl = Vector3Normalize(benchPlanet->toLocal(feet));
@@ -3520,6 +3540,10 @@ int main(int argc, char** argv)
                     benchFingerprint = false;
                     const unsigned seedWas = worldGen.seed;
                     const uint64_t fp1 = WorldFingerprint(world), fp1b = WorldFingerprint(world);
+                    // (#1905) now: the regenerations below bake twice more (minutes each on a slow machine), and comparing
+                    // platforms needs only this
+                    printf("bench: fingerprint: seed %u: %016llx\n", worldGen.lastSeed, (unsigned long long)fp1);
+                    fflush(stdout);
                     regenerateWorld(world);
                     const uint64_t fp2 = WorldFingerprint(world);
                     worldGen.seed = worldGen.lastSeed + 1;
@@ -7027,7 +7051,7 @@ int main(int argc, char** argv)
                             constexpr float kDrain = 60.0f; // s judged after the hole opens (was 120: the test ran over 3 min at 0.25 m cells)
                             if (t > kDrain) {
                                 const float lip = benchLeakParts ? 1.0f : 0.5f; // the hole's bottom over the floor (blocks: block-aligned)
-                                const float g = 9.81f, head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre
+                                const float g = 9.81f * Fluid::GravityScale(*p), head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre; the fluid's g (#1942)
                                 const float qIdeal = sqrtf(2.0f * g * head) * 1.0f, q = (vol3 - vol1) / 2.0f, final = depthAt(-10.0f);
                                 // The expected depth after kDrain: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while
                                 // it is under water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it slows as it
@@ -7148,7 +7172,7 @@ int main(int argc, char** argv)
                             if (t > 1.0 && vol1 < 0.0f) vol1 = downstream();
                             if (t > 2.0 && vol2 < 0.0f) vol2 = downstream();
                             if (t > 3.0) {
-                                const float g = 9.81f, c = 2.0f * sqrtf(g * std::max(h0, 0.01f));
+                                const float g = 9.81f * Fluid::GravityScale(*p), c = 2.0f * sqrtf(g * std::max(h0, 0.01f)); // the fluid's g (#1942)
                                 const float dTheory = 4.0f / 9.0f * h0, qTheory = 8.0f / 27.0f * sqrtf(g) * powf(h0, 1.5f) * 4.0f;
                                 const float speed = front[1] > 0.0 ? 10.0f / (float)front[1] : 0.0f;
                                 printf("bench: dam-break: front at 5 m after %.2f s, 10 m after %.2f s, 20 m after %.2f s (theory %.2f / %.2f / %.2f s: %.1f m/s); mean speed to 10 m %.1f m/s = %.2f of theory\n",
@@ -8359,7 +8383,7 @@ int main(int argc, char** argv)
                                 p->trees->speciesCounts(me, range, n, cls);
                                 int total = 0; for (int s = 0; s < (int)WoodSpecies::Count; ++s) total += n[s];
                                 printf("bench: forest: %d trees within %.0f m:", total, range);
-                                for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name, total ? 100 * n[s] / total : 0);
+                                for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name.c_str(), total ? 100 * n[s] / total : 0);
                                 printf("; size classes S %d M %d L %d XL %d\n", cls[0], cls[1], cls[2], cls[3]);
                             }
                         }
@@ -10354,7 +10378,7 @@ int main(int argc, char** argv)
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
-            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingCampfire()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it)
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingUsable()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it; #2072: opens a cache, pulls a lever, unlocks a vault door)
             else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
             else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
@@ -10391,6 +10415,11 @@ int main(int argc, char** argv)
         // The animation clock (GameClock) and the simulation steps stop behind the single-player pause menu (#511: the world,
         // the factory, fluids and time of day all wait); a host keeps running for its clients, and so does an unfocused window (#525).
         const bool paused = gameState == 2 && gNetRole == NetRole::Offline;
+        // (#1923) Joined or hosting, the pause menu is only a menu, like any open window: the world keeps stepping (bodies,
+        // the player carried on them, animals, the factory, fluids) with no input (gameInput needs gameState 1). The steps
+        // below test simState: with gameState they stopped the world behind a client's menu (it looked like the server
+        // had paused, and the client's planet stood still under the server's) and a listen host's for everyone.
+        const int simState = gameState == 2 && !paused ? 1 : gameState;
         if (!paused) gGameClock += frameDt;
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadFrames = 0; } }
@@ -10414,11 +10443,11 @@ int main(int argc, char** argv)
         const bool alive = !survival.dead; // (may change within the frame's steps)
         // Time of day (#275): the debug UI's time scale multiplies --time-scale; its jumps (+1 h, dawn, ...) are applied here
         // in one step, so orbits and world time move too, and the riders below are carried along.
-        const bool playing = gameState == 1 && !loading;
+        const bool playing = simState == 1 && !loading;
         const double timeSkip = playing ? gTimeSkipSeconds : 0.0;
         if (playing) gTimeSkipSeconds = 0.0;
         advanceBodies(world, playing ? (float)(simDt * timeScale * gDebugTimeScale * Rocket_Warp() + timeSkip) : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
-        if (gameState == 1) {
+        if (simState == 1) {
             ship.lastImpact = 0.0f;
             Station_Update(world); // stations on their orbits, before anything rides on them
             if (ship.piloted) {
@@ -10441,10 +10470,11 @@ int main(int argc, char** argv)
                     static uint64_t loadBodyId = 0;
                     static DVec3 loadLocal{};
                     static Vector3 loadForward{}, loadUp{};
+                    static FramePos loadFrame{}; // (F7a) the record's frame state (frame.body 0: none)
                     static double heldFor = -1.0; // the loadStart this hold belongs to
                     // Before the step (it runs ahead of player.update) and once more on the frame the screen ends, so the first
                     // step starts from where the body has just carried the player (after it: a step late, 1.5 m off at the spin).
-                    if ((loading || heldFor >= 0.0) && gameState == 1) {
+                    if ((loading || heldFor >= 0.0) && simState == 1) {
                         if (loading && heldFor != loadStart) {
                             heldFor = loadStart;
                             Planetoid* b = player.nearest;
@@ -10457,7 +10487,8 @@ int main(int argc, char** argv)
                                     }
                             }
                             unsigned long long savedBody = 0; DVec3 savedLocal{};
-                            if (GameSave_TakeLoadedFrame(savedBody, savedLocal)) // a save just loaded: the record's spot exactly
+                            loadFrame.frame.body = 0;
+                            if (GameSave_TakeLoadedFrame(savedBody, savedLocal, &loadFrame)) // a save just loaded: the record's spot exactly
                                 if (Planetoid* sb = Planetoid::findNet((NetId)savedBody)) b = sb;
                             loadBodyId = b ? b->id : 0;
                             if (b) {
@@ -10465,11 +10496,14 @@ int main(int argc, char** argv)
                                 loadForward = b->dirToLocal(player.forward); loadUp = b->dirToLocal(player.up);
                             }
                         }
+                        // (Plan 11 F7a, #2074) A record with its frame state: held at it and released with its velocity (mid-jump,
+                        // mid-flight), not at rest against the ground.
+                        const bool framed = loadFrame.frame.body != 0 && player.restoreFrame(loadFrame);
                         if (Planetoid* b = loadBodyId ? Planetoid::find(loadBodyId) : nullptr) {
-                            player.position = b->toWorldD(loadLocal);
+                            if (!framed) player.position = b->toWorldD(loadLocal);
                             player.forward = b->dirToWorld(loadForward);
                             if (Vector3LengthSqr(loadUp) > 0.5f) player.up = b->dirToWorld(loadUp);
-                            player.velocity = b->surfaceVelocity((player.position - world.renderOrigin).toFloat()); // with the ground
+                            if (!framed) player.velocity = b->surfaceVelocity((player.position - world.renderOrigin).toFloat()); // with the ground
                         }
                         if (!loading) heldFor = -1.0; // released: this frame's step goes on from here
                     } else heldFor = -1.0;
@@ -10569,6 +10603,7 @@ int main(int argc, char** argv)
             if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             GpuTimer_CpuMark("step: farm");
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
+            if (!loading) Flares_Update(world, simDt); // (#2062) thrown flares fall, land and burn out
             GpuTimer_CpuMark("step: animals");
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
@@ -10610,6 +10645,7 @@ int main(int argc, char** argv)
                 else GameUI_Toast(TextFormat("%s uses food, a consumable, a bucket or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
+            if (!loading) CaveGas_Update(world); // cave gas pockets (#1472)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
             // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
@@ -11553,7 +11589,7 @@ int main(int argc, char** argv)
                 else {
                     const float v = tree.chopSize();
                     printf("bench: giant: class %d (%s) %.0f m away: trunk %.1f m x r %.2f m, chop size x%.2f -> %d stone-axe hits, %d logs\n", cls,
-                           WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name, Vector3Distance(me, tree.base), tree.height, tree.radius, v,
+                           WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name.c_str(), Vector3Distance(me, tree.base), tree.height, tree.radius, v,
                            (int)lroundf(4.0f + 9.0f * tree.trunkVolume()), std::clamp((int)lroundf(3.0f * v), 1, 48));
                     player.flyMode = true;
                 }
@@ -13075,6 +13111,8 @@ int main(int argc, char** argv)
         // --test-teams (#604, with --host <save>): alice, bob and carol join over loopback (clients in this process); alice
         // invites bob, bob sees it and accepts; both hear a team of two (bob online, with his health); bob's team chat reaches
         // alice, not carol; carol (not the owner, another team) can't kick; alice kicks bob: a team of one again.
+        // (#1921) Built without ENABLE_GNS the host never listens: SKIP rather than wait for it until the timeout.
+        if (benchTeams && gameState == 1 && !loading && WorldIdle() && !Net_Available()) { printf("bench: teams: built without ENABLE_GNS -> SKIP\n"); benchTeams = false; }
         if (benchTeams && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
             static NetClient alice, bob, carol;
             static int step = 0;
@@ -13542,10 +13580,11 @@ int main(int argc, char** argv)
         if (benchPause && !loading && WorldIdle() && (gameState == 1 || gameState == 2)) {
             static int pf = 0;
             static double t0 = -1.0, clock0 = 0.0, sim0 = 0.0;
+            static Vector3 spin0{};
             static Image first{};
             ++pf;
             if (pf == 30) menuEsc = true; // as the key going down
-            if (pf == 60) { first = LoadImageFromScreen(); clock0 = GameClock(); sim0 = SimTime(); t0 = GetTime(); }
+            if (pf == 60) { first = LoadImageFromScreen(); clock0 = GameClock(); sim0 = SimTime(); t0 = GetTime(); if (!world.objects.empty()) spin0 = world.objects[0]->rotation; }
             if (t0 >= 0.0 && GetTime() - t0 > 3.0) {
                 Image now = LoadImageFromScreen();
                 long moved = 0, total = 0;
@@ -13557,9 +13596,15 @@ int main(int argc, char** argv)
                 }
                 UnloadImage(first); UnloadImage(now);
                 const double pct = total ? 100.0 * moved / total : 100.0;
-                const bool ok = gameState == 2 && GameClock() == clock0 && SimTime() == sim0 && pct < 0.02; // (grass swaying in the bench view: ~0.07%)
-                printf("bench: pause: paused %d; over %.1f s the animation clock moved %.3f s, the simulation %.3f s, %.3f%% of pixels changed: %s\n",
-                       (int)(gameState == 2), GetTime() - t0, GameClock() - clock0, SimTime() - sim0, pct, ok ? "PASS" : "FAIL");
+                // (#1923) Hosting (--host) or joined, the menu stops nothing: the simulation runs on and the planet turns.
+                const bool shared = gNetRole != NetRole::Offline;
+                const Vector3 spin1 = world.objects.empty() ? spin0 : world.objects[0]->rotation;
+                const bool turned = spin1.x != spin0.x || spin1.y != spin0.y || spin1.z != spin0.z;
+                const bool ok = shared ? gameState == 2 && SimTime() - sim0 > 2.0 && turned
+                                       : gameState == 2 && GameClock() == clock0 && SimTime() == sim0 && pct < 0.02; // (grass swaying in the bench view: ~0.07%)
+                printf("bench: pause: %s, paused %d; over %.1f s the animation clock moved %.3f s, the simulation %.3f s, the planet turned %d, %.3f%% of pixels changed: %s\n",
+                       shared ? "shared (the world must run on)" : "single player (everything must stop)", (int)(gameState == 2), GetTime() - t0,
+                       GameClock() - clock0, SimTime() - sim0, (int)turned, pct, ok ? "PASS" : "FAIL");
                 benchPause = false;
             }
         }
@@ -13990,8 +14035,10 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
+                RuinCache_DrawHUD(); // (#2072) the hold ring and an opened cache's result
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
+                CaveGas_DrawHUD(world);
                 Weather_DrawHUD();
                 if (Audio_V2()) Subtitles_Draw(GameUI_HudScale()); // (#1244) sound captions and edge arcs
                 Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1

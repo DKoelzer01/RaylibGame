@@ -18,10 +18,13 @@
 #include <raymath.h>
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <set>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -595,7 +598,10 @@ void Nav_DrawMap(Scene& world) {
 }
 
 void Nav_Save(FILE* f) {
-    for (const auto& kv : explored) {
+    // (#1881) bodies and tiles in order: both sets are unordered, so a loaded save wrote its lines in another order
+    std::map<std::string, std::set<uint64_t>> sorted;
+    for (const auto& [body, tiles] : explored) sorted[body].insert(tiles.begin(), tiles.end());
+    for (const auto& kv : sorted) {
         if (kv.second.empty()) continue;
         fprintf(f, "nav_explored %s %zu", kv.first.c_str(), kv.second.size());
         for (uint64_t k : kv.second) fprintf(f, " %llu", (unsigned long long)k);
@@ -630,6 +636,40 @@ bool Nav_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     return false;
+}
+
+std::string Nav_TilesText(const NavTiles& tiles) {
+    std::string s;
+    for (const auto& [body, set] : tiles) {
+        if (set.empty()) continue;
+        s += "tiles " + body + " " + std::to_string(set.size());
+        int k = 0;
+        for (uint64_t key : set) { char hex[24]; snprintf(hex, sizeof hex, " %llx", (unsigned long long)key); s += hex; if (++k % 16 == 0 && k < (int)set.size()) s += "\n"; }
+        s += "\n";
+    }
+    return s;
+}
+
+void Nav_TilesFromText(const std::string& text, NavTiles& into) {
+    std::istringstream in(text);
+    for (std::string tok; in >> tok;) {
+        if (tok != "tiles") continue;
+        std::string body; size_t n = 0;
+        if (!(in >> body >> n)) break;
+        auto& set = into[body];
+        for (size_t k = 0; k < n; ++k) { unsigned long long key = 0; if (!(in >> std::hex >> key >> std::dec)) return; set.insert(key); }
+    }
+}
+
+void Nav_MergeTilesText(const std::string& text) {
+    NavTiles got;
+    Nav_TilesFromText(text, got);
+    for (const auto& [body, set] : got) {
+        TileSet& mine = explored[body];
+        const size_t before = mine.size();
+        mine.insert(set.begin(), set.end());
+        if (mine.size() != before) ++exploredVersion[body]; // the map images redraw
+    }
 }
 
 int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {

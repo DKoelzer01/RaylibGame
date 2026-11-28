@@ -466,6 +466,8 @@ bool Scenario_Frame(Scene& world) {
     c.field = c.body ? dynamic_cast<const PlanetField*>(c.body->field.get()) : nullptr;
     c.T = SimTime() - R.simStart;
     c.t = SimTime() - R.stepSim;
+    c.wall = now - R.stepWall;
+    c.clock = R.def.realTime ? std::min(c.t, c.wall) : c.t;
     c.frame = R.frames++;
     c.stepIndex = R.step;
     if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
@@ -473,8 +475,9 @@ bool Scenario_Frame(Scene& world) {
         if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
         return false;
     }
-    if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
-        const bool wall = c.T <= R.def.timeout;
+    const double runClock = R.def.realTime ? std::min(c.T, now - R.wallStart) : c.T; // (#1972) as c.clock
+    if (runClock > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
+        const bool wall = runClock <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
                               (wall ? " x " + Num(WallFactor()) + " of wall time (sim only " + Num(c.T) + " s: the run stopped advancing)" : " of sim time") +
                               (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
@@ -507,8 +510,9 @@ bool Scenario_Frame(Scene& world) {
             Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " checks failed" : R.checks.empty() ? "no checks" : "");
             return false;
         }
-    } else if (c.t > st.deadline) {
-        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + " s sim" + (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
+    } else if (c.clock > st.deadline) {
+        Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + (R.def.realTime ? " s of both sim and wall time" : " s sim") +
+                           (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
         return false;
     }
     return true;

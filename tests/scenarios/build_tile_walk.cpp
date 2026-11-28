@@ -75,7 +75,9 @@ void BuildTileWalk(ScenarioDef& s, ScenarioWorld world) {
     // start the feet rose 2.67 m at the 0.25 m step, where the old start and the sandbox give ~0.26 m (why: #1938).
     if (world == ScenarioWorld::Planet) s.env.push_back({ "RAYLIBGAME_SPAWN_SCORE", "0" });
     s.timeout = 120.0;
-    s.step("build the tile floor, the step and the wall", 20.0, [](ScenarioCtx& c) {
+    // (60 s: the step waits for the ground and an idle world, which on the shared runner took over 20 s sim in ~20% of
+    // runs, #1999)
+    s.step("build the tile floor, the step and the wall", 60.0, [](ScenarioCtx& c) {
         player.flyMode = false; // (a scenario starts the player flying over the start)
         if (c.T < 1.0 || !player.grounded || !WorldIdle()) return false;
         phase = 0; flatMin = allMin = wallMin = wallAllMin = 1e9; steady = 0.0; tReach = -1.0; wallT0 = -1.0;

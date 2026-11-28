@@ -9,7 +9,9 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
 say() { echo "gpu=$1" >> "$out"; echo "GPU steps: $1 ($2)"; [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "GPU steps: $1 ($2)" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
 [ "${EVENT:-}" = push ] || say true "a ${EVENT:-manual} run runs everything"
 case "${BEFORE:-}" in ""|0000000000000000000000000000000000000000) say true "a new branch: no base to compare";; esac
-git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --quiet --depth=1 origin "$BEFORE" 2>/dev/null || say true "the base $BEFORE isn't in the checkout (the checkout fetches 50 commits)"
+# (#2009 incident) --depth only when the clone is already shallow: a depth fetch makes a full clone shallow
+depth=""; [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ] && depth="--depth=1"
+git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --quiet $depth origin "$BEFORE" 2>/dev/null || say true "the base $BEFORE isn't in the checkout (the checkout fetches 50 commits)"
 files=$(git diff --name-only "$BEFORE" "${AFTER:-HEAD}" 2>/dev/null) || say true "the diff couldn't be read"
 # What the GPU steps exercise: every shader; the terrain field and its GPU twin (density, noise, erosion, rivers, strata,
 # caves live in voxel), meshing, the world-generation data and bodies; the fluid code; the render targets; and the build.

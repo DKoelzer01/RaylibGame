@@ -13,6 +13,7 @@ if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe
 #   tools/slot.sh status                             holder, quiet or not, until when, and the queue
 #   tools/slot.sh wait-quiet                         block until no one else's quiet window is on (max 30 min)
 #   tools/slot.sh holds [name]                       exit 0 if name (default: this session) holds the machine
+#   tools/slot.sh holder-info                        print holder|session-id (the machine guard's lookup, #1919)
 #   tools/slot.sh quiet-other                        exit 0 (and print the holder) if someone ELSE holds a quiet slot
 #   tools/slot.sh queue-rm <name> | queue-top <name> coordinator: drop or move an entry to the front
 # "quiet" = nobody else compiles or runs anything (timing, A/B, screenshots that need a calm machine).
@@ -28,12 +29,15 @@ hhmm() { date -d "@$1" +%H:%M 2>/dev/null || echo "$1"; }
 lockon() { local t=0; until mkdir "$MUTEX" 2>/dev/null; do sleep 0.2; t=$((t+1)); [ $t -gt 150 ] && rm -rf "$MUTEX"; done; }
 lockoff() { rmdir "$MUTEX" 2>/dev/null; }
 
-# current holder fields: holder|mode|until|what (empty when free or expired)
+# current holder fields: holder|mode|until|what|session (empty when free or expired). The session is the Claude session
+# id (#1919): the machine guard matches it against the hook event's, because a session (or its subagent) can hold the
+# slot under another worktree's name than the folder its hooks see. It goes last so an older slot.sh still reads the rest.
+sid=${CLAUDE_CODE_SESSION_ID:-}
 current() {
   [ -f "$LOCK" ] || return 1
-  IFS='|' read -r h m u w < "$LOCK"
+  IFS='|' read -r h m u w s < "$LOCK"
   [ -n "$h" ] && [ "$(now)" -le $(( u + 120 )) ] || return 1
-  echo "$h|$m|$u|$w"
+  echo "$h|$m|$u|$w|$s"
 }
 holder() { current | cut -d'|' -f1; }
 
@@ -47,12 +51,23 @@ parse() { # minutes [quiet] what...
   case "$me" in playtest|regression) ;; *) [ "$mins" -le 15 ] || { echo "slot: 15 minutes at most (the test-batch limit); split longer work" >&2; exit 2; } ;; esac
 }
 
-write_hold() { echo "$me|$mode|$(( $(now) + mins*60 ))|$what" > "$LOCK"; }
+write_hold() { echo "$me|$mode|$(( $(now) + mins*60 ))|${what//|//}|$sid" > "$LOCK"; }
+
+# A warning (never a refusal: a full disk must not block the run that cleans it) when the drive holding the repo has
+# under SLOT_DISK_WARN_GB free (default 20). The PC's drive filled up on 2026-11-27 with nothing warning first (#2065).
+disk_check() {
+  local warn=${SLOT_DISK_WARN_GB:-20} kb
+  kb=$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+  [[ "$kb" =~ ^[0-9]+$ ]] || return 0
+  [ $(( kb / 1048576 )) -lt "$warn" ] || return 0
+  echo "slot: WARNING low disk: $(( kb / 1048576 )) GB free on $ROOT's drive (under $warn GB, #2065). Usual hogs: build/scen-trees dumps, idle worktrees under .claude/worktrees (clean and pushed ones), build/logs." >&2
+}
 
 cmd=$1; shift
+case "$cmd" in status|take|request) disk_check ;; esac
 case "$cmd" in
   status)
-    if c=$(current); then IFS='|' read -r h m u w <<< "$c"; echo "held by $h ($m) until $(hhmm $u): $w"; else echo "free"; fi
+    if c=$(current); then IFS='|' read -r h m u w s <<< "$c"; echo "held by $h ($m) until $(hhmm $u): $w${s:+ [session ${s:0:8}]}"; else echo "free"; fi
     if [ -s "$QUEUE" ]; then echo "queue:"; n=1; while IFS='|' read -r qn qm qmode qw qt; do echo "  $n. $qn $qm min $qmode: $qw"; n=$((n+1)); done < "$QUEUE"; else echo "queue: empty"; fi ;;
   take)
     parse "$@"; lockon
@@ -78,8 +93,8 @@ case "$cmd" in
       sleep 10
     done ;;
   extend)
-    lockon; c=$(current); IFS='|' read -r h m u w <<< "$c"
-    if [ "$h" = "$me" ]; then echo "$h|$m|$(( $(now) + $1*60 ))|$w" > "$LOCK"; lockoff; echo "slot: extended to $(hhmm $(( $(now)+$1*60 )))"
+    lockon; c=$(current); IFS='|' read -r h m u w s <<< "$c"
+    if [ "$h" = "$me" ]; then echo "$h|$m|$(( $(now) + $1*60 ))|$w|$s" > "$LOCK"; lockoff; echo "slot: extended to $(hhmm $(( $(now)+$1*60 )))"
     else lockoff; echo "slot: you don't hold the machine" >&2; exit 1; fi ;;
   free)
     lockon; h=$(holder)
@@ -87,13 +102,14 @@ case "$cmd" in
     grep -v "^$me|" "$QUEUE" 2>/dev/null > "$QUEUE.tmp"; mv "$QUEUE.tmp" "$QUEUE" 2>/dev/null
     lockoff; echo "slot: free" ;;
   holds) [ "$(holder)" = "${1:-$me}" ] ;;
+  holder-info) c=$(current) || exit 1; IFS='|' read -r h m u w s <<< "$c"; echo "$h|$s" ;;
   quiet-other)
-    c=$(current) || exit 1; IFS='|' read -r h m u w <<< "$c"
+    c=$(current) || exit 1; IFS='|' read -r h m u w s <<< "$c"
     [ "$m" = quiet ] && [ "$h" != "$me" ] && { echo "$h until $(hhmm $u)"; exit 0; }; exit 1 ;;
   wait-quiet)
     end=$(( $(now) + 1800 ))
     while q=$("$0" quiet-other); do [ "$(now)" -gt $end ] && { echo "slot: quiet window still on after 30 min ($q)" >&2; exit 1; }; sleep 15; done ;;
   queue-rm) lockon; grep -v "^$1|" "$QUEUE" > "$QUEUE.tmp"; mv "$QUEUE.tmp" "$QUEUE"; lockoff ;;
   queue-top) lockon; { grep "^$1|" "$QUEUE"; grep -v "^$1|" "$QUEUE"; } > "$QUEUE.tmp"; mv "$QUEUE.tmp" "$QUEUE"; lockoff ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  *) sed -n '2,21p' "$0"; exit 2 ;;
 esac

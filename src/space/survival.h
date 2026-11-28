@@ -44,12 +44,19 @@ struct SurvivalState {
     // vacuum (the suit regulates). Below 5 C food drains faster; above 35 C slow damage.
     float temperature = 20.0f;   // felt air temperature, C (#1099: eased toward the air's, so it changes over seconds; NaN: none)
     int tempBand = 0;            // (#1099) -1 cold, 0 fine, 1 hot: what the readout shows, with 1 C of hysteresis at each edge
+    // (#1472) Heat: the depth band's (or hot air's) heat level against the suit's heat rating. A suit one rating short fills
+    // the heat bar in 3 min, two short in 30 s; full, it hurts. A suit that stands the heat cools it twice as fast.
+    float heat = 0.0f;           // 0..100
+    int heatLevel = 0;           // 0..2: the heat here (0 above 250 m, 1 to 500 m, 2 below; hot air counts too)
+    bool heatWarned = false;     // the half-full warning was shown (again after the bar falls below a quarter)
     float sickUntil = 0.0f;                                   // raw meat: food drains faster for a while
     bool inLifeSupport = false;
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
     bool breathable = false;
-    bool inGas = false;                                       // in a dungeon's poison gas (#719): not breathable, oxygen drains x3
+    bool inGas = false;                                       // in a dungeon's poison gas (#719) or a cave gas pocket (#1472): not breathable
+    uint8_t caveGas = 0;                                      // (#1472) the cave gas at the head: 0 none, 1 CO2 (oxygen x3), 2 methane (x1.5)
+    uint32_t lastGasBlast = 0;                                // (#1472) the last methane blast this player took (CaveGas_BlastDamage)
     bool underwater = false;                                  // the head is in water (oxygen drains faster)
     bool inVacuum = false;                                    // outside any breathable air (space, the moon, ring rocks)
     float vacuumTime = 0.0f;                                  // seconds in vacuum in a suit not rated for it (60 s, then it hurts)
@@ -121,10 +128,17 @@ bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vecto
 inline std::function<void(const Planetoid& body, const Plot& plot, int part)> gBedUseRequest;
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
-const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
+const char* Survival_BiomeName();   // the biome where the player stands: "Birch grove (Forest)" ("" off-planet; #1977)
 // (#1099) The felt temperature eases toward `air` (C, NaN: none) over a few seconds; the readout's cold/hot band changes only
 // 1 C past each edge (5 C, 35 C).
 void Survival_FeelTemperature(SurvivalState& s, float air, float dt);
+// (#1472) Heat with depth (the user's numbers, 2026-11-27). The heat level at `depth` m under the generated surface (0 above
+// 250 m, 1 to 500 m, 2 below), raised by hot felt air (`airC`, NaN: none; above 35 C: 1, above 50 C: 2).
+int Survival_HeatLevel(float depth, float airC);
+// The heat bar after dt s at `level` in a suit of heat `rating` (SuitStats::heat): one short fills it in 180 s, two in 30 s;
+// a suit that stands the heat cools it in 90 s from full.
+float Survival_HeatStep(float heat, int level, int rating, float dt);
+constexpr float kHeatDamagePerSec = 0.5f; // (#1472, the user's 2026-11-27) health a second while the bar is full (200 s from full health)
 
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);

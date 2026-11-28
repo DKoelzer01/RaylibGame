@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::TeamStore: return "team store";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -138,7 +138,11 @@ void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps
     Id(w, NetMsg::Input);
     const size_t n = std::min<size_t>(m.steps.size(), 8);
     w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
-    for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
+    for (size_t i = 0; i < n; ++i) {
+        const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz);
+        w.boolean(s.fly); // (#1922)
+        if (s.fly) { w.varu(s.flyBody); w.pos(s.flyLocal); w.speed(s.fvx); w.speed(s.fvy); w.speed(s.fvz); }
+    }
     w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
     w.u32(m.ackSnap); w.u32(m.ackMask); // (#769)
 }
@@ -150,6 +154,8 @@ bool NetRead(NetReader& r, MsgInputs& m) {
     for (uint32_t i = 0; i < n && r.ok; ++i) {
         MsgInput s; s.tick = newest - i;
         s.held = r.varu(); s.pressed = r.varu(); r.unit(s.fx, s.fy, s.fz);
+        s.fly = r.boolean(); // (#1922)
+        if (s.fly) { s.flyBody = r.varu(); s.flyLocal = r.pos(); s.fvx = r.speed(); s.fvy = r.speed(); s.fvz = r.speed(); }
         m.steps.push_back(s);
     }
     m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
@@ -548,6 +554,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
         case NetMsg::Graves: { MsgGraves m; return NetRead(r, m); }
         case NetMsg::QuestBook: { MsgQuestBook m; return NetRead(r, m); }
+        case NetMsg::TeamStore: { MsgTeamStore m; return NetRead(r, m); }
         case NetMsg::CraftRequest: { MsgCraftRequest m; return NetRead(r, m); }
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
@@ -597,6 +604,17 @@ bool NetProto_Test() {
         const bool rt = RoundTrip(a, b, &s);
         check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.action == 2 && fabsf(b.actionPhase - 0.5f) < 3e-3f && b.steps[0].pressed == 0x10ull &&
               b.steps[2].held == 1ull && fabsf(b.steps[0].fx - 0.6f) < 1e-3f && fabsf(b.steps[0].fz + 0.8f) < 1e-3f && fabsf(b.steps[1].fy - 1.0f) < 1e-3f, "inputs (3 steps)");
+        samples.push_back(s);
+    }
+    { // (#1922) a creative flyer's pose rides on its step; the steps around it carry none
+        MsgInputs a, b; std::vector<uint8_t> s;
+        a.steps = { { 7001, 0ull, 0ull, 0.0f, 0.0f, 1.0f }, { 7000, 0ull, 0ull, 0.0f, 0.0f, 1.0f } };
+        a.steps[0].fly = true; a.steps[0].flyBody = 0xABCDull; a.steps[0].flyLocal = { 60012.3456, -123.4567, 0.0005 };
+        a.steps[0].fvx = 12.34f; a.steps[0].fvy = -0.5f; a.steps[0].fvz = 250.0f;
+        const bool rt = RoundTrip(a, b, &s);
+        const double dp = b.steps.empty() ? 1.0 : std::fmax(std::fabs(b.steps[0].flyLocal.x - 60012.3456), std::fabs(b.steps[0].flyLocal.y + 123.4567));
+        check(rt && b.steps.size() == 2 && b.steps[0].fly && !b.steps[1].fly && b.steps[0].flyBody == 0xABCDull && dp <= 0.0005 + 1e-9 &&
+              fabsf(b.steps[0].fvx - 12.34f) < 0.006f && fabsf(b.steps[0].fvz - 250.0f) < 0.006f && b.steps[1].flyBody == 0, "inputs (a flying step, 1 mm, 1 cm/s)");
         samples.push_back(s);
     }
     {
@@ -728,6 +746,10 @@ bool NetProto_Test() {
         }
         MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
         check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
+        { // #1886
+            MsgTeamStore a{ 7, "section research\ndone smelting\nsection_end\n" }, b; std::vector<uint8_t> s;
+            check(RoundTrip(a, b, &s) && b.team == 7 && b.text == a.text, "team store"); samples.push_back(s);
+        }
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
             a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
@@ -928,6 +950,9 @@ bool NetRead(NetReader& r, MsgGraves& m) {
 }
 void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w.u32(m.team); w.str(m.text.substr(0, 65536)); }
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
+// (#1886) A longer text is the sender's bug (the host drops the map section first): written cut, and then read as broken.
+void NetWrite(NetWriter& w, const MsgTeamStore& m) { Id(w, NetMsg::TeamStore); w.u32(m.team); w.str(m.text.substr(0, MsgTeamStore::kMaxText)); }
+bool NetRead(NetReader& r, MsgTeamStore& m) { m.team = r.u32(); m.text = r.str(MsgTeamStore::kMaxText); return Done(r); }
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items

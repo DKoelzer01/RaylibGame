@@ -102,11 +102,16 @@ test; add a line when something goes wrong).
 ## Sessions and coordination (user, 2026-11-19 on)
 
 - Sessions: **Lighting and Graphics** (rendering, streaming, combat #1215-#1222, creatures, item data #1446, composed
-  tools #1449), **Water** (fluids, Plan 11 body frames #667 P0), **UI/UX and Adventure** (UI, multiplayer, accessibility,
+  tools #1449), **Water** (fluids, Plan 11 body frames #667 P1), **UI/UX and Adventure** (UI, multiplayer, accessibility,
   scenario harness and CI; also **audio** #1003), **Progression** (the ladder #1271, tiered machines #1427, research
   #1030). **Magic** (#1001) is split by feature (user, 2026-11-23): crafting, machines and essence logistics go to
   Progression; spells, rituals and the adventure side to UI/UX and Adventure. **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
   the coordinator.
+- **Restarts (#1897, user 2026-11-26):** the coordinator restarts a topic session above ~250K context at a task boundary:
+  `tools/coord/cycle_session.sh check <name>`, ask it to finish and write `build/session-handoff.md` (wait for idle),
+  then `restart <id|name>`. Keep your handoff file current. A SessionStart(compact) hook loads that file after an
+  auto-compaction (sessions launch with `--autocompact 300000`). Never `claude rm` a session whose cwd is a Claude-made
+  `.claude/worktrees/` folder: rm deletes a clean one under the restarted session.
 - **Messages:** send only what someone needs: reports, questions, PR numbers. No acknowledgements of FYIs ("holding",
   "noted"); a message marked "FYI" needs no reply. Batch your requests.
 - **kNetProtocol:** reserve the next number in `tools/ci/protocol_reservations.txt` (a static check enforces it, #1480);
@@ -140,7 +145,7 @@ test; add a line when something goes wrong).
 
 ## Current plans (all links: docs/notes/plans.md)
 
-- Plan 11 body frames (#667, P0, Water): https://claude.ai/artifact/2nJjsd4cSHYP6rj4UAnxSK - behind `RAYLIBGAME_FRAMES=1`.
+- Plan 11 body frames (#667, P1, Water): https://claude.ai/artifact/2nJjsd4cSHYP6rj4UAnxSK - behind `RAYLIBGAME_FRAMES=1`.
 - Factory and Progression (ladder #1271, research #1030, factory #997): https://claude.ai/artifact/F68hF9Yd8aXM4J9KLeGPCn.
 - Combat (#1215-#1222): https://claude.ai/artifact/EH4w7X5sJ6YS6Hm9vMJ3XJ; creatures, Plan 12: https://claude.ai/artifact/BAuGD4A613nu9LZyuDvjPG.
 - Space, Plan 13 (#1262): https://claude.ai/artifact/NaNNSfcfJs6r1an5SFU7m7. Magic (#1001): https://claude.ai/artifact/QiR81H8phuCeuERszbm5Nf.
