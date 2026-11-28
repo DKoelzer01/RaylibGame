@@ -20,7 +20,6 @@ struct SuitStats {
     float jetFuel = 1.0f, jetThrust = 1.0f, walk = 1.0f, lamp = 1.0f, food = 1.0f;
     float underwater = 2.0f;             // oxygen drain multiplier underwater (rebreather: 0.5)
     float cold = 1.0f;                   // share of the cold's extra hunger felt (insulation 0.4, regulator 0)
-    bool heatProof = false;              // thermal regulator: no heat damage
     // (#1472, #1465) the heat rating: the depth bands' heat (0 above 250 m, 1 to 500 m, 2 below) this suit stands. The best
     // module wins, no stacking: a cooling vest 1, the thermal regulator 2 with suit power (1 without).
     int heat = 0;

@@ -85,7 +85,7 @@ SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only t
         else if (e == "food") s.food = std::max(0.0f, s.food - m->value);
         else if (e == "underwater") s.underwater = std::min(s.underwater, m->value);
         else if (e == "insulation") s.cold = std::min(s.cold, m->value);
-        else if (e == "thermal") { s.cold = 0.0f; s.heatProof = true; thermal = std::max(thermal, (int)m->value); }
+        else if (e == "thermal") { s.cold = 0.0f; thermal = std::max(thermal, (int)m->value); }
         else if (e == "heat") s.heat = std::max(s.heat, (int)m->value); // (#1472) a cooling vest
         else if (e == "grip") s.grip = true;
         else if (e == "scanner") s.scanner = true;

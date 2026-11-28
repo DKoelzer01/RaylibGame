@@ -128,6 +128,21 @@ void Survival_FeelTemperature(SurvivalState& s, float air, float dt) {
     else if (T < kColdBelow - kBandHysteresis) s.tempBand = -1;
     else if (T > kHotAbove + kBandHysteresis) s.tempBand = 1;
 }
+
+// (#1472) Heat with depth: the bands, rates, damage and hot-air levels are the user's (2026-11-27).
+constexpr float kHeatBand1Depth = 250.0f, kHeatBand2Depth = 500.0f; // m under the generated surface
+constexpr float kHotAirLevel2 = 50.0f;                               // C
+constexpr float kHeatFillOneShort = 100.0f / 180.0f, kHeatFillTwoShort = 100.0f / 30.0f, kHeatCool = 100.0f / 90.0f; // per s
+int Survival_HeatLevel(float depth, float airC) {
+    int level = depth >= kHeatBand2Depth ? 2 : depth >= kHeatBand1Depth ? 1 : 0;
+    if (!std::isnan(airC)) level = std::max(level, airC > kHotAirLevel2 ? 2 : airC > kHotAbove ? 1 : 0); // (was: heat damage over 35 C)
+    return level;
+}
+float Survival_HeatStep(float heat, int level, int rating, float dt) {
+    const int shortBy = level - rating;
+    const float rate = shortBy >= 2 ? kHeatFillTwoShort : shortBy == 1 ? kHeatFillOneShort : -kHeatCool;
+    return std::clamp(heat + rate * std::max(0.0f, dt), 0.0f, 100.0f);
+}
 bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
@@ -158,6 +173,7 @@ void Survival_RespawnFor(Scene& world, SurvivalState& survival, Player& player, 
     survival.food = std::max(survival.food, 60.0f);
     survival.sickUntil = 0.0f;
     survival.vacuumTime = 0.0f;
+    survival.heat = 0.0f; survival.heatWarned = false; // (#1472)
     survival.dead = false;
     player.flyMode = false; // otherwise the free-fly camera would put the player back where they died
     // Wake on your bed if it still stands (#800), else at the start, at rest with the ground there (spawnOn / placeAt set
@@ -337,7 +353,20 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) { survival.health -= survival.starvationDamagePerSec * dt; survival.lastHarm = "starvation"; }
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
-        if (!std::isnan(T) && T > 35.0f && !stats.heatProof) { survival.health -= 0.05f * (T - 35.0f) * dt; survival.lastHarm = "heat"; } // 40 C: 0.25 a second
+    }
+    { // (#1472) Heat: the depth band (and hot air) against the suit's heat rating fills the heat bar; full, it hurts.
+        float depth = 0.0f; // m under the generated surface (negative above it)
+        if (player.nearest) if (const auto* pf = dynamic_cast<const PlanetField*>(player.nearest->field.get())) {
+            const DVec3 p = player.nearest->toLocalD(player.position); // body-local, in doubles (Plan 11)
+            depth = pf->radius + pf->elevation(Vector3Normalize(p.toFloat())) - (float)p.length();
+        }
+        survival.heatLevel = Survival_HeatLevel(depth, survival.temperature);
+        survival.heat = Survival_HeatStep(survival.heat, survival.heatLevel, stats.heat, dt);
+        if (survival.heat >= 100.0f) { survival.health -= kHeatDamagePerSec * dt; survival.lastHarm = "heat"; }
+        if (survival.heat >= 50.0f && !survival.heatWarned) {
+            survival.heatWarned = true;
+            if (local) { GameUI_Toast(survival.heatLevel - stats.heat >= 2 ? "Heat: the suit can't stand this - get higher, fast" : "Heat building up: the suit can't stand this depth"); Audio_Play(Sfx::Error, 0.4f); }
+        } else if (survival.heat < 25.0f) survival.heatWarned = false;
     }
 
     if (in.enabled) {
@@ -387,14 +416,23 @@ void Survival_DrawHUD() {
     Bar(x, y + (int)(44 * s), w260, "HP", survival.health, { 230, 70, 70, 255 }, survival.health < 30.0f);
     Bar(x, y + (int)(66 * s), w260, "FOOD", survival.food, { 120, 200, 90, 255 }, survival.food < 15.0f);
     // Stamina (#165): spent by blocks; only while it is below full, under the others.
-    if (survival.stamina < 99.9f) Bar(x, y + (int)(88 * s), w260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
+    const bool showSta = survival.stamina < 99.9f;
+    if (showSta) Bar(x, y + (int)(88 * s), w260, "STA", survival.stamina, { 235, 235, 235, 255 }, survival.stamina < 20.0f);
+    // (#1472) Heat: while the suit is short of the heat here or the bar has not cooled yet; it warns from half full.
+    const int heatRating = Suit_Stats().heat;
+    if (survival.heat > 0.5f || survival.heatLevel > heatRating) {
+        const int hy = y + (int)((showSta ? 110 : 88) * s);
+        Bar(x, hy, w260, "HEAT", survival.heat, { 255, 140, 70, 255 }, survival.heat >= 50.0f);
+        const bool shortNow = survival.heatLevel > heatRating;
+        DrawText(shortNow ? TextFormat("heat %d, suit stands %d", survival.heatLevel, heatRating) : "cooling", x + w260 + (int)(10 * s), hy + (int)hudS, (int)(14 * s), shortNow ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.7f));
+    }
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
     const float T = survival.temperature;
     if (!std::isnan(T)) {
         const int band = survival.tempBand; // (#1099: with hysteresis, not the raw 5 C / 35 C edges)
         const Color tc = band < 0 ? Color{ 130, 190, 255, 255 } : band > 0 ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
-        const char* note = band < 0 ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : band > 0 ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
+        const char* note = band < 0 ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : band > 0 ? (st.heat >= survival.heatLevel ? "  heat: suit rated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + (int)(20 * s), y + (int)(68 * s), (int)(16 * s), tc);
     }
     const int tx = x + std::max(wO2, wPwr) + (int)(20 * s), fs = (int)(16 * s);
@@ -830,6 +868,34 @@ TEST(Survival, TheFeltTemperatureEasesAndItsBandDoesNotFlickerAtTheEdge) {
     // No air (vacuum, above the air): none.
     Survival_FeelTemperature(s, NAN, 1.0f / 60.0f);
     EXPECT_TRUE(std::isnan(s.temperature));
+}
+
+// (#1472) Heat with depth: the bands, and the bar's times against the suit's rating (the user's numbers, 2026-11-27).
+TEST(Survival, HeatLevelByDepthAndHotAir) {
+    EXPECT_EQ(Survival_HeatLevel(0.0f, 20.0f), 0);
+    EXPECT_EQ(Survival_HeatLevel(249.0f, NAN), 0);
+    EXPECT_EQ(Survival_HeatLevel(250.0f, NAN), 1);
+    EXPECT_EQ(Survival_HeatLevel(499.0f, 20.0f), 1);
+    EXPECT_EQ(Survival_HeatLevel(500.0f, 20.0f), 2);
+    EXPECT_EQ(Survival_HeatLevel(-30.0f, 40.0f), 1) << "hot surface air (over 35 C) counts as level 1";
+    EXPECT_EQ(Survival_HeatLevel(10.0f, 55.0f), 2);
+    EXPECT_EQ(Survival_HeatLevel(600.0f, 40.0f), 2) << "the deeper of the two";
+}
+TEST(Survival, HeatBarFillsIn3MinOneShortAnd30sTwoShortAndCoolsTwiceAsFast) {
+    auto run = [](float heat, int level, int rating, float seconds) {
+        for (int f = 0; f < (int)(seconds * 60.0f + 0.5f); ++f) heat = Survival_HeatStep(heat, level, rating, 1.0f / 60.0f);
+        return heat;
+    };
+    EXPECT_NEAR(run(0.0f, 1, 0, 90.0f), 50.0f, 0.5f) << "one short: half in 90 s (the HUD's warning)";
+    EXPECT_LT(run(0.0f, 1, 0, 179.0f), 100.0f);
+    EXPECT_EQ(run(0.0f, 1, 0, 181.0f), 100.0f) << "one short: full in 3 min";
+    EXPECT_LT(run(0.0f, 2, 0, 29.5f), 100.0f);
+    EXPECT_EQ(run(0.0f, 2, 0, 30.5f), 100.0f) << "two short: full in 30 s";
+    EXPECT_EQ(run(0.0f, 2, 1, 181.0f), 100.0f) << "a vest in the deep band is one short";
+    EXPECT_EQ(run(0.0f, 2, 2, 600.0f), 0.0f) << "rated: it never fills";
+    EXPECT_EQ(run(0.0f, 0, 0, 600.0f), 0.0f);
+    EXPECT_NEAR(run(100.0f, 0, 0, 45.0f), 50.0f, 0.5f) << "cooling: half in 45 s, twice the one-short fill";
+    EXPECT_EQ(run(100.0f, 1, 1, 91.0f), 0.0f) << "a band the suit stands cools it too";
 }
 
 // (#1374) Bitterroot cures poison and is eaten even when full while poisoned; full and well, it waits like other food.
