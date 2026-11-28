@@ -2,10 +2,12 @@
 // --test-half (#968): each float through packHalf2x16 / unpackHalf2x16, as fluid_step.comp stores its face flows. The bench
 // compares the results bit for bit with the CPU kernel's half rounding (FluidKernel::HalfRound, nearest even): GLSL leaves
 // the conversion's rounding to the implementation, and a different rounding parts the CPU and GPU fluid runs.
+// The packed half goes back as stored (#2116): NVIDIA folds unpackHalf2x16(packHalf2x16(f)) to f, so a round trip in the
+// shader never rounded and the check failed on every float without measuring anything; the bench decodes the bits.
 layout(local_size_x = 64) in;
 layout(std430, binding = 0) buffer Data { uint v[]; };
 uniform uint count;
 void main() {
     uint i = gl_GlobalInvocationID.x;
-    if (i < count) v[i] = floatBitsToUint(unpackHalf2x16(packHalf2x16(vec2(uintBitsToFloat(v[i]), 0.0))).x);
+    if (i < count) v[i] = packHalf2x16(vec2(uintBitsToFloat(v[i]), 0.0)) & 0xFFFFu;
 }

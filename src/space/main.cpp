@@ -1461,12 +1461,17 @@ int main(int argc, char** argv)
                 prog.dispatch(n / 64);
                 std::vector<unsigned> r(n);
                 buf.download(r.data(), n * 4);
+                auto halfToFloat = [](unsigned h) { // the stored half, exactly (#2116: the shader returns the bits)
+                    const unsigned e = (h >> 10) & 31u, m = h & 1023u;
+                    const float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? INFINITY : ldexpf((float)(m | 1024u), (int)e - 25);
+                    return (h & 0x8000u) ? -v : v;
+                };
                 for (unsigned k = 0; k < n; ++k) {
                     float f; std::memcpy(&f, &in[k], 4);
                     const float c = FluidKernel::HalfRound(f);
-                    uint32_t cb; std::memcpy(&cb, &c, 4);
-                    if (cb != r[k]) {
-                        float g; std::memcpy(&g, &r[k], 4);
+                    const float g = halfToFloat(r[k]);
+                    uint32_t cb, gb; std::memcpy(&cb, &c, 4); std::memcpy(&gb, &g, 4);
+                    if (cb != gb) {
                         if (bad < 5) printf("bench: half: %.9g -> GPU %.9g, CPU %.9g%s\n", f, g, c, k % 4 == 3 ? " (halfway)" : "");
                         ++bad; badHalfway += k % 4 == 3;
                     }
