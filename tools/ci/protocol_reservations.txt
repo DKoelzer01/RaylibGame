@@ -32,3 +32,4 @@ erosion 32 | staging         | #2018 | creep spares only 0.4 m+ hollows, shallow
 erosion 33 | staging         | #1988 | Terrain v2 option B default (PR #2007)
 erosion 34 | staging         | #1990 | the biome shapes the bake: per-variant erodibility, talus, creep, glacial (biomes.txt bake)
 erosion 35 | staging         | #1989 | the bake fields for the biome: + the cut grid in the cache (ERO9)
+erosion 36 | staging         | #1990 | strata climate (caprock, karst) + skewed beds, pinch-outs, fault throw (#2064)

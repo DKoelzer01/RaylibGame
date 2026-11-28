@@ -733,6 +733,8 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
+    if (!gStrataBeds) { const int nb = 0x2064; mix(&nb, sizeof nb); }                                    // #2064 A/B: RAYLIBGAME_STRATA_BEDS=0
+    if (!gStrataClimate) { const int nc = 0x1990C; mix(&nc, sizeof nc); }                                // #1990 step 4 A/B: RAYLIBGAME_STRATA_CLIMATE=0
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
     if (p.bFace >= 0) { // #1988: B faces bake their own (A, -1, mixes nothing); v2: basins breached (RAYLIBGAME_B_BREACH)
         const int b = 0x19880 + p.bFace; mix(&b, sizeof b);

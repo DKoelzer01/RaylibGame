@@ -22,7 +22,15 @@ struct StrataColumn {
     // (#1990) The biome's bake multipliers here (BiomeVariantTable::BakeMul; 1 = as before): only the erosion bake reads
     // them, from its own strata callback (PlanetField::bakeStrataColumn).
     float kMul = 1.0f, talusMul = 1.0f, creepMul = 1.0f, glacialMul = 1.0f;
+    float pinch = 0.5f;     // (#2064) 0..1 a lateral value (~3.5 km): lenticular beds pinch out where it is under their own threshold
+    float caprock = 0.0f;   // (#1990 step 4) 0..1 aridity: resistant beds thicken over the soft ones (mesas and buttes)
 };
+
+// (#2064) The bed at a height: its index (which picks its rock), where in it the height lies (0 at its base, 1 at its
+// top), its thickness (m) and whether it is a resistant one. Beds come in sets of four nominal layers whose thicknesses
+// are skewed (many thin beds, a few thick ones), some lenticular; RAYLIBGAME_STRATA_BEDS=0: the even layers of #587.
+struct StrataBed { int32_t index; float frac, thick; bool hard; };
+StrataBed Strata_BedAt(const StrataColumn& c, float h, unsigned int seed);
 
 // Province and layer geometry from the field's continent value at this place (c: < 0 ocean, > 0.3 well inland) and the
 // surface point s (m). `seed` = the planet's terrain seed.
@@ -51,5 +59,7 @@ void Strata_KarstDolines(Vector3 lo, Vector3 hi, float R, unsigned int seed, std
 // 0..1 proximity to the vent (the cone's basalt-and-ash province).
 float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* weight = nullptr);
 inline bool gStrataFolds = true; // #591; RAYLIBGAME_FOLDS=0 for A/B (its own bake cache)
+inline bool gStrataBeds = true;  // #2064: skewed, lenticular beds and fault throw; RAYLIBGAME_STRATA_BEDS=0 for A/B (its own bake cache)
+inline bool gStrataClimate = true; // #1990 step 4: caprock where dry, karst where humid; RAYLIBGAME_STRATA_CLIMATE=0 for A/B
 
 #endif
