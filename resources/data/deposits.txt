@@ -14,4 +14,6 @@ pool deep    50000 150000 400000 1.5
 rare 0.25 gold_ore wolframite_ore chromite_ore cinnabar_ore
 # drill <part> <reach m> <spacing m>: how far below its base a drill works a deposit, and how close two drill heads on one
 # deposit may stand (the newer one reads "Too close to another drill"). Rates are the drills' machine_recipes rows.
+drill borehole_rig 32 8
+drill lv_borehole_rig 64 8
 drill miner 128 8

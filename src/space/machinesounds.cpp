@@ -20,7 +20,7 @@ const char* MachineSound_Hum(PartType t) {
         case PartType::Campfire: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: return "hum_fire";
         case PartType::Boiler: case PartType::SteamMacerator: case PartType::ForgeHammer: case PartType::AlloySmelter: return "hum_steam";
         case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
-        case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: return "hum_lv";
+        case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::LvBoreholeRig: return "hum_lv";
         case PartType::MvGenerator: case PartType::Electrolyzer: case PartType::ChemicalReactor: case PartType::Miner: return "hum_mv";
         case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery: case PartType::PrecisionAssembler: return "hum_hv";
         case PartType::FusionReactor: case PartType::MassDriver: return "hum_ev";
@@ -28,7 +28,7 @@ const char* MachineSound_Hum(PartType t) {
         case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::Gearbox: case PartType::HandCrank: return "mech_gears";
         case PartType::Millstone: return "mech_millstone";
         case PartType::Saw: return "mech_saw";
-        case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: return "mech_press";
+        case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::BoreholeRig: return "mech_press"; // (#2071) the rig's bit strokes as a press: GUESS
         case PartType::Mixer: case PartType::RotarySieve: case PartType::RotaryPump: return "mech_millstone"; // (#1734) GUESS: a slow grinding turn
         case PartType::WaterWheel: return "mech_waterwheel";
         case PartType::Windmill: return "mech_windmill";

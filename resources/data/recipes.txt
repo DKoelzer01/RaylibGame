@@ -218,6 +218,9 @@ lv_assembler 1     = lv_hull 1, lv_motor 1, basic_circuit 2, copper_wire 4
 # (#1427 L7e) the LV successors of the press and the saw
 compressor 1       = lv_hull 1, lv_motor 1, piston 1, basic_circuit 1
 cutter 1           = lv_hull 1, lv_motor 1, steel_gear 1, basic_circuit 1
+# (#2071) the drills before the miner (GUESS counts: the rods are the drill string, the plates its bit)
+borehole_rig 1     = mechanism 2, iron_rod 4, steel_plate 2, any_planks 8
+lv_borehole_rig 1  = lv_hull 1, lv_motor 1, steel_gear 2, basic_circuit 1, iron_rod 4
 # (#1219) Composed weapons: heads hafted with planks (Composed_FromParts reads the head's material). Stone heads are knapped
 # by hand; bronze, iron and steel heads come from the kiln and the anvil (machine_recipes.txt).
 stone_blade 1        = any_stone 2

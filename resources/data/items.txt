@@ -350,6 +350,9 @@ trip_hammer      | Trip hammer      | 20  | 140,104, 66 | Mechanical power: a ca
 mixer            | Mixer            | 20  | 150,116, 74 | Mechanical power: stirs copper and tin dust (or crushed ore) 3 to 1 into bronze dust, for the kiln. Needs 32 RPM.
 rotary_sieve     | Rotary sieve     | 20  | 150,116, 74 | Mechanical power: sifts gravel into sand, sand into clay and dirt into fibre, with now and then an ore or seeds. Needs 16 RPM.
 rotary_pump      | Rotary pump      | 20  | 120,110, 96 | Mechanical power: lifts water from under it (a river, a pond, the sea) into pipes, outlets and boilers beside it, 20 L/s at 32 RPM. Needs 8 RPM.
+# (#2071) Drills on a deposit's finite pool (deposits.txt): the shallow ones before the miner
+borehole_rig     | Borehole rig     | 20  | 140,110, 72 | Mechanical power: a derrick that bores into the ore deposit below it (reach 32 m), one ore every 4 s at 32 RPM, until the deposit runs out. Needs 16 RPM.
+lv_borehole_rig  | LV borehole rig  | 20  | 150,150,158 | LV (32 V, 16 EU/t): bores into the ore deposit below it (reach 64 m), one ore every 2 s, until the deposit runs out.
 # (#1614 PR 3) Assemblies of the steam age: made by hand (Tab) or in the steam assembler, built into the machines
 mechanism        | Mechanism        | 64  | 150,120, 80 | A small gear train: wooden cogwheels on an iron rod, pinned with screws. The heart of the press, the lathe and the steam engine.
 piston           | Piston           | 64  | 190,140, 70 | A bronze piston on iron rods with a return spring. Steam engines need two.
