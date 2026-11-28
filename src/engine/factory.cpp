@@ -69,7 +69,9 @@ struct Recipe {
     PartType machine;
     std::vector<Stack> in, out;
     int ticks = 0, eu = 0;   // generators: ticks of burn per fuel item, EU per tick produced
+    int alt = -1;            // (#2072) an alternate recipe (altIds index): a machine runs it only when it is chosen for it
 };
+std::vector<std::string> altIds; // (#2072) the alternate recipes' ids, in file order (machine_recipes.txt "alt <id>")
 
 struct Tables {
     std::vector<Recipe> recipes;
@@ -177,6 +179,7 @@ void LoadMachineDefs() {
 // (#1207) built once by LoadRecipes
 std::array<std::vector<int>, 256> recipesOf;      // by PartType: indices into tables.recipes
 std::array<std::vector<uint8_t>, 256> wantsOf;   // by PartType, by item id: a recipe of it takes the item
+std::vector<std::vector<uint8_t>> altWants;      // (#2072) by alternate (altIds index), by item id: its rows take the item
 // (#1214) sleeping machines and networks: on unless RAYLIBGAME_FACTORY_SLEEP=0 (A/B; the unit test runs both)
 bool sleepOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SLEEP"); return !(e && e[0] == '0'); }();
 
@@ -211,6 +214,12 @@ void LoadRecipes() {
         parseStacks(cols[2], r.in);
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
+        if (cols.size() >= 6 && cols[5].rfind("alt ", 0) == 0) { // (#2072) an alternate recipe, from ruin caches
+            const std::string id = cols[5].substr(4);
+            auto at = std::find(altIds.begin(), altIds.end(), id);
+            r.alt = (int)(at - altIds.begin());
+            if (at == altIds.end()) altIds.push_back(id);
+        }
         tables.recipes.push_back(r);
     }
     if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
@@ -232,7 +241,8 @@ void LoadRecipes() {
     for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
         const Recipe& r = tables.recipes[ri];
         recipesOf[(int)r.machine].push_back((int)ri);
-        std::vector<uint8_t>& w = wantsOf[(int)r.machine];
+        if (r.alt >= 0 && r.alt >= (int)altWants.size()) altWants.resize(r.alt + 1);
+        std::vector<uint8_t>& w = r.alt >= 0 ? altWants[r.alt] : wantsOf[(int)r.machine]; // (#2072) an alternate's inputs: only where chosen
         for (const Stack& s : r.in) { if (s.item >= (int)w.size()) w.resize(s.item + 1, 0); w[s.item] = 1; }
     }
     LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
@@ -276,6 +286,7 @@ struct Machine {
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
     int tier = kTierLV;
     int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
+    int alt = -1;                           // (#2072) the alternate recipe chosen for it (altIds index), tried before the base ones
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
@@ -590,6 +601,13 @@ bool RecipeWants(PartType type, int item) {
     const std::vector<uint8_t>& w = wantsOf[(int)type]; // (#1207)
     return item >= 0 && item < (int)w.size() && w[item];
 }
+// (#2072) The same for one machine: its base recipes, or the alternate chosen for it.
+bool RecipeWants(const Machine& m, int item) {
+    if (RecipeWants(m.type, item)) return true;
+    if (m.alt < 0 || m.alt >= (int)altWants.size()) return false;
+    const std::vector<uint8_t>& w = altWants[m.alt];
+    return item >= 0 && item < (int)w.size() && w[item];
+}
 bool HasFuelSlot(PartType type) { return !Def(type).fuels.empty(); }
 int WaterBucketItem() { static const int id = tables.item("water_bucket"); return id; }
 int BucketItem() { static const int id = tables.item("bucket"); return id; }
@@ -600,6 +618,7 @@ bool Accepts(PartType type, int item) {
     if (Def(type).waterPerTick > 0 && item == WaterBucketItem()) return true;
     return IsFuel(Def(type), item) || RecipeWants(type, item);
 }
+bool Accepts(const Machine& m, int item) { return Accepts(m.type, item) || (!tables.fluid(item) && RecipeWants(m, item)); } // (#2072)
 
 // Puts items into a machine: water buckets empty into a boiler's tank (the empty bucket comes back), fuel that no
 // recipe of the machine wants goes to its fuel slot, the rest to its inputs (toFuel: the fuel slot whatever, e.g. logs
@@ -613,7 +632,7 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
     }
     // Fuel goes to the fuel slot. An item that is also a recipe input (logs in a campfire, which chars them) lights an
     // empty fuel slot first and goes to the inputs after that, unless toFuel (Shift+click) asks for the fuel slot.
-    const bool dual = RecipeWants(m.type, item);
+    const bool dual = RecipeWants(m, item);
     if (HasFuelSlot(m.type) && IsFuel(def, item) && (toFuel || !dual || m.fuel.count == 0)) {
         int k = 0;
         if (m.fuel.count == 0 || m.fuel.item == item) { // one kind of fuel at a time
@@ -623,7 +642,7 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
         count -= k;
         if (count <= 0 || toFuel || !dual) return count;
     }
-    if (toFuel || !Accepts(m.type, item)) return count;
+    if (toFuel || !Accepts(m, item)) return count;
     const int left = AddItems(m.in.data(), InSlots(m), item, count);
     if (left < count && m.fire == kFireOut) m.fire = kFireAuto; // (#1103) something to cook: a put-out campfire lights by itself again
     return left;
@@ -772,6 +791,10 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
                 else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
+                else if (tag == "alt" && k < s.size()) { // (#2072) its chosen alternate (gone from the data: none)
+                    auto at = std::find(altIds.begin(), altIds.end(), s[k++]);
+                    m.alt = at == altIds.end() ? -1 : (int)(at - altIds.begin());
+                }
                 else if (tag == "sum") ps->loadedSummary = true; // (#1302) it was in the summary sim: its caps follow
                 else if (tag == "cap" && k + 2 < s.size()) { // a cap, kept only if that recipe is still this machine's with that output
                     const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int c = atoi(s[k + 2].c_str()); k += 3;
@@ -784,7 +807,7 @@ void ApplyLayout(const LayoutMsg& L) {
             if (HasFuelSlot(m.type))
                 for (int j = 0; j < InSlots(m); ++j) {
                     Stack& st = m.in[j];
-                    if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
+                    if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m, st.item)) continue;
                     if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
                     const int k = std::min(st.count, tables.cap(st.item) - m.fuel.count);
                     m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
@@ -901,14 +924,17 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
-                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
+                return r.machine == m.type && (r.alt < 0 || r.alt == m.alt) && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
             };
+            if (m.alt >= 0) // (#2072) its chosen alternate first; with its inputs short, the base recipes as before
+                for (int ri : recipesOf[(int)m.type])
+                    if (tables.recipes[ri].alt == m.alt && usable(tables.recipes[ri])) { m.recipe = ri; m.progress = 0; break; }
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
             // (#1207) only this machine type's recipes (file order kept, so the same one is picked)
             const std::vector<int>& mine = recipesOf[(int)m.type];
             for (int si = 0; si < InSlots(m) && m.recipe < 0; ++si) {
-                if (m.in[si].count <= 0 || !RecipeWants(m.type, m.in[si].item)) continue;
+                if (m.in[si].count <= 0 || !RecipeWants(m, m.in[si].item)) continue;
                 for (int ri : mine) {
                     const Recipe& r = tables.recipes[ri];
                     bool uses = false;
@@ -993,7 +1019,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     const int item = from[i].item;
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
-                        if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
+                        if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst, item)) continue;
                         if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
                         else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
                                  !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
@@ -1411,6 +1437,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.hotOutputs = HeatsItems(m.type);
     v.canLight = m.type == PartType::Campfire;
     v.fire = m.fire;
+    if (m.alt >= 0 && m.alt < (int)altIds.size()) v.alt = altIds[m.alt]; // (#2072)
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -1930,6 +1957,41 @@ bool Factory::SetVariant(uint64_t body, uint32_t plot, int part, const std::stri
     if (m.recipe >= 0 && (v < 0 || tables.recipes[m.recipe].out.empty() || tables.recipes[m.recipe].out[0].item != v)) { m.recipe = -1; m.progress = 0; }
     return true;
 }
+// (#2072) Between ticks: the alternate recipe a machine runs first ("" none). Whether the player's team has it is the
+// caller's check (the host's).
+bool Factory::SetAlt(uint64_t body, uint32_t plot, int part, const std::string& id) {
+    LoadRecipes();
+    std::lock_guard<std::mutex> lock(simMutex);
+    PlotSim* p = FindPlot(body, plot);
+    auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+    if (!p || it == p->byPart.end()) return false;
+    Machine& m = p->machines[it->second];
+    int a = -1;
+    if (!id.empty()) {
+        auto at = std::find(altIds.begin(), altIds.end(), id);
+        if (at == altIds.end()) return false;
+        a = (int)(at - altIds.begin());
+        bool here = false;
+        for (int ri : recipesOf[(int)m.type]) here |= tables.recipes[ri].alt == a;
+        if (!here) return false; // not this machine's
+    }
+    if (m.alt == a) return true;
+    m.alt = a;
+    m.dirty = true;
+    if (!p->nearPlayer) BeginMeasuring(*p, tickCount.load()); // (#1302) its caps were for the recipes it ran before
+    m.recipe = -1; m.progress = 0; // it picks again (inputs are only taken when a craft finishes, #193: nothing is lost)
+    return true;
+}
+std::vector<std::string> Factory::AltsOf(PartType type) {
+    LoadRecipes();
+    std::vector<std::string> out;
+    if ((int)type < 0 || type >= PartType::Count) return out;
+    for (int ri : recipesOf[(int)type]) {
+        const int a = tables.recipes[ri].alt;
+        if (a >= 0 && std::find(out.begin(), out.end(), altIds[a]) == out.end()) out.push_back(altIds[a]);
+    }
+    return out;
+}
 std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, uint32_t plot, int part, const std::string& prefix) {
     std::vector<std::pair<std::string, int>> out;
     std::lock_guard<std::mutex> lock(simMutex);
@@ -2135,6 +2197,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
             if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
+            if (m.alt >= 0 && m.alt < (int)altIds.size()) fprintf(f, " alt %s", altIds[m.alt].c_str()); // (#2072)
             // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
             // far it goes on in the summary at once instead of measuring for a minute
             if (summary) {
@@ -2344,6 +2407,7 @@ uint64_t StateHash(const PlotSim& ps) {
     }
     for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
     for (const Machine& m : ps.machines) mix(m.rotAcc);
+    for (const Machine& m : ps.machines) if (m.alt >= 0) { mix(m.part); mix(m.alt); } // (#2072; none chosen: the hash as before)
     mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
     return h;
 }
@@ -2647,6 +2711,55 @@ TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
     EXPECT_EQ(gen.fuel.count, fuel) << "no coal burnt for a machine that can't craft";
     EXPECT_LE(gen.energy, energy);
     EXPECT_EQ(mac.received, 0);
+    plots.clear(); plotIndexDirty = true;
+}
+
+// (#2072) An alternate recipe runs only on a machine it is chosen for, before its base ones; the choice is saved, and
+// only a machine with that alternate takes it.
+TEST(Factory, AnAlternateRecipeRunsOnlyWhereChosenAndIsSaved) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const LayoutMsg layout = OracleLayout(3, { { PartType::CokeOven, 0, 0 }, { PartType::CokeOven, 3, 0 }, { PartType::Kiln, 6, 0 } }, {}, {});
+    ApplyLayout(layout);
+    PlotSim* ps = FindPlot(9, 3);
+    ASSERT_TRUE(ps);
+    const int coal = tables.item("coal"), coke = tables.item("coke");
+    int b = 0;
+    for (int part : { 0, 1 }) InsertInto(ps->machines[ps->byPart.at(part)], coal, 20, false, b);
+    EXPECT_EQ(Factory::AltsOf(PartType::CokeOven), std::vector<std::string>{ "packed_coke" });
+    EXPECT_TRUE(Factory::SetAlt(9, 3, 1, "packed_coke"));
+    EXPECT_FALSE(Factory::SetAlt(9, 3, 2, "packed_coke")) << "not a kiln's";
+    EXPECT_FALSE(Factory::SetAlt(9, 3, 0, "no_such_alt"));
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 1200; ++t) TickPlot(*ps, 1, made, active);
+    auto count = [&](int part, int item) { const Machine& m = ps->machines[ps->byPart.at(part)]; return CountItems(m.out, kSlots, item) + CountItems(m.in.data(), InSlots(m), item); };
+    EXPECT_EQ(count(0, coke), 2) << "the base recipe: 1 coke from 2 coal per 600 ticks";
+    EXPECT_EQ(count(0, coal), 16);
+    EXPECT_EQ(count(1, coke), 3) << "packed coke: 3 coke from 5 coal per 1200 ticks";
+    EXPECT_EQ(count(1, coal), 15);
+    // Saved and loaded, the choice stays; a machine with none saves none.
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_alt_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    int withAlt = 0;
+    for (const std::string& l : lines) withAlt += l.find(" alt packed_coke") != std::string::npos;
+    EXPECT_EQ(withAlt, 1);
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(layout);
+    ps = FindPlot(9, 3);
+    ASSERT_TRUE(ps);
+    const int packed = (int)(std::find(altIds.begin(), altIds.end(), "packed_coke") - altIds.begin());
+    EXPECT_EQ(ps->machines[ps->byPart.at(1)].alt, packed);
+    EXPECT_EQ(ps->machines[ps->byPart.at(0)].alt, -1);
+    // Back to the base recipes.
+    EXPECT_TRUE(Factory::SetAlt(9, 3, 1, ""));
+    EXPECT_EQ(ps->machines[ps->byPart.at(1)].alt, -1);
     plots.clear(); plotIndexDirty = true;
 }
 

@@ -34,6 +34,10 @@ constexpr int kMachineActUnlockVault = 11, kMachineActPullLever = 12;
 // (#2072) A ruin cache, its hold done: the host opens it (spending the requester's power cell, as its kind needs), rolls,
 // gives the parts, marks it opened for everyone and sends the requester the result lines.
 constexpr int kMachineActOpenCache = 13;
+// (#2072) The alternate recipe a machine runs first (item: its id, "" the base recipes); the host checks the requester's
+// team has it.
+constexpr int kMachineActChooseAlt = 14;
+void MachineAct_SetAlt(uint64_t bodyId, uint32_t plotId, int part, const std::string& id);
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;

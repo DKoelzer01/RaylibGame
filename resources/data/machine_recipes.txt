@@ -133,3 +133,15 @@ mana_siphon     | jar_frost 1 | mana_jar 1 | 600 | 0
 mana_siphon     | jar_storm 1 | mana_jar 1 | 600 | 0
 mana_siphon     | jar_shard 1 | mana_jar 1 | 600 | 0
 mana_siphon     | jar_rot 1 | mana_jar 1 | 600 | 0
+# (#2072) Alternate recipes from ruin caches (Satisfactory style): a 6th column "alt <id>" (caches.txt names it). A machine
+# runs one only when its team has it and a player chose it for that machine (E on it); its base recipes stay. GUESS: all.
+kiln            | charcoal 3       | oak_log 2                 | 400  | 0  | alt bulk_charcoal
+kiln            | charcoal 3       | birch_log 2               | 400  | 0  | alt bulk_charcoal
+kiln            | charcoal 3       | maple_log 2               | 400  | 0  | alt bulk_charcoal
+kiln            | charcoal 3       | pine_log 2                | 400  | 0  | alt bulk_charcoal
+kiln            | charcoal 3       | spruce_log 2              | 400  | 0  | alt bulk_charcoal
+kiln            | bronze_ingot 5   | copper_dust 3, tin_dust 1 | 400  | 0  | alt rich_bronze
+kiln            | glass 2          | quartz 1                  | 200  | 0  | alt quartz_glass
+coke_oven       | coke 3           | coal 5                    | 1200 | 0  | alt packed_coke
+blast_furnace   | steel_ingot 1    | iron_dust 1               | 400  | 0  | alt dust_steel
+electrolyzer    | aluminium_ingot 1 | bauxite_ore 2            | 400  | 64 | alt bauxite_direct
