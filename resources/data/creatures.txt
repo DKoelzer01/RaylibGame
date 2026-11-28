@@ -29,7 +29,7 @@ dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 si
 # Tunnel lurker (#1224): blind (sight 0), hunts by sound: sprinting (22 m), digging (26 m) and combat draw it; walking only within
 # ~9 m; sneaking (crouched, prone) is silent. Clings to ceilings and drops on prey passing under (x1.5, a heavy hit), fast in
 # short bursts, avoids light. Karst caves and chambers, 8 m+ down, dark; nests in large chambers.
-# region=none,karst,crystal,fungal (#1740, GUESS): dry rock caves; not the frozen, volcanic or flooded ones.
+# region=none,karst,crystal,fungal (#1740, user 2026-11-27): dry rock caves; not the frozen, volcanic or flooded ones.
 tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave region=none,karst,crystal,fungal depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death say_windup=rattles_overhead say_hit=drops_on_you
 # Cave scavenger (#1225): humanoid groups of up to 3 by cave mouths, with torches. The first of a group throws stones from
 # 5-14 m (a 0.6 s wind-up you can see, then a stone on an arc for 6: block it with a shield or dodge) while the others close
