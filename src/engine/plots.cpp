@@ -54,6 +54,16 @@ constexpr const char* kPartSaveNames[] = {
     "Distillery", "EssenceTank", "Cauldron",
     "Ladder",
     "Lever",
+    // the ladder branch's parts, after staging's (#1271, #1427, #1614, #1429, #1734)
+    "SteamEngine", "Dynamo", "Motor",
+    "SteamLab",
+    "Bloomery", "Bellows", "Anvil",
+    "SteamAssembler",
+    "LvAssembler",
+    "Compressor", "Cutter",
+    "Lathe", "Wiremill",
+    "MbController", "MbCasing", "MbHatch",
+    "TripHammer", "Mixer", "RotarySieve", "RotaryPump",
 };
 static_assert(sizeof(kPartSaveNames) / sizeof(kPartSaveNames[0]) == (size_t)PartType::Count, "a part type without a save name (kPartSaveNames)");
 std::vector<PartType> gPalette; // empty: identity
