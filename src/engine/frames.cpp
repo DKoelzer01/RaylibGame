@@ -144,6 +144,35 @@ DVec3 Frames_GravityGlobal(const std::vector<Planetoid*>& bodies, const DVec3& p
     return g;
 }
 
+Planetoid* Frames_NearestBody(const std::vector<Planetoid*>& bodies, const DVec3& pg) {
+    Planetoid* best = nullptr;
+    double bestDist = kInf;
+    for (Planetoid* b : bodies) {
+        if (!b || b->vehicle) continue; // a rocket in flight has no ground
+        // To its mean surface (gravityRadius), as NearestPlanetoid: a big rock's bounding radius must not win over the small one underfoot.
+        const double surface = b->gravityRadius > 0.0f ? (double)b->gravityRadius : SurfaceRadius(*b);
+        const double d = b->flat ? -kInf : (pg - b->worldPos).length() - surface; // terrain is always "under you"
+        if (d < bestDist) { bestDist = d; best = b; }
+    }
+    return best;
+}
+
+bool Frames_SurfaceDistance(const Planetoid& p, const DVec3& pg, float& dist, Vector3& normal) {
+    const Vector3 l = p.toLocalD(pg).toFloat();
+    const float d = p.densityAt(l);
+    const float e = 0.25f; // m, the central-difference step (TerrainSurfaceDistance's)
+    const Vector3 g = {
+        (p.densityAt({ l.x + e, l.y, l.z }) - p.densityAt({ l.x - e, l.y, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y + e, l.z }) - p.densityAt({ l.x, l.y - e, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y, l.z + e }) - p.densityAt({ l.x, l.y, l.z - e })) / (2 * e),
+    };
+    const float glen = Vector3Length(g);
+    if (glen < 1e-5f) return false;
+    dist = (ISO_LEVEL - d) / glen * p.scale;
+    normal = Vector3Normalize(p.dirToWorld(Vector3Scale(g, -1.0f / glen))); // the body's scale is uniform: a rotation alone
+    return true;
+}
+
 DVec3 Frames_Acceleration(const std::vector<Planetoid*>& bodies, const FramePos& f, bool spinForces) {
     const Planetoid* b = Planetoid::findNet(f.frame.body);
     if (!b) return DVec3{ 0, 0, 0 };
@@ -235,6 +264,28 @@ TEST(FramesCore, SurfaceVelocityMatchesTheBodysOwn) {
     DVec3 p2, v2;
     ASSERT_TRUE(Frames_ToGlobal(rest, p2, v2));
     EXPECT_LT(Dist(v, v2), 1e-9) << "against a point at rest in the Fixed frame";
+}
+
+// (F8b-4a) The origin-free queries give what the render-space ones give with the render origin beside the point.
+TEST(FramesCore, OriginFreeQueriesMatchTheRenderOnes) {
+    auto rock = Body("rock", 0x9003, { 50000.0, -3000.0, 20000.0 }, 2000.0f, { 10.0f, 37.25f, -4.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
+    auto far = Body("far", 0x9004, { -90000.0, 0.0, 0.0 }, 2000.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
+    for (const DVec3 local : { DVec3{ 30.0, 1995.0, -12.0 }, DVec3{ -700.0, 600.0, 1700.0 } }) {
+        const DVec3 pg = rock->toWorldD(local);
+        const DVec3 origin = pg + DVec3{ 3.0, -1.5, 2.0 }; // the render origin a few metres off, as around the local player
+        rock->position = (rock->worldPos - origin).toFloat();
+        far->position = (far->worldPos - origin).toFloat();
+        float d0 = 0.0f, d1 = 0.0f;
+        Vector3 n0{}, n1{};
+        ASSERT_TRUE(TerrainSurfaceDistance(*rock, (pg - origin).toFloat(), d0, n0));
+        ASSERT_TRUE(Frames_SurfaceDistance(*rock, pg, d1, n1));
+        EXPECT_NEAR(d0, d1, 1e-3f) << "surface distance";
+        EXPECT_LT(Vector3Distance(n0, n1), 1e-4f) << "normal";
+        EXPECT_EQ(Frames_NearestBody({ far.get(), rock.get() }, pg), rock.get());
+    }
+    // From halfway the mean surfaces decide, not the centres: the bigger body wins a point nearer its centre's rival.
+    auto big = Body("big", 0x9005, { -90000.0, 0.0, 0.0 }, 30000.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Planet);
+    EXPECT_EQ(Frames_NearestBody({ rock.get(), big.get() }, DVec3{ -10000.0, 0.0, 0.0 }), big.get());
 }
 
 // Round trips through every frame keep position and velocity to sub-micrometre / nano-m/s at planet scale.
