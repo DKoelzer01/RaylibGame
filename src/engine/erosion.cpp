@@ -82,7 +82,7 @@ namespace {
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t) pool.emplace_back([&, t] {
         for (size_t c = t; c < d.cells; c += T) {
-            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c]);
+            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c], h0[c]);
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
             d.hardness[c] = ValueNoise(q, seed ^ 0xA11u);
             d.strata[c] = std::clamp((ValueNoise(Vector3Scale(q, 0.7f), seed ^ 0x57Au) - 0.55f) / 0.15f, 0.0f, 1.0f);
@@ -259,7 +259,7 @@ namespace {
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
         const bool layered = !d.col.empty(); // #587: the rock column's layer at the cell's current height
         auto erodibility = [&](size_t c, float hc) {
-            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed));
+            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed)) * d.col[c].kMul; // #1990: x the biome's
             const float k = d.rockK[c] * kScale;
             if (d.strata[c] <= 0.0f) return k;
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
@@ -420,7 +420,7 @@ namespace {
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L * (layered ? d.col[c].glacialMul : 1.0f); // #1990: alpine ice carves deeper
                     f += (fg - f) * g;
                 }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
@@ -460,7 +460,9 @@ namespace {
                             const int o = nbOf(c, k);
                             if (o < 0) continue;
                             const float L = nbDist(c, k, o) * R;
-                            dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                            // #1990: the pair's mean biome creep (symmetric, so the pass still conserves mass)
+                            const float D = layered ? p.hillslope * 0.5f * (d.col[c].creepMul + d.col[o].creepMul) : p.hillslope;
+                            dh += std::min(2.0f * D / (L * L), 0.1f) * (d.h[o] - d.h[c]);
                         }
                         // #1965: on the fine pass creep never fills a closed hollow's deep floor (the flood filled it 0.4 m+,
                         // half a bake pond's 0.8 m minimum): it filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it
@@ -485,6 +487,7 @@ namespace {
                     const float hard = layered ? Strata_Hardness(Strata_RockAt(d.col[c], d.h[c], d.strataSeed))
                                                : std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
                     float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
+                    if (layered) maxSlope *= d.col[c].talusMul; // #1990
                     if (!talusVar.empty()) maxSlope *= talusVar[c] * (0.8f + 0.45f * Hash3((int)floorf((d.h[c] + talusBandOff[c]) / 30.0f), 0, 0, seed ^ 0x7A4u));
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
@@ -726,6 +729,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
     if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (mixed only when != 1)
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
+    if (p.biomeKey) mix(&p.biomeKey, sizeof p.biomeKey); // #1990 (0 mixes nothing)
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own

@@ -326,6 +326,16 @@ namespace {
             });
             return true;
         }
+        if (name == "gas_hiss") { // (#1472) a cave gas pocket: high-passed noise with a slow, uneven flutter (a leak's hiss)
+            float lp = 0.0f;
+            out = SynthLoop(3.0f, 0.5f, [&](float t, float) {
+                const float x = n(rng);
+                lp += (x - lp) * 0.35f;
+                const float flutter = 0.7f + 0.2f * sinf(6.2832f * 1.7f * t) + 0.1f * sinf(6.2832f * 4.1f * t + 0.6f);
+                return (x - lp) * 0.6f * flutter;
+            });
+            return true;
+        }
         if (name.rfind("step_", 0) == 0) return MakeProceduralStep(name.substr(5), out); // (#1240)
         // (#1241) ambience beds (12 s loops of layered wind, birds, crickets, frogs, insects, surf, rain) and thunder
         const unsigned seed = (unsigned)(std::hash<std::string>{}(name) & 0xffffffffu);

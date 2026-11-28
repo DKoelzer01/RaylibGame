@@ -3,6 +3,7 @@
 // (PlanetField::variantAt); resources/data/biomes.txt lists them. A variant id indexes BiomeVariants().defs; the first
 // variant of each type is its base (the biome as it was before variants) and the fallback where a gate fails.
 #include "voxel.h"
+#include "woodspecies.h"
 #include <string>
 #include <vector>
 
@@ -17,8 +18,8 @@ struct BiomeVariantDef {
     float moistMin = -1e9f, moistMax = 1e9f; // 0..1
     // Flora (#1978), applied over the type's own (trees.cpp FloraOf): density multipliers for trees, bushes and loose
     // stones, a tree size multiplier, an optional closed-canopy floor (least tree odds; < 0 = the type's), and optional
-    // species weights in WoodSpecies order (oak, birch, maple, pine, spruce; all 0 = the type's broadleaf/conifer mix).
-    static constexpr int kSpecies = 5;
+    // species weights in WoodSpecies order (woodspecies.h; all 0 = the type's broadleaf/conifer mix).
+    static constexpr int kSpecies = kWoodSpecies;
     float trees = 1.0f, bushes = 1.0f, stones = 1.0f, size = 1.0f, cover = -1.0f;
     float species[kSpecies] = {};
     // (#2012) Rubber: the percent of its felled trees that give one rubber (deterministic per tree:
@@ -27,6 +28,11 @@ struct BiomeVariantDef {
     // (#2032) Colour multipliers (linear RGB) on the grass and on leaves (trees, bushes, the far canopy), over the climate
     // colour. A variant without its own takes its type's base's; < 0 = not given (resolved: BiomeVariantTable::grassTint).
     float grassTint[3] = { -1.0f, -1.0f, -1.0f }, leafTint[3] = { -1.0f, -1.0f, -1.0f };
+    // (#1990) The erosion bake's multipliers here: stream-power erodibility, talus limit, hillslope creep, glacial
+    // carving. A variant without its own takes its base's; < 0 = not given (resolved: BiomeVariantTable::bake).
+    static constexpr int kBake = 4;
+    float bake[kBake] = { -1.0f, -1.0f, -1.0f, -1.0f };
+    float ponds = -1.0f;      // (#1990) the share of the bake's ponds kept here (0..1; < 0 = its base's, else 1)
     bool hasSpecies() const { for (float w : species) if (w > 0.0f) return true; return false; }
     bool gated() const { return elevMin > -1e8f || elevMax < 1e8f || tempMin > -1e8f || tempMax < 1e8f || moistMin > -1e8f || moistMax < 1e8f; }
     bool admits(float elev, float temp, float moist) const {
@@ -39,6 +45,8 @@ struct BiomeVariantTable {
     std::vector<int> byType[(int)Biome::Count]; // ids per type in file order, the base first
     std::vector<float> bandLo, bandHi;          // per id: its band of the variant axis (0..1) within its type
     std::vector<Vector3> grassTint, leafTint;   // (#2032) per id, resolved: its own, else its base's, else 1
+    struct BakeMul { float k = 1.0f, talus = 1.0f, creep = 1.0f, glacial = 1.0f, ponds = 1.0f; };
+    std::vector<BakeMul> bake;                  // (#1990) per id, resolved like the tints
     int find(const std::string& key) const;     // -1 if none
     int base(Biome t) const { return byType[(int)t].empty() ? -1 : byType[(int)t][0]; }
 };
@@ -49,6 +57,9 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
 void BiomeVariants_Default(BiomeVariantTable& out); // one base variant per type, named after it
 // resources/data/biomes.txt, loaded on first use (thread-safe); the defaults if it is missing or bad (logged).
 const BiomeVariantTable& BiomeVariants();
+// (#1990) A hash of what the erosion bake reads from the table: each variant's key, type, weight, gates and bake
+// multipliers (tints, flora and names don't change the bake, so editing them doesn't bake again).
+uint64_t BiomeVariants_BakeKey(const BiomeVariantTable& t);
 const char* BiomeVariantName(int id); // its display name; "" for an unknown id
 // (#2012) Whether the plant with this id is among a percent of trees: a hash of the id, so a host and its clients agree
 // and a tree gives the same answer however often it is asked.

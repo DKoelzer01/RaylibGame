@@ -2541,7 +2541,7 @@ bool SaveWorld(Scene& world) {
     fprintf(f, "RAYLIBGAME_SAVE %d\n", kSaveVersion); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
-    fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
+    fprintf(f, "time %.17g\n", worldTime); // v5: the world clock (orbits); (#2082) all of the double: 1 us was ~1 mm of Luna's orbit
     fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
     fprintf(f, "%s\n", PartPalette_Line().c_str()); // v14 (#1881): part numbers below are indices into these names
     // Game-specific state (player, inventory, ...) written by whoever registered the hook.
@@ -2559,7 +2559,11 @@ bool SaveWorld(Scene& world) {
         if (!p || p->ringRock >= 0 || p->vehicle) continue; // promoted ring rocks: saved with their ring (below); rockets: by the game
         const int bodyIndex = index++;
         // (#346) the body's NetId too: a load finds the body by it, not by its place in the list
-        fprintf(f, "planetoid %d netid %llu rot %f %f %f strokes %zu\n", bodyIndex, (unsigned long long)p->netId, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
+        // (Plan 11 F7b, #2082) The angle in double (the spin's own, while current): a float angle rounded to 1e-6 deg put
+        // everything on the body up to cm off after a load.
+        const bool exact = p->spinAngleSet && (float)p->spinAngle[0] == p->rotation.x && (float)p->spinAngle[1] == p->rotation.y && (float)p->spinAngle[2] == p->rotation.z;
+        const double ang[3] = { exact ? p->spinAngle[0] : p->rotation.x, exact ? p->spinAngle[1] : p->rotation.y, exact ? p->spinAngle[2] : p->rotation.z };
+        fprintf(f, "planetoid %d netid %llu rot %.17g %.17g %.17g strokes %zu\n", bodyIndex, (unsigned long long)p->netId, ang[0], ang[1], ang[2], p->edits->strokes);
         totalStrokes += p->edits->strokes;
         // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
         const PlantRemovals none;
@@ -2748,7 +2752,7 @@ bool LoadWorldSave(Scene& world) {
     for (auto& obj : world.objects) if (auto* p = dynamic_cast<Planetoid*>(obj.get())) planetoids.push_back(p);
     int index = 0;
     size_t editCount = 0;
-    Vector3 rot{};
+    double rot[3] = {};
     char kind[16] = {};
     const std::string dir = RegionDir();
     while (fscanf(f, " planetoid %d", &index) == 1) {
@@ -2756,7 +2760,7 @@ bool LoadWorldSave(Scene& world) {
         unsigned long long netid = 0;
         const long at = ftell(f);
         if (fscanf(f, " netid %llu", &netid) != 1) { fseek(f, at, SEEK_SET); netid = 0; }
-        if (fscanf(f, " rot %f %f %f %15s %zu", &rot.x, &rot.y, &rot.z, kind, &editCount) != 5) break;
+        if (fscanf(f, " rot %lf %lf %lf %15s %zu", &rot[0], &rot[1], &rot[2], kind, &editCount) != 5) break;
         Planetoid* body = netid ? Planetoid::findNet((NetId)netid) : nullptr;
         if (!body) body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
         std::shared_ptr<const TerrainDeltas> deltas;
@@ -2789,7 +2793,13 @@ bool LoadWorldSave(Scene& world) {
         fluidMs += lms(ft);
         if (body) {
             body->edits = deltas;
-            body->rotation = rot;
+            // (F7b, #2082) The double angle and its phase at the saved clock, so advanceBodies continues the rotation from
+            // exactly where it was (it re-derives the phase only from an angle set elsewhere).
+            body->rotation = { (float)rot[0], (float)rot[1], (float)rot[2] };
+            const float sp[3] = { body->spin.x, body->spin.y, body->spin.z };
+            for (int k = 0; k < 3; ++k) { body->spinAngle[k] = rot[k]; body->spinPhase[k] = rot[k] - (double)sp[k] * worldTime; }
+            body->spinPhaseFor = body->spin;
+            body->spinAngleSet = true;
             body->dirtyRegions.clear();
             body->allRegionsDirty = false;
             body->regionsSavedTo = dir;

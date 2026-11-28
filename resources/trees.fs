@@ -28,8 +28,8 @@ uniform float fadeEnd;
 uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALPHA_TO_COVERAGE on)
 uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
 uniform vec3 leafTint;
-// #1995: low-poly textures, blocky like the meshes. foliageKind: 0-4 a tree species (WoodSpecies: oak, birch, maple,
-// pine, spruce), 5 a bush, 6 stones (none). foliageTexOff: 1 = plain (RAYLIBGAME_FOLIAGE_TEX=0, A/B).
+// #1995: low-poly textures, blocky like the meshes. foliageKind: 0-4 a bark texture (trees.h BarkTexture: furrows,
+// birch, plates, rings, smooth; per species in trees.txt), 5 a bush, 6 stones (none). foliageTexOff: 1 = plain (RAYLIBGAME_FOLIAGE_TEX=0, A/B).
 uniform float foliageKind;
 uniform float foliageTexOff;
 in vec3 fragLocal;
@@ -48,10 +48,18 @@ vec3 barkTexture(vec3 bark)
         float cell = floor(u * 3.0 + foliageHash(vec3(row, 0.0, 1.0)) * 3.0);
         return mix(bark, bark * 0.22, step(0.7, foliageHash(vec3(row, cell, 2.0))));
     }
-    if (k == 3 || k == 4) { // conifers: staggered blocky plates
+    if (k == 2) { // conifers: staggered blocky plates
         float col = floor(u * 4.0);
         vec2 c = vec2(col, floor(y * 2.5 + col * 0.5));
         return bark * (0.78 + 0.38 * foliageHash(vec3(c, 3.0)));
+    }
+    if (k == 3) { // palms: leaf-scar rings every ~30 cm
+        float ring = fract(y * 3.3);
+        return bark * (ring < 0.2 ? 0.62 : 0.92 + 0.16 * foliageHash(vec3(floor(y * 3.3), 0.0, 6.0)));
+    }
+    if (k == 4) { // smooth (kapok, baobab, snags): faint broad streaks and blotches
+        float col = floor(u * 2.0);
+        return bark * (0.88 + 0.2 * foliageHash(vec3(col, floor(y * 0.7 + col * 0.3), 7.0)));
     }
     // oak, maple and bush stems: vertical furrows, broken along their length
     float col = floor(u * 7.0);

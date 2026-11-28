@@ -119,6 +119,10 @@ struct Player {
     void spawnOn(Scene& world, Planetoid& body, Vector3 dir = { 0, 1, 0 });
     // Put the feet at a render-space point, moving with the body there (tests, respawns).
     void placeAt(Scene& world, Planetoid& body, Vector3 renderFeet);
+    // (Plan 11 F7a, #2074) Back to a saved frame state (a load, the loading screen's hold): the position and the velocity
+    // in that frame, airborne. In a Fixed frame the next update continues on the frame path with the saved velocity against
+    // the ground, without a float round trip through world space. False: the frame's body is not loaded.
+    bool restoreFrame(const FramePos& f);
     // Ride along with body from the next update on (else one slow frame leaves you behind its spin).
     void anchorTo(Planetoid& body);
     // Multiplayer (#327): everything a step depends on, in the nearest body's frame (time-independent: the server and a

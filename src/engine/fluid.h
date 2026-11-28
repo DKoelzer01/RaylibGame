@@ -81,6 +81,9 @@ namespace Fluid {
     // water from the published cells (through connected full cells to the surface: U-bends and flooded caves read their
     // feed level); generated water (sea, rivers, lakes, ponds) from its level.
     float PressureAt(const Planetoid& body, Vector3 local);
+    // The factor on fluid gravity (9.81 m/s^2, tuned on Terra) for water on this body (#1942): its surface gravity over the
+    // home planet's; exactly 1 on the home planet and in the sandbox. Main thread.
+    float GravityScale(const Planetoid& body);
 
     // Fluid kinds (resources/data/fluids.txt; Plan 5): kind 0 is water, the rest by the table (crude oil,
     // later lava...). Every cell holds one kind; kinds don't mix (a fluid flows only into empty cells or
