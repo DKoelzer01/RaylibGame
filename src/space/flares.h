@@ -15,9 +15,9 @@
 class Scene;
 class Planetoid;
 
-constexpr float kFlareBurnSeconds = 60.0f; // GUESS
+constexpr float kFlareBurnSeconds = 60.0f; // (user, 2026-11-27)
 constexpr float kFlareFadeSeconds = 10.0f; // the last seconds the reach shrinks to 0 (GUESS)
-constexpr float kFlareReach = 16.0f;       // m of light-grid reach at full burn (GUESS: between a torch's 12 and a lamp's 20)
+constexpr float kFlareReach = 16.0f;       // m of light-grid reach at full burn, between a torch's 12 and a lamp's 20 (user, 2026-11-27)
 
 // A flare thrown from `from` (body-local) with `velocity` (body-local m/s); burnSeconds < 0: kFlareBurnSeconds.
 void Flares_Throw(Planetoid& body, const DVec3& from, Vector3 velocity, float burnSeconds = -1.0f);

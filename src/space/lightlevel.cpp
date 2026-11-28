@@ -26,7 +26,7 @@
 namespace {
 constexpr float kTorchReach = 12.0f, kLampReach = 20.0f; // m (GUESS)
 constexpr float kGain = 2.0f;                            // GUESS
-constexpr float kFlareColour[3] = { 1.0f, 0.38f, 0.28f };  // a red flare (#2062, GUESS)
+constexpr float kFlareColour[3] = { 1.0f, 0.38f, 0.28f };  // a red flare (#2062, user 2026-11-27)
 // (#1739 profile b39ba4fb: 8 ms runs while hovering, 42-45 ms after big moves) The work a frame is bounded in time, not
 // cells: brick reads (a terrain density block each) and relight slices until kWorkMs is spent; the rest waits.
 constexpr double kWorkMs = 1.0;                          // ms a frame (GUESS)

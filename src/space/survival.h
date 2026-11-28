@@ -49,7 +49,9 @@ struct SurvivalState {
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
     float airRefillPerSec = 4.0f;                             // suit oxygen top-up from breathable air
     bool breathable = false;
-    bool inGas = false;                                       // in a dungeon's poison gas (#719): not breathable, oxygen drains x3
+    bool inGas = false;                                       // in a dungeon's poison gas (#719) or a cave gas pocket (#1472): not breathable
+    uint8_t caveGas = 0;                                      // (#1472) the cave gas at the head: 0 none, 1 CO2 (oxygen x3), 2 methane (x1.5)
+    uint32_t lastGasBlast = 0;                                // (#1472) the last methane blast this player took (CaveGas_BlastDamage)
     bool underwater = false;                                  // the head is in water (oxygen drains faster)
     bool inVacuum = false;                                    // outside any breathable air (space, the moon, ring rocks)
     float vacuumTime = 0.0f;                                  // seconds in vacuum in a suit not rated for it (60 s, then it hurts)
