@@ -145,6 +145,7 @@ flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV)
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
 thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
+gas_sensor         | Gas sensor         |  tool | 170,220,120 | Suit module: warns of cave gas from 15 m, and where it is.
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
 grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
 food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.

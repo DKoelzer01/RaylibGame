@@ -87,6 +87,7 @@ SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only t
         else if (e == "thermal") { s.cold = 0.0f; s.heatProof = true; }
         else if (e == "grip") s.grip = true;
         else if (e == "scanner") s.scanner = true;
+        else if (e == "gas") s.gasSensor = true;
         else if (e == "hover") s.hover = true;
     }
     return s;

@@ -38,6 +38,7 @@
 #include <unordered_map>
 #include <vector>
 #include "dungeontraps.h"
+#include "cavegas.h"
 
 // (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
@@ -261,7 +262,20 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
-        survival.inGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas pocket
+        const bool ventGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas vent
+        const CaveGasKind caveGas = CaveGas_At(world, player.nearest, head); // (#1472) a cave's gas pocket
+        survival.caveGas = (uint8_t)caveGas;
+        survival.inGas = ventGas || caveGas != CaveGasKind::None;
+        const float gasDrain = ventGas || caveGas == CaveGasKind::CO2 ? 3.0f : caveGas == CaveGasKind::Methane ? 1.5f : 1.0f;
+        // (#1472) A methane blast near this player (the authority's step; clients take the health the host sends).
+        if (Net_IsAuthority()) {
+            if (const float blast = CaveGas_BlastDamage(head, survival.lastGasBlast); blast > 0.0f) {
+                DamageEvent e;
+                e.amount = blast; e.kind = DamageKind::Other; e.knockback = 6.0f;
+                Combat_DamageFor(survival, player, e);
+                survival.lastHarm = "methane blast";
+            }
+        }
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
@@ -273,7 +287,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * (survival.inGas ? 3.0f : 1.0f) / stats.oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * gasDrain / stats.oxygen * dt);
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);

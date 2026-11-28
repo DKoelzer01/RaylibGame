@@ -105,6 +105,7 @@ flight_pack 1        = mv_hull 1, good_circuit 2, thruster_pack 1
 lamp_upgrade 1       = glass 2, copper_wire 2, basic_circuit 1
 thermal_regulator 1  = copper_wire 6, basic_circuit 2, cloth 2
 ore_scanner 1        = basic_circuit 3, copper_wire 4, glass 1
+gas_sensor 1         = copper_wire 3, glass 1, iron_plate 1
 servo_legs 1         = steel_rod 4, basic_circuit 2
 grip_boots 1         = hide 4, steel_plate 2
 food_pouch 1         = hide 2, cloth 2
