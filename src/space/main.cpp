@@ -1254,6 +1254,7 @@ int main(int argc, char** argv)
         else LOG_WARN("Log", "settings.txt: unknown log_level '%s'", settings.logLevel.c_str());
     }
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--headless") gHeadless = true; // #311: simulate, draw nothing
+    gNoRender = EnvFlag("RAYLIBGAME_NO_RENDER"); // (#2130) a scenario checking no picture: the world updates, nothing is drawn
     bool hostDraw = false; // --host-draw (tests, #750): a --host run keeps its window and draws (to record the in-process clients' avatars)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--host-draw") hostDraw = true;
     if (benchHeadless || (!hostSave.empty() && !hostDraw)) gHeadless = true; // a dedicated server (--host) draws nothing either
@@ -14030,9 +14031,9 @@ int main(int argc, char** argv)
                 ClipTelemetry_Frame(world, SimTime(), GetFrameTime()); // (#1442) the camera that drew this frame, in solid?
                 if (Recorder_Active()) ClipTelemetry_DrawTag();       // a recorded frame says so ("CLIPPED")
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
-                if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
+                if (!noHud && !gHeadless && !gNoRender) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
-                if (!noHud && !gHeadless) { // --no-hud: clean shots (the menu slides, #386); --headless: nothing (#311)
+                if (!noHud && !gHeadless && !gNoRender) { // --no-hud: clean shots (the menu slides, #386); --headless: nothing (#311); no-render (#2130)
                 Avatar_DrawNameplates(world, gAvatars);
                 // (#889 follow-up) While the game window is open the HUD is not drawn: its toasts, pickup lines and
                 // readouts showed through the window's panels. (The window draws its own toasts over it: GameUI_Draw.)

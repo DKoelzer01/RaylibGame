@@ -112,6 +112,9 @@ struct ScenarioDef {
     // up to 50x real time, so a sim-time deadline expired before the work could finish, and a loaded machine runs it slower
     // than real time. With this set, the step deadlines and the timeout count ScenarioCtx::clock, the lesser of sim and wall.
     bool realTime = false;
+    // (#2130) The scenario looks at the screen (c.shot, a picture it reads): it draws even when the tier skips drawing
+    // (RAYLIBGAME_SCENARIO_NO_RENDER=1). The visual/, light/ and perf/ areas and legacy benches count as set.
+    bool needsRender = false;
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }

@@ -58,6 +58,7 @@ void Burst(ScenarioCtx& c, float ahead) { // StrokeParticles' dust in copper ore
 
 SCENARIO("fx/dust-near-eye") {
     s.tags = { "fx" };
+    s.needsRender = true; // (#2130) it compares screen grabs
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" }; // mid-morning: dust lit as by day (at night it is dark on dark)
     s.timeout = 40.0;

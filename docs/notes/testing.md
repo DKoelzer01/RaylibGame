@@ -36,6 +36,11 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
   fluids, seed 42, a scratch save dir, a heartbeat every 5 s and a low-res recording (deleted on PASS, kept on FAIL); results go
   to `<--scenario-out DIR>/<name>/results.json`. `game.exe --scenario-report DIR [out.html]` makes the HTML report and appends to
   the history on the share. Several names or a tag run each scenario in its own process. New tests are scenarios, not flags.
+- **No-render (#2130):** with `RAYLIBGAME_SCENARIO_NO_RENDER=1` (the runner's PR tiers; the nightly still draws), a scenario
+  that checks no picture and keeps no recording draws nothing (no shadow, main pass, viewmodel or HUD); the world, camera,
+  audio and uploads run as in play. A scenario that reads the screen sets `s.needsRender = true` (visual/, light/, perf/ and
+  legacy benches count as set); `c.shot` fails under no-render. Water remeshes are wall-clock paced, so a water-mesh check
+  sees fewer rebuilds per sim second there (water/diagonal-corner keeps drawing for that, #1773).
 - **Profiler (#871):** without Tracy, `PROFILE_SCOPE` records into a per-thread ring (~20 ns a zone on, ~1 ns off); scenarios
   turn it on (`RAYLIBGAME_PROFILE=1` for any run) and results.json gets its summary (zones p50/p95/p99, frame histogram, hitches
   over 20 ms with their top zones, gputimer's cpu:/gpu: passes, counters, peak commit/VRAM). A/B timing:
