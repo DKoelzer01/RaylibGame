@@ -858,6 +858,13 @@ namespace {
         SendChangedItems(conn, rm.inventory, before);
     }
 
+    // (#1886) The store to a team's online members if it changed since their last one.
+    void SendChangedTeamStore(int team, const std::vector<std::pair<uint32_t, uint32_t>>& members) {
+        std::string store;
+        if (!TeamStoreTextForNet(team, store) || store == teamStoreSent[team]) return;
+        teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
+        for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
+    }
     void StepTeamQuests(Scene& world) {
         if (SimTick() - lastQuestTick < 60) return; // once a second
         lastQuestTick = SimTick();
@@ -907,13 +914,6 @@ namespace {
             // each send is the whole text (research done right now waits up to 5 s)
             if (SimTick() - teamStoreSentAt[team] >= kTeamStoreEvery) SendChangedTeamStore(team, members);
         }
-    }
-    // (#1886) The store to a team's online members if it changed since their last one.
-    void SendChangedTeamStore(int team, const std::vector<std::pair<uint32_t, uint32_t>>& members) {
-        std::string store;
-        if (!TeamStoreTextForNet(team, store) || store == teamStoreSent[team]) return;
-        teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
-        for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
     }
     // (#1886) Teams whose store a member changed (a map pin, a research queue change): sent at the next tick, every tick,
     // not with StepTeamQuests' once a second (a pin waited up to 1 s; a member joining then could have it first).
