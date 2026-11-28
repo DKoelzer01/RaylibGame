@@ -137,9 +137,11 @@ TEST_F(CacheOpenersTest, ParsesTheThreeKinds) {
     EXPECT_EQ(CacheOpener_ByIndex(3)->kind, OpenerKind::Part);
     EXPECT_EQ(CacheOpener_ByIndex(3)->item, "ruin_key");
     EXPECT_EQ(CacheOpener_NeedText(*p), "needs 2,000 EU at 8 V or more (a battery bank or a cable)");
-    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(3)), "needs a ruin_key (used up)"); // (no item data here: the id)
-    ASSERT_TRUE(CacheOpeners_Parse("opener 1 ingot part iron_ingot\n"));
-    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(1)), "needs an iron_ingot (used up)");
+    // Items no data file has, so ItemName gives the id whether or not an earlier test loaded the item data (on Windows
+    // one does, and "iron_ingot" read "Iron ingot").
+    ASSERT_TRUE(CacheOpeners_Parse("opener 1 key part zz_test_key\nopener 2 ingot part ingot_test_only\n"));
+    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(1)), "needs a zz_test_key (used up)");
+    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(2)), "needs an ingot_test_only (used up)");
 }
 
 TEST_F(CacheOpenersTest, APartKeepsItsOpenerElseItsKindsDefault) {
