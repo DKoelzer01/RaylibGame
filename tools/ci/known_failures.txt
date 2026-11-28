@@ -23,3 +23,4 @@ caves/islands -> FAIL                    | #2025 | [L&G, until 2026-12-05] float
 fluid/spring -> FAIL                    | #1910 | [Water, until 2026-12-05] "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
 space/luna-walk -> FAIL                 | #2000 | [Space, until 2026-12-05] the player leaves Luna on a jump; fixed on staging by #2020, drop this line when that reaches ladder
 world/spawn-by-water -> FAIL            | #2002 | [Tools, until 2026-12-05] the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
+determinism/state-hash -> FAIL: 1 of 5 checks failed | #2183 | [Water, until 2026-12-01] the "flowing water" hash intermittently has a third value on the runner (16/20); the line names no check, so this matches exactly one failed check: two or more failed hashes still show as NEW
