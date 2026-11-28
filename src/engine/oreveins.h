@@ -24,6 +24,8 @@ struct VeinDeposit {
     Vector3 axis{ 0, 1, 0 };  // a sheet's normal; a pipe's and a seam's up (the radial direction)
     float envelope = 0.0f;    // m: the radius it fits in (miners' and the scanner's reach)
     uint32_t seed = 0;        // the member pick's
+    float sizeRoll = 0.0f;    // (#2071) its size roll in [0, 1): the drills' pool size class (deposits.h)
+    float depth = 0.0f;       // (#2071) m: its centre under the ground (the site's), for its depth band
 };
 
 // What the deposit's centre sits in, for the family pick (PlanetField looks these up once per cell).

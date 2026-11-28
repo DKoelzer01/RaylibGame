@@ -1320,7 +1320,7 @@ static void DrawContainer() {
             int speed = 1; for (int s = 0; s < steps; ++s) speed *= MachineTiers_Overclock().speed;
             return TextFormat("  (%s, overclocked: x%d speed, x%d EU/t)", MachineTiers_Name(rt), speed, MachineTiers_Eu(1, steps));
         };
-        const bool steered = container.type == PartType::Miner || (container.type >= PartType::LvLab && container.type <= PartType::HvLab)
+        const bool steered = container.type == PartType::Miner || container.type == PartType::BoreholeRig || container.type == PartType::LvBoreholeRig || (container.type >= PartType::LvLab && container.type <= PartType::HvLab)
                           || container.type == PartType::SteamLab || container.type == PartType::ManaSiphon; // (the game picks these)
         if (outs.size() > 1 && !steered && !chest) {
             auto label = [](const std::string& id) { const ItemDef* d = itemDB.find(id); return d ? d->name : id; };

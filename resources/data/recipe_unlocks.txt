@@ -35,6 +35,9 @@ compressor_mv | tier 5
 cutter_mv     | tier 5
 compressor_hv | tier 6
 cutter_hv     | tier 6
+# (#2071) the drills: the borehole rig with steam and steel, its LV successor with LV
+borehole_rig  | tier 3
+lv_borehole_rig | tier 4
 
 # (#1429) the multiblock parts come with tier 3
 bronze_casing | tier 3
@@ -45,4 +48,6 @@ item_in_hatch | tier 3
 item_out_hatch | tier 3
 lv_energy_hatch | tier 4
 large_tank_controller | tier 3
+coke_oven_battery_controller | tier 3
+large_macerator_controller | tier 4
 wrench | tier 3

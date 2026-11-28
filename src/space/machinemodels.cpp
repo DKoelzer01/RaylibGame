@@ -121,6 +121,7 @@ float TopReach(PartType type) {
     case PartType::ChemicalReactor: return 0.6f;
     case PartType::Refinery: return 1.85f;
     case PartType::Miner: return 0.93f;
+    case PartType::BoreholeRig: case PartType::LvBoreholeRig: return 1.25f; // (#2071) the derrick
     case PartType::PrecisionAssembler: return 0.95f;
     case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: return 0.42f; // (#1193) the dish on its mast
     case PartType::ResearchTable: return 0.25f; case PartType::ManaSiphon: return 0.7f; case PartType::ManaDynamo: return 0.3f; // (#1252)
@@ -276,6 +277,25 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPushMatrix(); rlTranslatef(0, top + 0.1f, 0); rlRotatef(spin * 300.0f, 0, 1, 0);
         p.cyl({ 0, 0, 0 }, 0.12f, 0.02f, 0.7f, kDarkSteel);
         rlPopMatrix();
+        break;
+    }
+    case PartType::BoreholeRig: case PartType::LvBoreholeRig: { // (#2071) a derrick: four legs leaning in to a crown block, the drill string down its middle
+        const bool lv = type == PartType::LvBoreholeRig;
+        const Color leg = lv ? kPaint : Color{ 120, 88, 56, 255 }; // steel, or timber
+        for (int k = 0; k < 4; ++k) {
+            const float sx = k & 1 ? 1.0f : -1.0f, sz = k & 2 ? 1.0f : -1.0f;
+            rlPushMatrix(); rlTranslatef(sx * 0.27f, top + 0.6f, sz * 0.27f); rlRotatef(-sz * 10.0f, 1, 0, 0); rlRotatef(sx * 10.0f, 0, 0, 1);
+            p.cube({ 0, 0, 0 }, { 0.06f, 1.22f, 0.06f }, leg);
+            rlPopMatrix();
+        }
+        p.cube({ 0, top + 0.55f, 0 }, { 0.62f, 0.05f, 0.62f }, leg);             // a brace ring halfway up
+        p.cube({ 0, top + 1.2f, 0 }, { 0.22f, 0.1f, 0.22f }, kDarkSteel);         // the crown block
+        const float stroke = working ? 0.08f * sinf(t * (lv ? 6.0f : 3.0f)) : 0.0f; // the string rises and falls with each turn
+        rlPushMatrix(); rlTranslatef(0, top + stroke, 0); rlRotatef(spin * (lv ? 360.0f : 180.0f), 0, 1, 0);
+        p.cyl({ 0, 0, 0 }, 0.04f, 0.04f, 1.15f, kSteel);                          // the drill string
+        p.cube({ 0, 0.3f, 0 }, { 0.24f, 0.06f, 0.06f }, kDarkSteel);             // the rotary table's dogs, to see it turn
+        rlPopMatrix();
+        if (lv) p.cube({ 0, top * 0.5f, f.d * 0.5f + 0.01f }, { f.w * 0.6f, 0.08f, 0.02f }, { 200, 200, 205, 255 }); // an LV band
         break;
     }
     case PartType::PrecisionAssembler: {

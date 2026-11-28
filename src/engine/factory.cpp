@@ -14,6 +14,9 @@
 #include "beltsync.h"
 #include "conduitnet.h"
 #include "multiblock.h"
+#include "deposits.h"
+#include "oreveins.h"
+#include "orefamilies.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -49,9 +52,14 @@ const char* MachineStatusName(MachineStatus s) {
         case MachineStatus::NoFuel: return "no fuel";
         case MachineStatus::NoLoad: return "no load (fire banked)";
         case MachineStatus::NoWater: return "no water";
+        case MachineStatus::NoDeposit: return "no deposit in reach";
+        case MachineStatus::Depleted: return "depleted";
+        case MachineStatus::TooClose: return "too close to another drill";
     }
     return "?";
 }
+// The stats' 8 status buckets (#1199): a drill's waits (#2071) count as idle.
+static int StatusSlot(MachineStatus s) { return (int)s < 8 ? (int)s : 0; }
 
 namespace {
 
@@ -342,6 +350,15 @@ struct Machine {
     int lockEU = 0, lockCap = 0, lockVolts = 0; // (#2072) a sealed ruin cache's power opener: EU to open, EU a tick at most, min volts
     int tier = 0;                           // (#1427 L7a) its voltage tier (machine_tiers.txt: 0 LV, 1 MV ...; -1 under LV), from its part
     int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
+    // (#2071) A drill (deposits.txt): the deposit it works (Deposits_Id, 0: none in reach), the units granted from its pool
+    // and not yet mined (one a craft), its grade (hundredths of ore a unit) and the fraction carried, where its head is
+    // (body-local m) and how far apart heads on one deposit stand; too close: a nearer older drill works that deposit.
+    bool drill = false, tooClose = false;
+    uint64_t deposit = 0;
+    long long depositPool = 0;              // the deposit's full pool (its first drill seeds what is left with it)
+    int depBudget = 0, depGrade = 100, gradeCarry = 0;
+    Vector3 drillHead{};
+    float drillSpacing = 8.0f;
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
@@ -444,6 +461,7 @@ struct PlotSim {
     std::vector<BeltLine> belts;
     std::vector<std::pair<int, int>> beltLoads;
     std::vector<std::vector<int>> beltsInto;
+    std::vector<int> drills;                            // (#2071) its drills (machine indices)
     // (#1735 PR 4) MP: the belt steps done, the layout's epoch (new lines: clients need a snapshot), and, while a client
     // watches the plot, each step's events (the wakes since the step before) for the sim thread to publish.
     int64_t beltStep = 0;
@@ -584,6 +602,9 @@ struct LayoutMsg {
     std::vector<std::vector<Int3>> machineCells;
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<int> machineTier;                          // (#1427 L7a) per machine: its voltage tier (a tiered machine's variant)
+    // (#2071) per machine: a drill's deposit (empty for the rest)
+    struct Drill { bool drill = false; uint64_t deposit = 0; long long pool = 0; int grade = 100; Vector3 head{}; float spacing = 8.0f; };
+    std::vector<Drill> machineDrill;
     std::vector<Int3> conveyors, cables;
     std::vector<ConduitRun> belts;                        // (#1735 PR 3) the plot's belt runs
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
@@ -599,6 +620,10 @@ struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingStates; // from a load
+// (#2071) What is left of each deposit a drill has touched, by (body, Deposits_Id): seeded with its pool by its first drill
+// (or a save), then drawn by the drills' grants (GrantDeposits). Sim thread (under simMutex).
+std::map<std::pair<uint64_t, uint64_t>, long long> depositLeft;
+MachineStatus DrillBlocked(uint64_t body, const Machine& m); // (below)
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingBelts;  // (#1735 PR 3) from a load: by belt run id, "item gap ..."
 // (#1735 PR 4) MP belt sync, under viewMutex: the plots clients watch (their steps recorded), each one's recent steps, and
 // snapshots asked for (empty until the sim thread fills one at a step boundary).
@@ -1134,6 +1159,11 @@ void ApplyLayout(const LayoutMsg& L) {
             m.variant = -1;
             m.lockEU = o ? (int)std::min<long long>(o->eu, INT32_MAX) : 0; m.lockCap = o ? o->capEUt : 0; m.lockVolts = o ? o->minVolts : 0;
         }
+        if (i < L.machineDrill.size() && L.machineDrill[i].drill) { // (#2071)
+            const LayoutMsg::Drill& d = L.machineDrill[i];
+            if (m.deposit != d.deposit) { if (m.deposit && m.depBudget > 0) depositLeft[{ L.body, m.deposit }] += m.depBudget; m.depBudget = 0; m.gradeCarry = 0; } // (the old deposit's grant goes back)
+            m.drill = true; m.deposit = d.deposit; m.depositPool = d.pool; m.depGrade = d.grade; m.drillHead = d.head; m.drillSpacing = d.spacing;
+        } else if (m.drill) { m.drill = false; m.deposit = 0; m.depBudget = 0; }
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -1216,6 +1246,8 @@ void ApplyLayout(const LayoutMsg& L) {
             if (j.recipe >= 0) for (const Stack& s : tables.recipes[j.recipe].in) refund(s);
     }
     ps->machines = std::move(next);
+    ps->drills.clear(); // (#2071)
+    for (size_t i = 0; i < ps->machines.size(); ++i) if (ps->machines[i].drill) ps->drills.push_back((int)i);
     // (#1429 PR 4) The formed structures: each controller's machine, parallel, tier and hatches (machine indices); the rest
     // unformed (they keep their jobs, which wait). The output hatches' reservations are their users' jobs' (a job whose
     // hatch is gone reserves again when it finishes).
@@ -1846,7 +1878,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         }
         // (#1214) asleep (nothing could start, nothing changed since): the same answer as a search, without one
         if (m.dirty) m.asleep = false;
-        if (m.asleep && sleepOn) { m.status = MachineStatus::Idle; continue; }
+        if (m.asleep && sleepOn) { m.status = m.drill ? DrillBlocked(ps.body, m) : MachineStatus::Idle; continue; } // (#2071: why a drill waits)
         // Inputs are only checked when a craft starts and taken when it finishes (#193): take an input out
         // meanwhile and the craft is cancelled, its progress lost. Fuel has its own slot (#194).
         auto inputsHere = [&](const Recipe& r) {
@@ -1857,6 +1889,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.mode == 1) { m.recipe = -1; DisassembleStep(ps, m, dt, made, active); continue; } // (#1427 L7c) set to disassemble
         if (m.type == PartType::Anvil && m.recipe < 0 && AnvilJob(ps, m, active)) continue; // (#1219) a composed copy on it: repair / a gem out
+        if (m.recipe < 0 && m.drill && (!m.deposit || m.tooClose || m.depBudget <= 0)) { m.status = DrillBlocked(ps.body, m); m.asleep = true; continue; } // (#2071) a grant wakes it
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
                 return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && MachineTiers_Steps(m.tier, r.tier) >= 0 && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
@@ -1942,7 +1975,18 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     if (c >= 100) { lucky.push_back({ s.item, c / 100 }); if (AddItems(trial, kSlots, s.item, c / 100) > 0) { fits = false; break; } }
                 }
             }
+            // (#2071) a drill: a richer deposit's grade pays whole extra ore, the fraction carried (kept only if all fits)
+            int gradeCarry = m.gradeCarry, gradeExtra = 0;
+            if (fits && m.drill && m.depGrade > 100 && !r.out.empty()) {
+                gradeCarry += m.depGrade - 100;
+                gradeExtra = gradeCarry / 100; gradeCarry %= 100;
+                if (gradeExtra > 0 && AddItems(trial, kSlots, r.out[0].item, gradeExtra) > 0) fits = false;
+            }
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
+            if (m.drill) {
+                m.depBudget = std::max(0, m.depBudget - 1); m.gradeCarry = gradeCarry;
+                if (gradeExtra > 0) { made += gradeExtra; ps.stats.items[r.out[0].item].made.add(gradeExtra); if (ps.completed.size() < 4096) ps.completed.emplace_back(r.out[0].item, gradeExtra); }
+            }
             if (!r.chance.empty()) { for (auto it = carry.begin(); it != carry.end();) it = it->second == 0 ? carry.erase(it) : std::next(it); m.disCarry = std::move(carry); }
             for (const auto& [id, n] : lucky) { made += n; ps.stats.items[id].made.add(n); if (ps.completed.size() < 4096) ps.completed.emplace_back(id, n); }
             m.quality = 100; // (#1446 2c) used
@@ -1958,7 +2002,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         }
     }
     // (#1199) Time per status by machine kind: every machine, every tick of this step.
-    for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt;
+    for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][StatusSlot(m.status)] += dt;
     // (#1214) A machine whose contents changed wakes its conveyor network (the change is seen; the flag is spent), and
     // (#1735 PR 3) the belts it takes from (it may have room now).
     for (size_t mi = 0; mi < ps.machines.size(); ++mi) {
@@ -2078,6 +2122,45 @@ private:
     const std::vector<size_t>* starts = nullptr;
 };
 WorkerPool workerPool;
+
+// (#2071) The drills' grants from their deposits' pools, between ticks on the sim thread: plots tick in parallel (#997), so a
+// pool several plots' drills share is only drawn here, in (body, plot, part) order (never the plot list's, which is the
+// order plots were first seen), and each drill mines its grant during the tick. A drill closer than its spacing to an
+// earlier one on the same deposit is too close and gets none. A grant wakes its drill.
+constexpr int kDrillGrant = 8; // units: a few crafts ahead (a removed drill's unmined grant is lost with it)
+void GrantDeposits() {
+    struct Ref { uint64_t body; uint32_t plot; int part; Machine* m; };
+    static std::vector<Ref> refs;
+    refs.clear();
+    for (PlotSim& ps : plots) for (int mi : ps.drills) if (mi < (int)ps.machines.size()) refs.push_back({ ps.body, ps.plot, ps.machines[mi].part, &ps.machines[mi] });
+    if (refs.empty()) return;
+    std::sort(refs.begin(), refs.end(), [](const Ref& a, const Ref& b) { return std::tie(a.body, a.plot, a.part) < std::tie(b.body, b.plot, b.part); });
+    for (size_t k = 0; k < refs.size(); ++k) {
+        Machine& m = *refs[k].m;
+        bool close = false;
+        for (size_t j = 0; j < k && !close && m.deposit; ++j) {
+            const Machine& o = *refs[j].m;
+            close = refs[j].body == refs[k].body && o.deposit == m.deposit && !o.tooClose && Vector3Distance(o.drillHead, m.drillHead) < std::max(m.drillSpacing, o.drillSpacing);
+        }
+        if (close != m.tooClose) { m.tooClose = close; m.dirty = true; }
+        if (!m.deposit || close || m.depBudget >= kDrillGrant / 2) continue;
+        auto it = depositLeft.try_emplace({ refs[k].body, m.deposit }, m.depositPool).first;
+        const long long take = std::min<long long>(kDrillGrant - m.depBudget, it->second);
+        if (take <= 0) continue;
+        it->second -= take;
+        m.depBudget += (int)take;
+        m.dirty = true;
+    }
+}
+// What a drill shows when it can't mine: no deposit in reach, too close to another, its deposit used up (Idle: it can).
+MachineStatus DrillBlocked(uint64_t body, const Machine& m) {
+    if (!m.drill) return MachineStatus::Idle;
+    if (!m.deposit) return MachineStatus::NoDeposit;
+    if (m.tooClose) return MachineStatus::TooClose;
+    if (m.depBudget > 0) return MachineStatus::Idle;
+    auto it = depositLeft.find({ body, m.deposit });
+    return it != depositLeft.end() && it->second <= 0 ? MachineStatus::Depleted : MachineStatus::Idle;
+}
 
 // Ticks the jobs (each a plot and its step) on `workers` threads, splitting them into runs of about equal machine counts
 // in their order; then adds their counts up in that order.
@@ -2299,6 +2382,24 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             }
             if (!short_) break;
         }
+        // (#2071) Drills: as many crafts as their grant and their deposit's pool hold (this runs on the sim thread between
+        // ticks, plot by plot, so it draws the shared pool directly), and their grade's extra ore into their own slots.
+        for (size_t k = 0; k < nodes.size(); ++k) {
+            Machine& m = ps.machines[nodes[k].mi];
+            if (!m.drill || crafts[k] <= 0) continue;
+            if (!m.deposit || m.tooClose) { crafts[k] = 0; continue; }
+            auto it = depositLeft.try_emplace({ ps.body, m.deposit }, m.depositPool).first;
+            crafts[k] = std::min(crafts[k], m.depBudget + std::max(0LL, it->second));
+            const long long fromBudget = std::min<long long>(crafts[k], m.depBudget);
+            m.depBudget -= (int)fromBudget; it->second -= crafts[k] - fromBudget;
+            const Recipe& r = tables.recipes[nodes[k].recipe];
+            if (m.depGrade > 100 && !r.out.empty()) {
+                const long long extra = (crafts[k] * (m.depGrade - 100) + m.gradeCarry) / 100;
+                m.gradeCarry = (int)((crafts[k] * (m.depGrade - 100) + m.gradeCarry) % 100);
+                const int left = AddItems(m.out, kSlots, r.out[0].item, (int)std::min<long long>(extra, 1 << 20)); // (no room: lost, as the summary's own outputs)
+                if (extra > left) ps.stats.items[r.out[0].item].made.add(extra - left);
+            }
+        }
         // Generators: the fuel for the EU their consumers drew in whole crafts (rounded up).
         std::vector<long long> genFuel(gens.size());
         for (size_t g = 0; g < gens.size(); ++g) {
@@ -2364,7 +2465,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         }
         for (Machine& m : ps.machines) { m.dirty = true; m.asleep = false; } // (back near, everything looks again)
         for (size_t k = 0; k < nodes.size(); ++k) ps.machines[nodes[k].mi].status = crafts[k] > 0 ? MachineStatus::Working : MachineStatus::Idle;
-        for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt; // (#1199 counters: the bottleneck finder sees far plots too)
+        for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][StatusSlot(m.status)] += dt; // (#1199 counters: the bottleneck finder sees far plots too)
         if (summaryLog) {
             long long c = 0, rates = 0;
             for (size_t k = 0; k < nodes.size(); ++k) { c += crafts[k]; rates += nodes[k].rate; }
@@ -2416,6 +2517,10 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.fire = m.fire;
     v.mode = m.mode; // (#1271 L6c)
     v.pick = m.pick >= 0 ? tables.name(m.pick) : std::string(); // (#1271 L6c)
+    if (m.drill && m.deposit) { // (#2071) its deposit's pool (not yet seeded: the full pool) and its own unmined grant
+        const auto d = depositLeft.find({ ps.body, m.deposit });
+        v.depositLeft = std::max(0LL, d != depositLeft.end() ? d->second : m.depositPool) + m.depBudget;
+    }
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -2644,6 +2749,7 @@ void SimLoop() {
                 if (summaryOn && ps.mode == PlotSim::Mode::Summary && !ps.nearPlayer && (t + (long long)i) % kAdvanceEvery == 0) { AdvanceSummary(ps, ps.lastAdvance, t); ps.lastAdvance = t; } // (#1261) every 10 s, staggered
                 if (const int step = StepOf(ps, i, t)) jobs.push_back({ &ps, step });
             }
+            GrantDeposits(); // (#2071) serial: the shared pools
             TickPlots(jobs, workerCount, made, active);
             gCount = nullptr;
             if ((t + 1) % kTicksPerSecond == 0) { for (PlotSim& ps : plots) RollStats(ps.stats); ++statSeconds; } // (#1199) a second of factory time
@@ -2792,6 +2898,7 @@ uint64_t StateHash(const PlotSim& ps) {
     for (const Machine& m : ps.machines) mix(m.rotAcc);
     mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
     for (const BeltLine& b : ps.belts) mix(Belt_Checksum(b)); // (#1735 PR 3) every item on every belt
+    for (int mi : ps.drills) { const Machine& m = ps.machines[mi]; mix((long long)m.deposit); mix(m.depBudget); mix(m.gradeCarry); mix(m.tooClose); } // (#2071)
     return h;
 }
 
@@ -2879,15 +2986,29 @@ void Factory::Sync(Scene& world) {
                         for (auto& c : fp) cells.push_back(c.first);
                         L.machines.push_back({ (int)i, part.type });
                         L.machineCells.push_back(std::move(cells));
-                        // A miner works the ore deposit 16 m under it.
+                        // (#2071) A drill works the deposit below it within its reach (deposits.txt), its main ore, from the
+                        // deposit's finite pool; with none in reach it stands idle ("No deposit in reach").
                         std::string variant;
-                        if (part.type == PartType::Miner) {
-                            const Vector3 at = pl->toBody({ (part.origin.x + 1.0f) * kCellSize, (part.origin.y - 32.0f) * kCellSize, (part.origin.z + 1.0f) * kCellSize });
-                            // The deposit within 40 m under it, or (without one) the scattered common ore there.
+                        LayoutMsg::Drill dr;
+                        if (const DepositDrill* dd = Deposits_Drill(Deposits_All(), PartMachineName(part.type))) {
+                            dr.drill = true; dr.spacing = dd->spacing;
+                            dr.head = pl->toBody({ (part.origin.x + 1.0f) * kCellSize, part.origin.y * kCellSize, (part.origin.z + 1.0f) * kCellSize });
                             const auto* pf = dynamic_cast<const PlanetField*>(body->field.get());
-                            const int dep = pf ? pf->depositNear(at, 40.0f) : -1;
-                            variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
+                            VeinDeposit d; int cx = 0, cy = 0, cz = 0;
+                            if (pf && pf->depositBelow(dr.head, dd->reach, d, cx, cy, cz)) {
+                                const OreFamily& fam = OreFamilies_All()[d.family];
+                                const char* ore = PlanetField::OreKindName(fam.members[0].kind);
+                                if (ore) {
+                                    variant = ore;
+                                    const DepthBand band = kDepth.bandAt(d.depth);
+                                    dr.deposit = Deposits_Id(cx, cy, cz);
+                                    dr.pool = Deposits_Pool(Deposits_All(), band, d.sizeRoll, variant);
+                                    dr.grade = Deposits_GradeCenti(Deposits_All(), band);
+                                }
+                            }
                         }
+                        L.machineDrill.resize(L.machines.size() - 1);
+                        L.machineDrill.push_back(dr);
                         if ((part.type >= PartType::LvLab && part.type <= PartType::HvLab) || part.type == PartType::SteamLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         if (part.type == PartType::ManaSiphon) variant = "jar_none"; // (#1252) idle until the game finds the ley node it stands on
                         L.machineVariant.push_back(variant);
@@ -3028,7 +3149,7 @@ FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t bo
         addSeries(demand, ps.stats.euDemand);
         for (const auto& [k, t] : ps.stats.statusTicks) { StatKind& sk = kinds[k]; sk.type = k; for (int i = 0; i < 8; ++i) sk.ticks[i] += t[i]; }
         for (const Machine& m : ps.machines) {
-            StatKind& sk = kinds[(int)m.type]; sk.type = (int)m.type; ++sk.count; ++sk.now[(int)m.status & 7];
+            StatKind& sk = kinds[(int)m.type]; sk.type = (int)m.type; ++sk.count; ++sk.now[StatusSlot(m.status)];
             if (m.type == PartType::Battery) { out.batteryEnergy += m.energy; out.batteryCapacity += kBatteryCapacity; }
         }
     }
@@ -3311,6 +3432,7 @@ uint64_t Factory::StateHash() {
     std::sort(byPlot.begin(), byPlot.end()); // the plot list's order depends on when each plot was first seen
     uint64_t h = 1469598103934665603ull;
     for (const auto& [key, ph] : byPlot) for (uint64_t v : { key.first, (uint64_t)key.second, ph }) h = (h ^ v) * 1099511628211ull;
+    for (const auto& [key, left] : depositLeft) for (uint64_t v : { key.first, key.second, (uint64_t)left }) h = (h ^ v) * 1099511628211ull; // (#2071)
     return h;
 }
 
@@ -3348,7 +3470,14 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
         }
     }
     for (const auto& b : beltOut) n += (int)((std::get<2>(b).size() / 2 + kBeltItemsPerLine - 1) / kBeltItemsPerLine);
+    // (#2071) What is left of each deposit drills touched: "d 0 0 <deposit id> <units>" (the drills' unmined grants go back
+    // into it; a loaded drill starts with none)
+    std::map<uint64_t, long long> deposits;
+    for (const auto& [key, left] : depositLeft) if (key.first == bodyId) deposits[key.second] = left;
+    for (const PlotSim& ps : plots) if (ps.body == bodyId) for (int mi : ps.drills) if (mi < (int)ps.machines.size() && ps.machines[mi].deposit) deposits[ps.machines[mi].deposit] += ps.machines[mi].depBudget;
+    n += (int)deposits.size();
     fprintf(f, "machines %d\n", n);
+    for (const auto& [id, left] : deposits) fprintf(f, "d 0 0 %llu %lld\n", (unsigned long long)id, left);
     for (const auto& [plot, id, words] : beltOut)
         for (size_t at = 0; at + 1 < words.size(); at += 2 * kBeltItemsPerLine) {
             fprintf(f, "b %u %d", plot, id);
@@ -3423,6 +3552,7 @@ void Factory::LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines) 
         std::string w;
         while (ss >> w) { if (const char* now = RetiredItem(w); *now) w = now; rest.push_back(w); } // #1090: item ids only match it
         if (tag == "b") { auto& b = pendingBelts[{ bodyId, plot, part }]; b.insert(b.end(), rest.begin(), rest.end()); } // (#1735 PR 3) a belt's items (part = its run id), lines in order
+        else if (tag == "d") { if (rest.size() >= 2) depositLeft[{ bodyId, strtoull(rest[0].c_str(), nullptr, 10) }] = strtoll(rest[1].c_str(), nullptr, 10); } // (#2071) a deposit's units left
         else pendingStates[{ bodyId, plot, part }] = rest;
     }
 }
@@ -3624,7 +3754,7 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
     const int minWas = parallelMinMachines;
     sleepOn = sleep;
     parallelMinMachines = 0; // (these plots are small: split them anyway)
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     constexpr int kPlots = 6;
     std::vector<std::vector<std::array<int, 4>>> parts(kPlots);
     std::vector<std::array<int, 4>> rot(kPlots); // (#1269) crank, 3 millstones per plot
@@ -3708,7 +3838,7 @@ TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
 //  - an LV generator cabled to an electric motor turning a shaft into a second press: EU back into rotation.
 TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 90; L.version = 1;
     int part = 0;
@@ -3776,7 +3906,7 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
 // tin (dust or crushed ore) 3 to 1 into bronze dust. Each on its own motor (64 RPM, over the mixer's 32 RPM minimum).
 TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 91; L.version = 1;
     int part = 0;
@@ -3826,7 +3956,7 @@ TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
 // and 4 tin ore with their 100 sand, and nothing is left carried.
 TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 92; L.version = 1;
     int part = 0;
@@ -3874,7 +4004,7 @@ TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
 // twice as fast, so two units in 500 ticks and none before 250; and the units it holds are what waterworks may lift.
 TEST(Factory, ARotaryPumpMakesWaterAtItsShaftSpeed) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 93; L.version = 1;
     int part = 0;
@@ -3923,7 +4053,7 @@ TEST(Factory, AFarPlotMeasuresThenEntersSummaryWithItsCaps) {
     const bool was = summaryOn;
     for (const bool on : { true, false }) {
         summaryOn = on;
-        plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+        plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
         std::vector<std::array<int, 4>> parts;
         ApplyLayout(TestChains(1, 10, parts));
         PlotSim& ps = *FindPlot(7, 1);
@@ -3991,7 +4121,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
     LoadRecipes();
     std::vector<std::pair<Recipe*, int>> restore; // (the tables outlive the test: LoadRecipes doesn't reload them)
     if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) { restore.push_back({ &r, r.ticks }); r.ticks = maceratorTicks; }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     const std::vector<Int3> cable12 = Row(0, 12, -1);
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
@@ -4033,7 +4163,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
 // them only when leaving exactly on a 30 s boundary: the in-game run used the measuring window alone and made 82.5%).
 TEST(Factory, LeavingNearAtAnyTimeKeepsTheNearCaps) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
     PlotSim& ps = *FindPlot(9, 1);
     int b = 0;
@@ -4089,7 +4219,7 @@ TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimWithLongCrafts) {
 // stalled (5 / 8 = 0 ticks, every tick); now the share adds up, and the line runs at about 5/8 of its full speed.
 TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallThem) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
                                   { PartType::Macerator, 12, 0 }, { PartType::Macerator, 15, 0 }, { PartType::Macerator, 18, 0 } }, {}, Row(0, 19, -1)));
     PlotSim& ps = *FindPlot(9, 2);
@@ -4115,7 +4245,7 @@ namespace {
 struct CableRun { long long used = 0, made = 0; };
 CableRun RunCableLine(uint32_t plotId, const std::vector<Int3>& cables, int ticks) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     std::vector<OraclePart> parts = { { PartType::Generator, 1, 0 }, { PartType::Generator, 4, 0 } };
     for (int k = 0; k < 8; ++k) parts.push_back({ PartType::Macerator, 7 + 3 * k, 0 });
     ApplyLayout(OracleLayout(plotId, parts, {}, cables));
@@ -4154,7 +4284,7 @@ TEST(Factory, ParallelCablesCarryMore) {
 // (#1847) A machine whose craft is done but can't get out (outputs full) draws no power: its generator stops burning.
 TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 } }, {}, Row(0, 4, -1)));
     PlotSim& ps = *FindPlot(9, 2);
     int b = 0;
@@ -4250,13 +4380,93 @@ TEST(Factory, AJoinedClientReadsACachesChargeFromTheHostsView) {
     EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 7, 1), 0.0f) << "offline again: the local sim";
 }
 
+// (#2071) Drills share their deposit's finite pool: two miners 20 m apart mine a 20-unit pool at grade 1.5 (30 ore between
+// them) and stop "depleted"; a third 2 m from the first is too close and mines nothing. The pool left (with the unmined
+// grants) is saved and loads back.
+TEST(Factory, DrillsShareAFiniteDepositPayItsGradeAndStopDepleted) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
+    LayoutMsg L = OracleLayout(3, { { PartType::MvGenerator, 0, 0 }, { PartType::Miner, 3, 0 }, { PartType::Miner, 6, 0 }, { PartType::Miner, 9, 0 } }, {}, Row(0, 10, -1));
+    const uint64_t dep = Deposits_Id(4, -620, 7);
+    L.machineDrill.resize(4);
+    for (int i = 1; i <= 3; ++i) { L.machineVariant[i] = "iron_ore"; LayoutMsg::Drill& d = L.machineDrill[i]; d.drill = true; d.deposit = dep; d.pool = 20; d.grade = 150; }
+    L.machineDrill[1].head = { 0, 0, 0 }; L.machineDrill[2].head = { 2, 0, 0 }; L.machineDrill[3].head = { 20, 0, 0 };
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 3);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    long long made = 0; int active = 0;
+    auto iron = [&](int part) { const Machine& m = ps.machines[ps.byPart.at(part)]; return CountItems(m.out, kSlots, tables.item("iron_ore")); };
+    MachineView view;
+    FillView(ps, 1, view);
+    EXPECT_EQ(view.depositLeft, 20) << "the view: the full pool before any drill drew on it";
+    FillView(ps, 0, view);
+    EXPECT_EQ(view.depositLeft, -1) << "not a drill";
+    for (int t = 0; t < 4000; ++t) { GrantDeposits(); TickPlot(ps, 1, made, active); }
+    FillView(ps, 1, view);
+    EXPECT_EQ(view.depositLeft, 0);
+    EXPECT_EQ(iron(1) + iron(3), 30) << "20 units at grade 1.5";
+    EXPECT_GT(iron(1), 0); EXPECT_GT(iron(3), 0);
+    EXPECT_EQ(iron(2), 0) << "too close mines nothing";
+    EXPECT_EQ(ps.machines[ps.byPart.at(2)].status, MachineStatus::TooClose);
+    EXPECT_EQ(ps.machines[ps.byPart.at(1)].status, MachineStatus::Depleted);
+    EXPECT_EQ(ps.machines[ps.byPart.at(3)].status, MachineStatus::Depleted);
+    EXPECT_EQ(depositLeft.at({ 9, dep }), 0);
+    // A drill with no deposit in reach waits and says so
+    LayoutMsg none = L; none.machineDrill[3].deposit = 0;
+    // Saved mid-way: the unmined grants go back into the pool
+    depositLeft[{ 9, dep }] = 100;
+    ps.machines[ps.byPart.at(1)].depBudget = 5;
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_deposit_save_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
+    Factory::LoadSaved(9, lines);
+    EXPECT_EQ(depositLeft.at({ 9, dep }), 105) << "the pool and the first drill's unmined grant";
+    ApplyLayout(none);
+    PlotSim& ps2 = *FindPlot(9, 3);
+    for (int t = 0; t < 40; ++t) { GrantDeposits(); TickPlot(ps2, 1, made, active); }
+    EXPECT_EQ(ps2.machines[ps2.byPart.at(3)].status, MachineStatus::NoDeposit);
+    plots.clear(); plotIndexDirty = true; depositLeft.clear();
+}
+
+// (#2071 PR 2) The LV borehole rig drills its deposit at 1 unit per 40 ticks (2 s) on LV power, and deposits.txt gives the
+// rigs their reach: 32 m, 64 m, and the miner's 128 m.
+TEST(Factory, TheLvBoreholeRigDrillsOneOreEveryTwoSeconds) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
+    ASSERT_TRUE(Deposits_Drill(Deposits_All(), "borehole_rig") && Deposits_Drill(Deposits_All(), "lv_borehole_rig"));
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "borehole_rig")->reach, 32.0f);
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "lv_borehole_rig")->reach, 64.0f);
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "miner")->reach, 128.0f);
+    LayoutMsg L = OracleLayout(4, { { PartType::Generator, 0, 0 }, { PartType::LvBoreholeRig, 3, 0 } }, {}, Row(0, 4, -1));
+    L.machineDrill.resize(2);
+    L.machineVariant[1] = "copper_ore";
+    LayoutMsg::Drill& d = L.machineDrill[1]; d.drill = true; d.deposit = Deposits_Id(1, 2, 3); d.pool = 1000; d.grade = 100;
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 4);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 1000; ++t) { GrantDeposits(); TickPlot(ps, 1, made, active); }
+    const int ore = CountItems(ps.machines[ps.byPart.at(1)].out, kSlots, tables.item("copper_ore"));
+    EXPECT_GE(ore, 23) << "1000 ticks at 40 a unit: 25 (less the generator's start)";
+    EXPECT_LE(ore, 25);
+    plots.clear(); plotIndexDirty = true; depositLeft.clear();
+}
+
 // (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the
 // summary at once with the caps it had (no minute of measuring).
 TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     LoadRecipes();
     const bool was = summaryOn;
     summaryOn = true;
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     const LayoutMsg layout = OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1));
     ApplyLayout(layout);
     PlotSim* ps = FindPlot(9, 1);
@@ -4290,7 +4500,7 @@ TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     std::remove(path.c_str());
     ASSERT_EQ(lines.size(), ps->machines.size());
     // Load into a fresh factory: the layout arrives, the plot is far from the start.
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     Factory::LoadSaved(9, lines);
     ApplyLayout(layout);
     ps = FindPlot(9, 1);
@@ -4303,7 +4513,7 @@ TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     // An old save (no caps) measures first, as before.
     std::vector<std::string> old = lines;
     for (std::string& l : old) { const size_t at = l.find(" sum"); if (at != std::string::npos) l.erase(at); }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     Factory::LoadSaved(9, old);
     ApplyLayout(layout);
     ps = FindPlot(9, 1);
@@ -4492,7 +4702,7 @@ TEST(Factory, AChestKeepsAnItemsRecordAndOnlyADisassemblerTakesOne) {
     std::remove(path.c_str());
     bool saved = false; for (const std::string& l : lines) saved |= l.find(" bronze_pickaxe|" + d1 + " 1") != std::string::npos;
     EXPECT_TRUE(saved) << "a record is saved as name|record";
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     Factory::LoadSaved(11, lines);
     ApplyLayout(L);
     PlotSim* ps = FindPlot(11, 2);
@@ -4538,7 +4748,7 @@ TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
 // packs into research units while a hand crank on its shaft turns, at the crank's speed; with nobody cranking it waits.
 TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 91; L.version = 1;
     int part = 0;
@@ -4576,7 +4786,7 @@ TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
 // shaft cranked, make it up to twice as fast; an anvil hammers a bloom into an ingot only as far as a player's strikes go.
 TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     auto run = [](bool cranked) {
         LayoutMsg L{};
         L.body = 7; L.plot = cranked ? 93 : 92; L.version = 1;
@@ -4637,7 +4847,7 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
 TEST(Factory, AnAnvilRepairsACopyAndTakesAGemOut) {
     LoadRecipes();
     ASSERT_TRUE(Composed_Load());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 95; L.version = 1;
     L.machines.push_back({ 0, PartType::Anvil }); L.machineCells.push_back({ { 0, 0, 0 } }); L.machineVariant.push_back("");
@@ -4704,7 +4914,7 @@ TEST(Factory, AnAnvilRepairsACopyAndTakesAGemOut) {
 TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     LoadRecipes();
     ASSERT_TRUE(Composed_Load());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     const size_t nRecipes = tables.recipes.size();
     decltype(tables.recipes)::value_type r; r.machine = PartType::LvAssembler; r.ticks = 20; r.eu = 1;
     r.in = { Stack{ tables.item("bronze_pick_head"), 1 }, Stack{ tables.item("wood_handle"), 1 } };
@@ -4754,7 +4964,7 @@ TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     const std::vector<std::string> lines = Factory::ReadSaved(f);
     fclose(f);
     std::remove(path.c_str());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     Factory::LoadSaved(9, lines);
     ApplyLayout(L);
     ps = FindPlot(9, 7);
@@ -4837,7 +5047,7 @@ TEST(Factory, EachAlloyOfTheMaterialColumnIsMadeByItsTier) {
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     LoadRecipes();
     Disassembly_Build({}, nullptr); // (#1427 L7c) nothing to take apart here (other tests leave their own index)
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     ApplyLayout(OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 } }, {}, Row(0, 4, -1)));
     PlotSim& ps = *FindPlot(9, 5);
     Machine& gen = ps.machines[ps.byPart.at(0)];
@@ -4884,7 +5094,7 @@ TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
     forward.push_back({ "copper_wire", 2, { { "copper_ingot", 1 } }, 0, 0 });
     Disassembly_Build(forward, [](const std::string& item) { return item == "basic_circuit" ? 4 : -1; });
     for (const std::string& n : Disassembly_Items()) { const int id = tables.item(n); if (id >= (int)disassemblable.size()) disassemblable.resize(id + 1, 0); disassemblable[id] = 1; }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L = OracleLayout(7, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 }, { PartType::LvAssembler, 6, 0 } }, {}, Row(0, 7, -1));
     L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("LV"), MachineTiers_ByName("MV") };
     ApplyLayout(L);
@@ -4944,7 +5154,7 @@ TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
 // tick); a recipe a tier above a machine never starts in it.
 TEST(Factory, AHigherTierMachineOverclocksALowerRecipeAndALowerOneRefusesAHigherRecipe) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
     LayoutMsg L = OracleLayout(6, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 } }, {}, Row(0, 7, -1));
     L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("MV"), MachineTiers_ByName("LV") };
     ApplyLayout(L);
@@ -5002,7 +5212,7 @@ const Recipe* RecipeFor(PartType machine, const char* input) {
     for (const Recipe& r : tables.recipes) if (r.machine == machine && !r.in.empty() && r.in[0].item == tables.item(input) && !r.out.empty()) return &r;
     return nullptr;
 }
-void MbReset() { plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear(); }
+void MbReset() { plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear(); }
 } // namespace
 
 // A coke oven battery (parallel 2) takes coal from two input hatches as one pool: inputs claimed at the start, two cokes at

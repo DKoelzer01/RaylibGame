@@ -23,10 +23,12 @@
 56 | ladder          | #1734 | the rotary pump part type in NetPart
 57 | staging         | #1886 | TeamStore: the team's progression store (research, map, blueprints) to its members
 59 | ladder          | #1735 | belt sync: BeltSnapshot, BeltSteps, BeltResync (belts replayed on clients; 57, 58 are #1886's)
+62 | ladder          | #2071 | a drill's statuses in MachineView (no deposit, depleted, too close)
+63 | ladder          | #2071 | the borehole rig part types in NetPart; a drill's deposit units left in MachineView
 61 | ladder          | #2097 | staging and ladder merged (57 staging, 58 and 60 open PRs #2047/#2101, 59 ladder #1735)
 60 | staging         | #2072 | the ruin cache part type in NetPart; MachineAction 13 opens a cache
 65 | staging         | #1886 | MapPin and ResearchQueue: a client's map pins and research queue changes, for its team (58 before staging passed it; 61-64 are open PRs')
-66 | ladder          | #2103 | staging and ladder merged again (65 staging #1886, 61 ladder #2097, 60 staging #2072)
+66 | ladder          | #2103 | staging and ladder merged again (65 staging #1886, 63 ladder #2071, 60 staging #2072)
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion

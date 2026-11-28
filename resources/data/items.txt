@@ -63,7 +63,7 @@ hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without powe
 mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
 electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
 chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
-miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit under it, forever.
+miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit below it (reach 128 m) until the deposit runs out.
 hv_generator    | HV generator    |  20 | 210, 60, 60 | Burns coke for HV power (512 V).
 arc_furnace     | Arc furnace     |  20 |  90, 90,110 | HV: titanium from ilmenite and coke; titanium alloy.
 refinery        | Refinery        |  20 | 140,110,160 | HV: rocket fuel from coal, hydrogen and oxygen.
@@ -354,6 +354,9 @@ trip_hammer      | Trip hammer      | 20  | 140,104, 66 | Mechanical power: a ca
 mixer            | Mixer            | 20  | 150,116, 74 | Mechanical power: stirs copper and tin dust (or crushed ore) 3 to 1 into bronze dust, for the kiln. Needs 32 RPM.
 rotary_sieve     | Rotary sieve     | 20  | 150,116, 74 | Mechanical power: sifts gravel into sand, sand into clay and dirt into fibre, with now and then an ore or seeds. Needs 16 RPM.
 rotary_pump      | Rotary pump      | 20  | 120,110, 96 | Mechanical power: lifts water from under it (a river, a pond, the sea) into pipes, outlets and boilers beside it, 20 L/s at 32 RPM. Needs 8 RPM.
+# (#2071) Drills on a deposit's finite pool (deposits.txt): the shallow ones before the miner
+borehole_rig     | Borehole rig     | 20  | 140,110, 72 | Mechanical power: a derrick that bores into the ore deposit below it (reach 32 m), one ore every 4 s at 32 RPM, until the deposit runs out. Needs 16 RPM.
+lv_borehole_rig  | LV borehole rig  | 20  | 150,150,158 | LV (32 V, 16 EU/t): bores into the ore deposit below it (reach 64 m), one ore every 2 s, until the deposit runs out.
 # (#1614 PR 3) Assemblies of the steam age: made by hand (Tab) or in the steam assembler, built into the machines
 mechanism        | Mechanism        | 64  | 150,120, 80 | A small gear train: wooden cogwheels on an iron rod, pinned with screws. The heart of the press, the lathe and the steam engine.
 piston           | Piston           | 64  | 190,140, 70 | A bronze piston on iron rods with a return spring. Steam engines need two.
@@ -371,6 +374,8 @@ item_in_hatch    | Item input hatch | 64  | 110,150,110 | A casing with a small 
 item_out_hatch   | Item output hatch | 64 | 150,120,100 | A casing with a small hold a formed multiblock puts its products in; conveyors empty it.
 lv_energy_hatch  | LV energy hatch  | 64  | 190,170, 90 | Takes LV power from cables into a formed multiblock; several structures may share one.
 large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
+coke_oven_battery_controller | Coke oven battery controller | 64 | 110, 70, 55 | The brain of a coke oven battery: it bakes four loads of coal at once in a block of casings.
+large_macerator_controller | Large macerator controller | 64 | 95, 125, 160 | The brain of a large macerator: four macerators' work at once in a steel crusher, fed from the hopper on top, powered through an energy hatch.
 wrench           | Wrench           | tool | 150,150,160 | Hold it and right-click a multiblock controller to form the structure around it.
 # (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)
 mv_motor         | MV motor         | 64  | 140,150,150 | An MV motor: invar rods, a heavy copper winding. MV machines that move have one or two.

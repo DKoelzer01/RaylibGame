@@ -511,6 +511,11 @@ namespace {
         });
         // Tier 3: glass, vacuum tubes; a field; two suit modules.
         add("craft 18 vacuum tubes", [] { return Craft("copper_wire", 36) && Craft("vacuum_tube", 18); });
+        add("craft and place a borehole rig (tier 3's task, #2071)", [] {
+            // (scripted: its mechanisms, rods and planks; tier 3's own steel plates are the milestone's)
+            inventory.add("mechanism", 2); inventory.add("iron_rod", 4); inventory.add("steel_plate", 2); inventory.add("oak_planks", 8);
+            return Craft("borehole_rig", 1) && Place("borehole_rig", PartType::BoreholeRig, { 18, 0, 0 });
+        });
         add("tier 3's milestone: hand in 50 steel plates, 20 cogwheels, 10 vacuum tubes and a find at a lab", [] {
             if (!Craft("cogwheel", 20)) return false;
             if (inventory.count("ruin_schematic") == 0) inventory.add("ruin_schematic", 1); // (scripted: the finds step is to come)
@@ -604,6 +609,10 @@ namespace {
                 fed = true;
             }
             return Collect("lv_assembler", "basic_circuit", 1);
+        });
+        add("craft and place an LV borehole rig (tier 4's task, #2071)", [] {
+            inventory.add("lv_hull", 1); inventory.add("lv_motor", 1); inventory.add("steel_gear", 2); inventory.add("basic_circuit", 1); inventory.add("iron_rod", 4); // (scripted)
+            return Craft("lv_borehole_rig", 1) && Place("lv_borehole_rig", PartType::LvBoreholeRig, { 12, 0, 8 });
         });
         add("tier 4's tasks all done (its research milestone waits for the LV assembler)", [] {
             static double told = 0.0;

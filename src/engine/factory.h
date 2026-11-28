@@ -34,7 +34,8 @@ enum class PartType : uint8_t;
 
 constexpr int kTicksPerSecond = 20;
 
-enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater };
+enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater,
+                                     NoDeposit, Depleted, TooClose }; // (#2071) a drill's
 const char* MachineStatusName(MachineStatus s);
 
 // A campfire's fire (#1103): by itself it lights when it has fuel and something to cook; a player can light it with nothing
@@ -64,6 +65,7 @@ struct MachineView {             // published per machine each tick
     float rpm = 0.0f;
     int speedPercent = 100, stressPercent = 0;
     const char* rotStatus = "";     // "Running", "Slowed", "Too slow", "Stopped", "Jammed"
+    long long depositLeft = -1;     // (#2071) a drill on a deposit: the units left in it (with its own unmined grant); -1: none
     bool valid = false;
 };
 
