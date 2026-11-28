@@ -1,4 +1,5 @@
 #include "factory.h"
+#include "cacheopeners.h"
 #include "inventory.h"
 #include "plots.h"
 #include "rotationplot.h"
@@ -272,8 +273,9 @@ struct Machine {
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
     uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
-    int energy = 0;                         // battery charge / generator fuel ticks left
+    int energy = 0;                         // battery charge / generator fuel ticks left / a ruin cache's lock charge (EU)
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
+    int lockEU = 0, lockCap = 0, lockVolts = 0; // (#2072) a sealed ruin cache's power opener: EU to open, EU a tick at most, min volts
     int tier = kTierLV;
     int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
     MachineStatus status = MachineStatus::Idle;
@@ -324,6 +326,7 @@ struct PlotSim {
     enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
     long long modeSince = 0; // the tick the current mode (and the measuring window) began
     long long lastAdvance = 0; // (Summary) the tick its buffers were last advanced to
+    bool hasCaches = false;     // (#2072) a sealed cache with a power lock among its machines (its charge is published)
     bool loadedSummary = false; // (#1302) loaded from a save while in the summary sim: far, it goes on there with its saved caps
     long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
 };
@@ -727,6 +730,25 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     };
     flood(L.conveyors, ps.itemNets, false);
     flood(L.cables, ps.powerNets, true);
+    // (#2072) A battery bank against a sealed cache charges it without a cable: the cache joins the battery's network (a
+    // battery on no cable gets one of its own).
+    const Int3 dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (size_t i = 0; i < ps.machines.size(); ++i) {
+        Machine& cache = ps.machines[i];
+        if (cache.type != PartType::RuinCache || cache.powerNet >= 0) continue;
+        for (const Int3& c : cache.cells) {
+            for (const Int3& d : dirs) {
+                auto at = machineAt.find({ c.x + d.x, c.y + d.y, c.z + d.z });
+                if (at == machineAt.end() || Def(ps.machines[at->second].type).power != Power::Battery) continue;
+                Machine& bat = ps.machines[at->second];
+                if (bat.powerNet < 0) { bat.powerNet = (int)ps.powerNets.size(); ps.powerNets.push_back({}); ps.powerNets.back().machines.push_back(at->second); }
+                cache.powerNet = bat.powerNet;
+                ps.powerNets[bat.powerNet].machines.push_back((int)i);
+                break;
+            }
+            if (cache.powerNet >= 0) break;
+        }
+    }
     // A network runs at the highest voltage of its generators and batteries (lower machines refuse it).
     for (Net& net : ps.powerNets) {
         net.voltage = 0;
@@ -754,6 +776,11 @@ void ApplyLayout(const LayoutMsg& L) {
         m.dirty = true; m.asleep = false; // (#1214) a new layout: everything looks again
         m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
+        if (type == PartType::RuinCache) { // (#2072) its variant is its power opener's id (Sync sends only those)
+            const CacheOpener* o = i < L.machineVariant.size() ? CacheOpener_Find(L.machineVariant[i]) : nullptr;
+            m.variant = -1;
+            m.lockEU = o ? (int)std::min<long long>(o->eu, INT32_MAX) : 0; m.lockCap = o ? o->capEUt : 0; m.lockVolts = o ? o->minVolts : 0;
+        }
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -808,6 +835,9 @@ void ApplyLayout(const LayoutMsg& L) {
         if (old.fuel.count > 0 || old.fuel.centi > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo, old.fuel.centi });
     }
     ps->machines = std::move(next);
+    ps->hasCaches = false;
+    for (const Machine& m : ps->machines) ps->hasCaches |= m.type == PartType::RuinCache;
+    ForgetCacheCharges(L.body, L.plot); // (#2072) published again at its next tick
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
     ps->byPart = std::move(byPart);
     BuildNets(*ps, L);
@@ -823,6 +853,20 @@ void RotationStep(PlotSim& ps, int dt) {
 
 // (#1847) A craft still to do: a finished one waiting on full outputs draws no power (it kept the generators burning).
 static bool Crafting(const Machine& m) { return m.recipe >= 0 && m.progress < tables.recipes[m.recipe].ticks; }
+
+// (#2072) Sealed caches' lock charge (0..1) by (body, plot, part), as of their plot's last tick: the cache prompt reads it
+// each frame, so it has its own lock (the sim holds simMutex for a whole tick; plots tick on several workers).
+std::mutex cacheChargeMutex;
+std::map<std::tuple<uint64_t, uint32_t, int>, float> cacheCharge;
+void PublishCacheCharges(const PlotSim& ps) {
+    std::lock_guard<std::mutex> lock(cacheChargeMutex);
+    for (const Machine& m : ps.machines)
+        if (m.type == PartType::RuinCache) cacheCharge[{ ps.body, ps.plot, m.part }] = m.lockEU > 0 ? std::min(1.0f, (float)m.energy / (float)m.lockEU) : 0.0f;
+}
+void ForgetCacheCharges(uint64_t body, uint32_t plot) { // a new layout: part indices may have moved
+    std::lock_guard<std::mutex> lock(cacheChargeMutex);
+    for (auto it = cacheCharge.begin(); it != cacheCharge.end();) it = std::get<0>(it->first) == body && std::get<1>(it->first) == plot ? cacheCharge.erase(it) : std::next(it);
+}
 
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
@@ -842,6 +886,9 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             } else if (def.power == Power::Eu) {
                 if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (Crafting(m)) demand += (long long)tables.recipes[m.recipe].eu * dt;
+            } else if (m.type == PartType::RuinCache) { // (#2072) a sealed cache's lock: at its voltage or more, up to its cap
+                m.status = m.lockEU <= 0 || m.energy >= m.lockEU ? MachineStatus::Idle : net.voltage < m.lockVolts ? MachineStatus::NoPower : MachineStatus::Working;
+                if (m.status == MachineStatus::Working) demand += std::min<long long>((long long)m.lockCap * dt, m.lockEU - m.energy);
             }
         }
         // Generators burn for the consumers and the batteries' room, in a fixed order (#229: not whatever the load).
@@ -865,6 +912,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 const long long need = (long long)tables.recipes[m.recipe].eu * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
+            } else if (m.type == PartType::RuinCache && m.status == MachineStatus::Working) { // (#2072) its share, into the lock
+                const long long need = std::min<long long>((long long)m.lockCap * dt, m.lockEU - m.energy);
+                m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
+                m.energy += m.received;
+                if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received);
             }
         }
         net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
@@ -878,6 +930,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             m.status = m.energy > 0 ? MachineStatus::Working : MachineStatus::Idle;
         }
     }
+    if (ps.hasCaches) PublishCacheCharges(ps); // (#2072)
     // Machines: start recipes, progress (EU received, fuel burnt, or by themselves), finish into
     // the outputs.
     for (Machine& m : ps.machines) {
@@ -886,6 +939,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             // A generator on no network still lights: a boiler warms up and banks its fire (#229).
             if (def.power == Power::Generator && m.powerNet < 0) GeneratorStep(m, def, dt, 0);
             if (def.power == Power::Generator && m.status == MachineStatus::Working) ++active;
+            continue;
+        }
+        if (m.type == PartType::RuinCache) { // (#2072) no recipes: charged in the power step (a cache on no network: idle)
+            if (m.powerNet < 0) m.status = MachineStatus::Idle;
             continue;
         }
         // (#1214) asleep (nothing could start, nothing changed since): the same answer as a search, without one
@@ -1494,6 +1551,11 @@ void SimLoop() {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
                 if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
+                if (im.kind == 13) { // (#2072) a cache opened: its lock's charge spent
+                    auto c = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
+                    if (p && c != p->byPart.end() && p->machines[c->second].type == PartType::RuinCache) p->machines[c->second].energy = 0;
+                    continue;
+                }
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
                     if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to, im.centi }); // (#1849) and its fraction
@@ -1699,6 +1761,7 @@ std::string PlotKey(uint64_t body, uint32_t plot) { return std::to_string(body) 
 void Factory::Start() {
     if (running) return;
     LoadRecipes();
+    Factory::InstallCachePower(); // (#2072) caches' power locks charge from the plots' networks
     running = true;
     simThread = std::thread(SimLoop);
 }
@@ -1711,6 +1774,7 @@ void Factory::Stop() {
 }
 
 void Factory::Reset() {
+    { std::lock_guard<std::mutex> lock(cacheChargeMutex); cacheCharge.clear(); } // (#2072)
     std::lock_guard<std::mutex> q(queueMutex);
     resetRequested = true;
     layoutQueue.clear();
@@ -1755,6 +1819,16 @@ void Factory::Sync(Scene& world) {
                         if (part.type >= PartType::LvLab && part.type <= PartType::HvLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         if (part.type == PartType::ManaSiphon) variant = "jar_none"; // (#1252) idle until the game finds the ley node it stands on
                         L.machineVariant.push_back(variant);
+                    } else if (part.type == PartType::RuinCache && !CacheOpened(part)) { // (#2072) a sealed cache with a power lock
+                        const CacheOpener* o = CacheOpenerOf(part);
+                        if (o && o->kind == OpenerKind::Power) {
+                            Plot::Footprint(part, fp);
+                            std::vector<Int3> cells;
+                            for (auto& c : fp) cells.push_back(c.first);
+                            L.machines.push_back({ (int)i, part.type });
+                            L.machineCells.push_back(std::move(cells));
+                            L.machineVariant.push_back(o->id);
+                        }
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
                     if (RotationPartMsg rm; RotationPlot_Describe(part, (int)i, rm)) L.rotation.push_back(std::move(rm)); // (#1269)
@@ -2013,6 +2087,20 @@ std::vector<int> Factory::MoveFluids(const std::vector<FluidMove>& moves) {
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
+}
+float Factory::CacheCharged(uint64_t body, uint32_t plot, int part) { // (#2072)
+    std::lock_guard<std::mutex> lock(cacheChargeMutex);
+    auto it = cacheCharge.find({ body, plot, part });
+    return it != cacheCharge.end() ? it->second : 0.0f;
+}
+void Factory::CacheSpend(uint64_t body, uint32_t plot, int part) { // (#2072) at once here (no second open on a stale charge), in the sim next tick
+    { std::lock_guard<std::mutex> lock(cacheChargeMutex); cacheCharge.erase({ body, plot, part }); }
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 13, body, plot, part, -1, 0 });
+}
+void Factory::InstallCachePower() { // (#2072)
+    CacheOpeners_SetPower({ [](const Planetoid& b, const Plot& p, int part) { return CacheCharged(b.id, p.id, part); },
+                            [](Planetoid& b, Plot& p, int part) { CacheSpend(b.id, p.id, part); } });
 }
 void Factory::Crank(uint64_t body, uint32_t plot, int part) { // (#1269)
     std::lock_guard<std::mutex> q(queueMutex);
@@ -2647,6 +2735,52 @@ TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
     EXPECT_EQ(gen.fuel.count, fuel) << "no coal burnt for a machine that can't craft";
     EXPECT_LE(gen.energy, energy);
     EXPECT_EQ(mac.received, 0);
+    plots.clear(); plotIndexDirty = true;
+}
+
+// (#2072) A sealed cache's power lock (cache_openers.txt): a generator on a cable charges a small cache at its cap (8 EU a
+// tick) up to its 2000 EU and no further; a deep vault (128 V or more) refuses a 32 V network; a battery bank against a
+// cache charges it with no cable. The charge is published for the cache prompt, and spent when the cache opens.
+TEST(Factory, ACachesLockChargesAtItsCapAndVoltage) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const CacheOpener* small = CacheOpener_Find("small_power");
+    const CacheOpener* deep = CacheOpener_Find("deep_power");
+    ASSERT_TRUE(small && deep);
+    LayoutMsg a = OracleLayout(4, { { PartType::Generator, 0, 0 }, { PartType::RuinCache, 3, 0 } }, {}, Row(0, 4, -1));
+    a.machineVariant[1] = small->id;
+    LayoutMsg b = OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::RuinCache, 3, 0 } }, {}, Row(0, 4, -1));
+    b.machineVariant[1] = deep->id;
+    LayoutMsg c = OracleLayout(6, { { PartType::Battery, 0, 0 }, { PartType::RuinCache, 2, 0 } }, {}, {}); // touching, no cable
+    c.machineVariant[1] = small->id;
+    for (const LayoutMsg* L : { &a, &b, &c }) ApplyLayout(*L);
+    PlotSim& pa = *FindPlot(9, 4); PlotSim& pb = *FindPlot(9, 5); PlotSim& pc = *FindPlot(9, 6);
+    int bk = 0;
+    InsertInto(pa.machines[pa.byPart.at(0)], tables.item("coal"), 64, true, bk);
+    InsertInto(pb.machines[pb.byPart.at(0)], tables.item("coal"), 64, true, bk);
+    pc.machines[pc.byPart.at(0)].energy = 10000;
+    const Machine& ca = pa.machines[pa.byPart.at(1)]; const Machine& cb = pb.machines[pb.byPart.at(1)]; const Machine& cc = pc.machines[pc.byPart.at(1)];
+    EXPECT_EQ(ca.lockEU, small->eu);
+    EXPECT_EQ(cc.powerNet, pc.machines[pc.byPart.at(0)].powerNet) << "the cache joined the battery's network";
+    ASSERT_GE(cc.powerNet, 0);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 100; ++t) for (PlotSim* p : { &pa, &pb, &pc }) TickPlot(*p, 1, made, active);
+    EXPECT_LE(ca.energy, 100 * small->capEUt) << "at most its cap a tick";
+    EXPECT_GE(ca.energy, 95 * small->capEUt) << "the generator keeps up with 8 EU a tick";
+    EXPECT_EQ(ca.status, MachineStatus::Working);
+    EXPECT_EQ(cb.energy, 0) << "a 32 V network can't charge a 128 V lock";
+    EXPECT_EQ(cb.status, MachineStatus::NoPower);
+    EXPECT_EQ(cc.energy, 100 * small->capEUt) << "the battery bank charges it";
+    EXPECT_EQ(pc.machines[pc.byPart.at(0)].energy, 10000 - 100 * small->capEUt);
+    for (int t = 0; t < 300; ++t) TickPlot(pa, 1, made, active);
+    EXPECT_EQ(ca.energy, small->eu) << "full, and no further";
+    EXPECT_EQ(ca.status, MachineStatus::Idle);
+    EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 4, 1), 1.0f);
+    EXPECT_NEAR(Factory::CacheCharged(9, 6, 1), 800.0f / small->eu, 1e-4);
+    EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 5, 1), 0.0f);
+    Factory::CacheSpend(9, 4, 1);
+    EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 4, 1), 0.0f) << "spent at once (the sim empties it next tick)";
+    { std::lock_guard<std::mutex> q(queueMutex); itemQueue.clear(); }
     plots.clear(); plotIndexDirty = true;
 }
 

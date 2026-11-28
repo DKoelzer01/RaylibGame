@@ -91,6 +91,7 @@ const CacheOpener* CacheOpener_ByIndex(int index) {
 }
 
 const CacheOpener* CacheOpenerOf(const Part& p) {
+    LoadOnce(); // (before C.defaults is read below: the first call could find "" otherwise)
     if (const int n = (p.material & kCacheOpenerMask) >> kCacheOpenerShift; n != 0)
         if (const CacheOpener* o = CacheOpener_ByIndex(n)) return o;
     const int k = p.material & 3; // the kind (ruincache.h's CacheKindOf)

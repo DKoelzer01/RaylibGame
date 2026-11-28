@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 #include "caches.h"
+#include "plots.h"
 
-struct Part;
 class Planetoid;
 class Plot;
 
@@ -37,6 +37,8 @@ struct CacheOpener {
 constexpr int kCacheOpenerShift = 5;      // a RuinCache part's material: bits 5-7 the opener index (0: the kind's default)
 constexpr uint8_t kCacheOpenerMask = 0xE0;
 inline uint8_t CacheOpenerBits(int index) { return (uint8_t)((index & 7) << kCacheOpenerShift); }
+constexpr uint8_t kCacheOpened = 0x10;    // a RuinCache part's material: kind in the low bits, this bit once opened
+inline bool CacheOpened(const Part& p) { return (p.material & kCacheOpened) != 0; }
 
 // The catalogue (resources/data/cache_openers.txt, read on first use). Parse replaces it from text (unit tests); false and
 // a reason on a line it can't read (the lines before it stay).
