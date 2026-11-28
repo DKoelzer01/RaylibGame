@@ -47,7 +47,7 @@ void Send(NetClient& n, const std::string& id) { NetClient_MachineAction(n, S.bo
 }
 
 SCENARIO("net/alt-recipe") {
-    s.tags = { "multiplayer", "net", "factory" };
+    s.tags = { "multiplayer", "net" }; // (not "factory": the runner's part 1 takes that tag, part 2 takes "net")
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-alt-recipe.sav", "--port", std::to_string(kPort) };
     s.timeout = 120.0;
