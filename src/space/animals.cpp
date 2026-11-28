@@ -1141,6 +1141,13 @@ uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
     return a.netId;
 }
 
+// (#1740) The light grid's level 1 m over a cave site's floor, and whether the site is dark with it (Animals_CaveSiteDark).
+int CaveSiteGridLevel(const Planetoid& body, Vector3 floor, Vector3 up) { return LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level; }
+bool CaveSiteDarkAt(Vector3 floor, int gridLevel) {
+    Vector3 lit{};
+    return !NearFire(floor, SpawnTune::kDarkFromLight, lit) && gridLevel <= SpawnTune::kDarkLevel;
+}
+
 void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, Vector3 player) {
     std::vector<std::pair<int, const CreatureSpec*>> kinds;
     for (const CreatureSpec& c : Creature_All())
@@ -1184,9 +1191,10 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             }
             if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) { ++nNoFloor; continue; } // no headroom
             if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) { ++nNear; continue; }
+            const int gridLevel = CaveSiteGridLevel(body, floor, up); // (#1740) read once: the dark rule and the site's light
             if (CaveLifecycleOn()) { // (#1740)
                 if (Vector3Distance(floor, player) > SpawnTune::kMaxFromPlayer) { ++nFar; continue; }
-                if (!Animals_CaveSiteDark(body, floor, up)) { ++nLit; continue; }
+                if (!CaveSiteDarkAt(floor, gridLevel)) { ++nLit; continue; }
                 // Out of the player's sight: rock somewhere on the line from their eye to the site (1 m steps).
                 const Vector3 at = Vector3Add(floor, Vector3Scale(up, 1.0f));
                 const float len = Vector3Distance(eye, at);
@@ -1207,7 +1215,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             for (float h = 2.0f; h <= 80.0f; h += 2.0f)
                 if (body.densityAt(Vector3Add(floor, Vector3Scale(up, h))) >= ISO_LEVEL) { s.openSky = false; break; }
             if (s.openSky) ++nSky;
-            s.light = Animals_CaveSiteLight(body, floor, up, s.nearMouth, s.depth, s.openSky); // (#1740) the light grid's level there
+            s.light = SpawnSite_Light(s.nearMouth, s.depth, s.openSky, gridLevel); // (#1740) the light grid's level there
             s.region = (uint8_t)Underground_RegionAt(f, floor); // (#1740) creatures.txt region=
             s.wet = f.caveWetColumn(dir, f.elevation(dir)) > 0.3f; // (#1226) wet karst: by the cave water, the sumps
             sites.push_back(s);
@@ -1286,13 +1294,9 @@ float Animals_Heading(int i) { return i >= 0 && i < (int)animals.size() ? animal
 void Animals_TestSetHeading(int i, float h) { if (i >= 0 && i < (int)animals.size()) { animals[i].heading = animals[i].prevHeading = h; } } // (#1717)
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
-bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up) {
-    Vector3 lit{};
-    if (NearFire(floor, SpawnTune::kDarkFromLight, lit)) return false;
-    return LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level <= SpawnTune::kDarkLevel;
-}
+bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up) { return CaveSiteDarkAt(floor, CaveSiteGridLevel(body, floor, up)); }
 float Animals_CaveSiteLight(const Planetoid& body, Vector3 floor, Vector3 up, bool nearMouth, float depth, bool openSky) {
-    return SpawnSite_Light(nearMouth, depth, openSky, LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level);
+    return SpawnSite_Light(nearMouth, depth, openSky, CaveSiteGridLevel(body, floor, up));
 }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
 void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }

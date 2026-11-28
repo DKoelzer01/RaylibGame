@@ -199,6 +199,7 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "respawn") ok = num(c.respawn);
         else if (k == "nests") c.nests = v == "1" || v == "yes";
         else if (k == "region") { // (#1740) region=karst,flooded: the underground regions it spawns in (underground.h names)
+            static_assert((int)UndergroundRegion::Count <= 32, "CreatureSpec::regions is a 32-bit mask");
             c.regions = 0;
             for (const std::string& name : SplitOn(v, ',')) {
                 bool found = false;

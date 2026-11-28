@@ -13,12 +13,14 @@
 #include "world.h"
 #include <raymath.h>
 #include <string>
+#include <unordered_set>
 
 namespace {
 struct St {
     Vector3 chamber{}, out{};
     UndergroundRegion in = UndergroundRegion::None, other = UndergroundRegion::None;
-    int seen = 0, hornIn = 0, hornOut = 0, woolIn = 0, woolOut = 0;
+    std::unordered_set<uint64_t> checked; // net ids already checked (the ones there before the setup too)
+    int hornIn = 0, hornOut = 0, woolIn = 0, woolOut = 0;
 } S;
 }
 
@@ -48,20 +50,20 @@ SCENARIO("creatures/cave-spawn-region") {
         Animals_ResetCaveSpawns();
         player.flyMode = false;
         player.placeAt(c.world, *c.body, c.body->toWorld(feet));
-        S.seen = Animals_Count();
+        for (int i = 0; i < Animals_Count(); ++i) S.checked.insert(Animals_NetId(i)); // the ones already there are not cave spawns
         return true;
     });
     s.step("spawn passes: each in its region", 60.0, [](ScenarioCtx& c) {
         static double idleAt = -1.0;
-        // Check the new ones the frame they appear (they have not walked yet).
-        for (int i = S.seen; i < Animals_Count(); ++i) {
+        // Check each hornhide and woolback the first frame it is there (by its net id: it has not walked yet).
+        for (int i = 0; i < Animals_Count(); ++i) {
             if (Animals_Body(i) != c.body->name) continue;
             const std::string sp = Animals_SpeciesOf(i).first;
+            if ((sp != "hornhide" && sp != "woolback") || !S.checked.insert(Animals_NetId(i)).second) continue;
             const UndergroundRegion r = Underground_RegionAt(*c.field, Animals_Position(i));
             if (sp == "hornhide") (r == S.in ? S.hornIn : S.hornOut)++;
-            else if (sp == "woolback") (r == S.other ? S.woolIn : S.woolOut)++;
+            else (r == S.other ? S.woolIn : S.woolOut)++;
         }
-        S.seen = std::max(S.seen, Animals_Count());
         c.waitingFor("the chamber built, then 6 s (three passes)");
         if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) { idleAt = c.t; Animals_CaveSpawnNow(); }
         if (idleAt < 0.0 || c.t < idleAt + 6.0) return false;
