@@ -543,6 +543,7 @@ std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts 
 // moved plot: plotIndexDirty); every hit is checked against the plot itself. Sim thread (and callers under simMutex).
 std::unordered_map<uint64_t, size_t> plotIndex;
 bool plotIndexDirty = true;
+void ForgetCacheCharges(uint64_t body, uint32_t plot); // (#2072, with TickPlot)
 uint64_t PlotHash(uint64_t body, uint32_t plot) { return body * 0x9E3779B97F4A7C15ull ^ (uint64_t)plot; }
 PlotSim* FindPlot(uint64_t body, uint32_t plot) {
     if (plotIndexDirty) {
