@@ -19,6 +19,8 @@
 
 namespace {
 Plot* plot = nullptr;
+long long stepsAtSpring = 0;      // the fluid's step count (Fluid::Stats::steps) when the spring was added
+constexpr int kSpringSteps = 900; // 15 s: 1.5 steps a 25 ms tick (kSubsteps per 50 ms), a multiple of 3 so a tick lands on it
 Vector3 At(float x, float y, float z = 0.0f) { return plot->toBody({ x, y, z }); }
 bool Place(ScenarioCtx& c, PartType t, Int3 at, int orient = 0) { return BuildTool_Place(*c.body, *plot, RotationPlot_PartAt(t, at, orient), false); }
 }
@@ -56,11 +58,19 @@ SCENARIO("determinism/state-hash") {
         c.gt("the crank turned the line (RPM)", v.rpm, 0.0); // the hash covers a working line, not an idle one
         c.hashState("cranked", { "edits", "factory" });
         Fluid::AddSource(*c.body, At(-7.5f, -2.2f), 0, 1.0f, 1.5f); // 1 m^3/s at the trench's head
+        stepsAtSpring = Fluid::GetStats().steps;
         return true;
     });
-    s.step("15 s of a spring in the trench; hash the water", 40.0, [](ScenarioCtx& c) {
-        c.waitingFor(TextFormat("t=%.1f s of 15", c.t));
-        if (c.t < 15.0) return false;
+    // (#2183) Counted in fluid steps, not seconds: this step starts on a frame that the loading screen's length (wall time)
+    // chose, and 15 s of 1/60 s frames from there held one 25 ms tick more or less by that frame's phase on the tick grid,
+    // so the hash came out different now and then (a one-frame later start changed it). The spring's command goes into the
+    // next tick whatever the phase, and in lockstep each frame ends on a finished tick (at most one a frame), so counting
+    // the steps hashes the same tick's water every run.
+    s.step("900 fluid steps (15 s) of a spring in the trench; hash the water", 40.0, [](ScenarioCtx& c) {
+        const long long ran = Fluid::GetStats().steps - stepsAtSpring;
+        c.waitingFor(TextFormat("%lld fluid steps of %d", ran, kSpringSteps));
+        if (ran < kSpringSteps) return false;
+        c.check("the hash is taken on the 900th fluid step, not past it", ran == kSpringSteps);
         c.hashState("flowing", { "water" });
         return true;
     });
