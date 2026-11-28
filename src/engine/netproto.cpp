@@ -1032,7 +1032,7 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
     MachineView& v = m.view;
     const uint8_t st = r.u8();
-    if (st > (uint8_t)MachineStatus::NoWater || part < 0 || part > 1000000) r.ok = false;
+    if (st > (uint8_t)MachineStatus::TooClose || part < 0 || part > 1000000) r.ok = false;
     v.status = (MachineStatus)st; m.part = (int32_t)part;
     v.progress = (int)r.vari(); v.duration = (int)r.vari(); v.energy = (int)r.vari(); v.energyMax = (int)r.vari();
     v.input = r.str(128); v.output = r.str(128);

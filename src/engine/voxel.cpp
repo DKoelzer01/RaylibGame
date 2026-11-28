@@ -3992,6 +3992,29 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     return best;
 }
 
+bool PlanetField::depositBelow(Vector3 base, float reach, VeinDeposit& out, int& ocx, int& ocy, int& ocz) const {
+    if (moon) return false;
+    const Vector3 down = Vector3Scale(Vector3Normalize(base), -1.0f), end = Vector3Add(base, Vector3Scale(down, reach));
+    const float pad = kVeinReach; // a deposit's centre is within kVeinReach of what it touches
+    const int x0 = (int)floorf((std::min(base.x, end.x) - pad) / kDepositCell), x1 = (int)floorf((std::max(base.x, end.x) + pad) / kDepositCell);
+    const int y0 = (int)floorf((std::min(base.y, end.y) - pad) / kDepositCell), y1 = (int)floorf((std::max(base.y, end.y) + pad) / kDepositCell);
+    const int z0 = (int)floorf((std::min(base.z, end.z) - pad) / kDepositCell), z1 = (int)floorf((std::max(base.z, end.z) + pad) / kDepositCell);
+    float bestAlong = 1e30f;
+    bool found = false;
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const VeinDeposit d = depositOf(x, y, z);
+                if (!d.exists || d.family < 0 || OreFamilies_All()[d.family].members.empty()) continue;
+                // The closest point of the drill's line to the deposit's centre
+                const float along = std::clamp(Vector3DotProduct(Vector3Subtract(d.centre, base), down), 0.0f, reach);
+                const float off = Vector3Distance(d.centre, Vector3Add(base, Vector3Scale(down, along)));
+                if (off > d.envelope || along >= bestAlong) continue;
+                bestAlong = along; out = d; ocx = x; ocy = y; ocz = z; found = true;
+            }
+    return found;
+}
+
 StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     // The continent value at a fixed coarse footprint: the bake's cells and the mesher's vertices see the same province.
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;

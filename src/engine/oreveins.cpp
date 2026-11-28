@@ -45,6 +45,7 @@ VeinDeposit OreVeins_Make(int cx, int cy, int cz, uint32_t h, const std::functio
     d.exists = true;
     d.shape = f.shape;
     d.size = f.minSize + (f.maxSize - f.minSize) * sizeRoll;
+    d.sizeRoll = sizeRoll; d.depth = s.depth; // (#2071)
     const Vector3 up = Vector3Normalize(d.centre);
     if (d.shape == VeinShape::Sheet) { // a dike or vein plane: steep (within ~35 degrees of vertical) at a random strike
         const float a = 6.2831853f * OreVeins_Unit(h), tilt = 0.6f * (OreVeins_Unit(h) - 0.5f);

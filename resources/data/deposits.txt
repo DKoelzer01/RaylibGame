@@ -1,0 +1,17 @@
+# Ore deposits as drills see them (#2071, the underground plan #1465; the user confirmed these numbers on #2071).
+# A deposit is one 96 m vein cell (ore_families.txt places it). Its band is its centre's depth under the ground (the
+# depth table, #1952: shallow 25-250 m, middle 250-500 m, deep 500 m to the mantle; above 25 m counts as shallow); its size
+# class is its size roll (the lower third small, the middle medium, the top third large).
+#
+# pool <band> <small> <medium> <large> <grade>
+#   units of ore in a deposit of that size, and its grade: ore out per unit mined (1.25: every fourth unit gives two;
+#   paid as whole ore with a carried remainder). A deposit is finite: at 0 its drills stop ("Depleted").
+pool shallow 2000  5000   10000  1.0
+pool middle  10000 25000  50000  1.25
+pool deep    50000 150000 400000 1.5
+# rare <factor> <ore item...>: deposits whose main ore is one of these hold factor x the pool.
+# GUESS: which of today's ores count as rare (the confirmed rule is "rare ores a quarter of the size").
+rare 0.25 gold_ore wolframite_ore chromite_ore cinnabar_ore
+# drill <part> <reach m> <spacing m>: how far below its base a drill works a deposit, and how close two drill heads on one
+# deposit may stand (the newer one reads "Too close to another drill"). Rates are the drills' machine_recipes rows.
+drill miner 128 8

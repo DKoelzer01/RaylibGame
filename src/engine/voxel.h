@@ -247,7 +247,10 @@ public:
     static int OreKindCount();                  // (#1466) the kinds in ores.txt
     static const char* OreKindName(int kind);   // its item ("iron_ore", ...), from ores.txt; nullptr outside it
     int oreKind(Vector3 p, float depth) const;
-    int depositNear(Vector3 p, float reach) const; // the main ore kind of a deposit within `reach` m, or -1 (miners)
+    int depositNear(Vector3 p, float reach) const; // the main ore kind of a deposit within `reach` m, or -1
+    // (#2071) The deposit a drill at `base` works: the one nearest the base whose shape's envelope touches the line from
+    // the base `reach` m straight down. Its cell in cx/cy/cz (its id: Deposits_Id). False: none in reach (or the moon).
+    bool depositBelow(Vector3 base, float reach, VeinDeposit& out, int& cx, int& cy, int& cz) const;
     // The ore deposit whose cell holds p (#207: a vein mined out): its centre, the radius its shape fits in (a blob reaches
     // ~1.35x it with its lumpiness) and its family's main ore; false if the cell has none.
     bool depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const;
