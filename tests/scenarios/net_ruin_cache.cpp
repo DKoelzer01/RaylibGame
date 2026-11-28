@@ -14,6 +14,7 @@
 #include "net.h"
 #include "plots.h"
 #include "ruincache.h"
+#include "cacheopeners.h"
 #include "world.h"
 #include "worldtypes.h"
 #include <algorithm>
@@ -65,6 +66,7 @@ SCENARIO("net/ruin-cache") {
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-ruin-cache.sav", "--port", std::to_string(kPort) };
     s.timeout = 90.0;
+    s.realTime = true; // (#1972) joins over real sockets: headless, sim time runs far ahead of them
     s.step("bob and carol join; a sealed cache at bob's feet", 40.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
@@ -95,7 +97,11 @@ SCENARIO("net/ruin-cache") {
         S.cell = plot->cellAt(plot->toPlot(feet));
         const int i = plot->partAt(S.cell);
         if (i >= 0) plot->remove(i);
-        c.check("the vault placed on the host", plot->place({ PartType::RuinCache, S.cell, 0, (uint8_t)CacheKind::Vault }) >= 0);
+        // a crowbar opens it (#2171: a vault's default is a power lock, charged by the host's factory, net/cache-power)
+        const CacheOpener* crowbar = CacheOpener_Find("crowbar");
+        if (!c.check("a crowbar opener (cache_openers.txt)", crowbar != nullptr)) return true;
+        const uint8_t material = (uint8_t)((int)CacheKind::Vault | CacheOpenerBits(crowbar->index));
+        c.check("the vault placed on the host", plot->place({ PartType::RuinCache, S.cell, 0, material }) >= 0);
         for (const char* item : { "crowbar", "stone" }) {
             const int have = Host_ItemCount(S.bob.welcome.session, item);
             if (have > 0) Host_TestGive(S.bob.welcome.session, item, -have);

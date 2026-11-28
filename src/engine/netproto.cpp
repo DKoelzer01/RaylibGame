@@ -1246,7 +1246,9 @@ TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
     MsgMachineAction fireBack;
     EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
     EXPECT_EQ(fireBack.action, 10);
-    MsgMachineAction past = fire; past.action = 11;
+    MsgMachineAction last = fire; last.action = kNetMachineActionMax;
+    EXPECT_TRUE(RoundTrip(last, fireBack)) << "the largest machine action (#2150: a cache's open, 13) reaches the server";
+    MsgMachineAction past = fire; past.action = kNetMachineActionMax + 1;
     EXPECT_FALSE(RoundTrip(past, fireBack));
     MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
     MsgEditRequest qBack;
