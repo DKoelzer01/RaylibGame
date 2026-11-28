@@ -29,7 +29,7 @@ extern "C" {
 // queued work showed up as "swap+poll" - 2.5 ms that glFinish proved was draw work, not presenting.)
 namespace {
     constexpr unsigned int kTimeElapsed = 0x88BF, kResult = 0x8866, kResultAvailable = 0x8867;
-    constexpr int kFrames = 4, kMarks = 24;
+    constexpr int kFrames = 4, kMarks = 48; // room for the CPU marks too in fine mode (#2142)
     struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false, tailEnded = false; }; // tailEnded: the segment after the last mark was closed by the next frame (#180)
     Slot slots[kFrames];
     int cur = -1;
