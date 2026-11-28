@@ -45,4 +45,5 @@ item_in_hatch | tier 3
 item_out_hatch | tier 3
 lv_energy_hatch | tier 4
 large_tank_controller | tier 3
+coke_oven_battery_controller | tier 3
 wrench | tier 3

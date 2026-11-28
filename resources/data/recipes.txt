@@ -274,6 +274,7 @@ item_in_hatch 1      = bronze_casing 1, conveyor 2, mechanism 1
 item_out_hatch 1     = bronze_casing 1, conveyor 2, mechanism 1
 lv_energy_hatch 1    = steel_casing 1, cable 4, basic_circuit 1
 large_tank_controller 1 = bronze_casing 1, mechanism 1, glass 2
+coke_oven_battery_controller 1 = bronze_casing 1, coke_oven 1, mechanism 1
 wrench 1             = iron_plate 2, iron_rod 1
 # (#1614 PR 6) MV and HV assemblies, from the metals the ladder has at those tiers: invar (nickel from the LV ore line) and
 # copper at MV; aluminium wire at HV (stainless steel and chromium coils come with chromite, later). GUESS counts.

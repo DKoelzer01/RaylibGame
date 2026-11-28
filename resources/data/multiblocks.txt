@@ -41,3 +41,20 @@ multiblock large_tank | Large tank | tier 3
   layer ggg / g.g / ggg  *
   layer ccc / chc / ccc
 end
+
+# (#1429 PR 7) The first structure that runs recipes: four coke ovens' work in one 3x3x3 block of bronze casings (GUESS:
+# parallel 4, the shape and the controller's recipe; the user confirms). Coal in by an item input hatch, coke out of an
+# item output hatch; no fuel, as a coke oven.
+multiblock coke_oven_battery | Coke oven battery | tier 3
+  legend C controller:coke_oven_battery_controller
+  legend c casing:bronze_casing
+  legend h hatch:item_in,item_out casing:bronze_casing
+  legend . air
+  machine coke_oven
+  parallel 4
+  hatches item_in 1..2
+  hatches item_out 1..2
+  layer ccc / ccc / hCh
+  layer ccc / c.c / ccc
+  layer ccc / ccc / ccc
+end
