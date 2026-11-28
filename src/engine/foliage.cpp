@@ -206,7 +206,7 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
             // above stay as they were). Tall stands are dense clumps.
             uint32_t cs = Hash(state ^ 0x1995e7u);
             const int cls = SmallFloraSizeClass(grassShift, ValueNoise3(local, 0.04f), Unit(cs));
-            static const float kClassScale[4] = { 0.6f, 1.0f, 1.45f, 2.1f };
+            static const float kClassScale[4] = { 0.6f, 1.0f, 1.35f, 1.8f }; // the tallest ~1.4 m (GUESS)
             const int var = cls == 3 ? 2 : pick < 0.25f ? 0 : pick < 0.7f ? 1 : 2;
             const float scale = kClassScale[cls] * (var == 0 ? 0.22f + 0.35f * su * su   // mostly short, a few tall
                                                   : var == 1 ? 0.35f + 0.3f * su

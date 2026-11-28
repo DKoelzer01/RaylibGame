@@ -228,7 +228,8 @@ SmallFloraSizes SmallFloraSizesOf(int variant, Biome fallback) {
         case Biome::Taiga:    s = { -0.2f, 0.3f, -0.2f }; break;
         case Biome::Tundra:   s = { -0.7f, 0.3f, -0.7f }; break;
         case Biome::Alpine:   s = { -0.5f, 0.7f, -0.5f }; break;
-        default: break; // forest: the mid mix
+        case Biome::Forest:   s = { 0.0f, 0.0f, -0.3f }; break; // shade: shorter grass under the trees
+        default: break;
     }
     if (d) { s.bush += d->bushSize; s.stone += d->stoneSize; s.grass += d->grassSize; }
     return s;

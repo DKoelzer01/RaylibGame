@@ -65,6 +65,7 @@ variant meadow.chalk_downs
   name    Chalk downs
   tint    1.2 1.15 0.95   - - -
   weight  25
+  sizes   -0.3 0.3 -1.2  # grazed turf: short grass, low scrub
   flora   0.4 0.6 1.6 0.9
 
 variant swamp.reed_marsh

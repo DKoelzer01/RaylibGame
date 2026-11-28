@@ -645,7 +645,7 @@ void BushV2(VariantMesh& m, unsigned int seed, int kind, int cls) {
         // A dome: the lobes near the middle sit higher (a thicket's crown), the rim ones low.
         o.y += 0.35f * (b.size - 0.5f) * std::max(0.0f, 1.0f - 2.0f * sqrtf(o.x * o.x + o.z * o.z) / std::max(b.spread, 0.1f));
         if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = (0.1f + 0.15f * U(r)) * b.lift; }
-        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = (0.25f + 0.3f * (k % 4)) * b.lift; } // upright, not a pillar
+        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = (0.25f + 0.3f * (k % 3)) * std::min(b.lift, 1.15f); } // upright, not a pillar (big ones grow wider, not taller)
         Prism(m, Vector3Subtract(o, { 0, h * 0.45f, 0 }), Vector3Add(o, { 0, h * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
         tops.push_back(o);
     }
@@ -670,7 +670,7 @@ void Stones(VariantMesh& m, unsigned int seed, int cls) {
     };
     if (cls <= 0) {
         const int n = 3 + (int)(U(r) * 4.0f);
-        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.6f, 0.0f, (U(r) - 0.5f) * 0.6f }, 0.08f + 0.08f * U(r), 0.4f, 0.6f);
+        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.6f, 0.0f, (U(r) - 0.5f) * 0.6f }, 0.1f + 0.1f * U(r), 0.4f, 0.6f);
     } else if (cls == 1) {
         const int n = 2 + (int)(U(r) * 3.0f);
         for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f }, 0.22f + 0.28f * U(r), 0.45f, 1.2f);
@@ -1117,7 +1117,10 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (growth < 1.0f) out.regrowing = true;
                 scale *= growth;
             }
-            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
+            // Sink the base a little; (#1995 phase 3) stones by their size: 0.15 m buried pebbles whole, a boulder sits deeper.
+            static const float kStoneSink[kSmallFloraClasses] = { 0.02f, 0.08f, 0.15f, 0.25f };
+            const float sink = stone ? kStoneSink[SmallFloraClassOfVariant(v)] : 0.15f;
+            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, sink));
             // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
             const PlanetField::Climate cl = f.climateAt(dir, e);
             const float code = BiomeClimateCode(cl.temp, cl.moist, plantVariant); // from 2: below 1.5 means no climate (#254); the variant for its tint (#2032)
