@@ -632,6 +632,8 @@ std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> stalledByPlot; // (#12
 // (#1269) every rotation part of the plots near the player, as of the last tick (viewMutex): models, gauges, tooltips
 struct RotPub { int part = -1; int64_t milli = 0; Rotation::Status status = Rotation::Status::Stopped; Rotation::NetResult net; };
 std::map<std::pair<uint64_t, uint32_t>, std::vector<RotPub>> rotView;
+// (#2053) every belt item of the plots near the player, as of the last tick (viewMutex): drawing
+std::map<std::pair<uint64_t, uint32_t>, Factory::BeltPlotView> beltView;
 std::vector<Factory::MachineKey> watchMany;                        // (#332) a server's open machines (viewMutex)
 std::map<Factory::MachineKey, MachineView> watchManyViews;
 std::vector<Vector3> nearPoints;                                    // (#332) main thread: a server's players
@@ -2348,6 +2350,33 @@ void PublishRotation(bool reset) {
     }
 }
 
+// (#2053) Each near plot's belt items as of this tick (viewMutex held), for drawing; far plots and plots without belts
+// publish none. A few thousand items at most near the player: copied whole every tick.
+void PublishBelts(bool reset, long long tick) {
+    if (reset) beltView.clear();
+    for (const PlotSim& ps : plots) {
+        const std::pair<uint64_t, uint32_t> key{ ps.body, ps.plot };
+        if (!ps.nearPlayer || ps.belts.empty()) { beltView.erase(key); continue; }
+        Factory::BeltPlotView& v = beltView[key];
+        v.tick = tick;
+        v.lines.resize(ps.belts.size());
+        v.names.clear();
+        for (size_t i = 0; i < ps.belts.size(); ++i) {
+            const BeltLine& b = ps.belts[i];
+            Factory::BeltLineView& l = v.lines[i];
+            l.run = b.id; l.speed = b.speed; l.asleep = b.asleep; l.length = b.length;
+            l.pos = Belt_Positions(b);
+            l.items.clear();
+            for (const BeltItem& it : b.items) {
+                l.items.push_back(it.item);
+                bool known = false;
+                for (const auto& n : v.names) if (n.first == it.item) { known = true; break; }
+                if (!known) v.names.push_back({ it.item, tables.name(it.item) });
+            }
+        }
+    }
+}
+
 void SimLoop() {
     Log_SetThreadName("factory");
     using clk = std::chrono::steady_clock;
@@ -2536,6 +2565,7 @@ void SimLoop() {
                         else if (m.type == PartType::WaterPump || m.type == PartType::RotaryPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; } // (#1734) the rotary pump too
                     }
                 PublishRotation(reset || viewsRebuild); // (#1269)
+                PublishBelts(reset || viewsRebuild, t + 1); // (#2053)
                 // (#1207) Machines working and chest contents on the plots near the player (models, smoke, chest screens): each
                 // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
                 // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
@@ -3064,6 +3094,17 @@ void Factory::RotationSpeeds(uint64_t body, uint32_t plot, std::vector<std::pair
     auto it = rotView.find({ body, plot });
     if (it == rotView.end()) return;
     for (const RotPub& p : it->second) out.push_back({ p.part, (float)p.milli / 1000.0f });
+}
+bool Factory::BeltItems(uint64_t body, uint32_t plot, BeltPlotView& out) {
+    std::lock_guard<std::mutex> l(viewMutex);
+    auto it = beltView.find({ body, plot });
+    if (it == beltView.end()) { out = BeltPlotView{}; return false; }
+    out = it->second;
+    return true;
+}
+double Factory::TickClock() {
+    const long long done = tickCount.load(), started = ticksTaken.load();
+    return (double)(done + std::clamp(started - done, 0LL, 1LL) + std::max(0LL, tickCredit.load())) + creditAccum;
 }
 int Factory::TankRoom(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
