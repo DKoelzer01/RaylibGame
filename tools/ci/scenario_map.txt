@@ -16,7 +16,8 @@ DEFAULT | tag:world
 # Saves and joining.
 ^src/engine/(savemigrate|saveversion|joininfo)\.(h|cpp)$|^src/space/serverconsole\.(h|cpp)$ | SERVER,tag:world,tag:craft,tag:factory
 # Water and fluids. (Shaders live in resources/ and resources/compute/.)
-^src/engine/(fluid|fluidkernel|waterfield|watersurface|watercaves)[a-z_]*\.(h|cpp)$ | tag:fluid
+# (#2121) The fluid sim also names two slow scenarios: tools/ci/nightly_scenarios.txt leaves them out of tag:fluid.
+^src/engine/(fluid|fluidkernel|waterfield|watersurface|watercaves)[a-z_]*\.(h|cpp)$ | tag:fluid,fluid/flow,fluid/dam-break
 ^src/space/(watercaves|waterfalls|waterworks|weather)\.(h|cpp)$ | tag:fluid,tag:world
 ^resources/data/fluids|^resources/(compute/)?[a-z_]*(fluid|water)[a-z_]*\.(fs|vs|glsl|comp)$ | tag:fluid
 # The terrain and world generation: the ground everything stands on. (#1882) A terrain change also runs the 1-seed world

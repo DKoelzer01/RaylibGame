@@ -1,0 +1,37 @@
+# (#2121) Runner scenarios that only the full tier runs (the nightly, a push to develop, a tier=full dispatch). The batch and
+# affected tiers set RAYLIBGAME_SCENARIO_SKIP_FILE to this file, so a tag:X or all selection leaves these out; a scenario
+# named outright still runs (a changed scenario file, a scenario_map.txt line that names it, a dispatch's extra_scenarios).
+# Ruling: the user, 2026-11-28 (#2107 Q2). Wall times: runner run 46100233657 (all 117 scenarios), seconds.
+# Add a scenario over ~100 s here; take one out when it gets fast, or when it must guard every PR (then map it by name).
+# One list for staging and ladder: a name only one of them has (caves/islands, caves/cavern-view, ui/map-live,
+# fluid/u-bend-pressure[-cpu] are ladder's) is simply never selected on the other.
+
+# Over 100 s (22 scenarios, 4,121 s of the 6,718 s total)
+frames/still               # 608
+caves/islands              # 357
+fluid/flow                 # 346
+fluid/slope-drain          # 222
+frames/long-fall           # 202
+ui/map-live                # 185
+fluid/spring               # 178
+caves/cavern-view          # 176
+frames/net-correction      # 167
+fluid/u-bend-pressure-cpu  # 162
+build/tile-ledges-planet   # 158
+rocket/orbit-closure       # 147
+fluid/dam-break            # 145
+creatures/cave-spawn       # 145
+fluid/leak                 # 139
+caves/chamber-view         # 125
+audio/directions           # 119
+world/locate               # 112
+fluid/u-bend-pressure      # 112
+light/pit-sun              # 111
+factory/rotation-sources   # 104
+build/tile-walk-planet     # 101
+
+# Twins: a scenario again under one switch. The CPU fluid path also runs on every PR in the hosted null-GL shards.
+fluid/u-bend-cpu
+fluid/mass-ledger-cpu
+fluid/take-kind-cpu
+creatures/arena-thornback-old
