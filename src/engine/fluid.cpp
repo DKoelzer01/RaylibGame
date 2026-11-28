@@ -1762,6 +1762,61 @@ void GpuReadback() {
     }
 }
 
+// SCRATCH #2116: RAYLIBGAME_FLUID_TRACE_SUB=bi,bj,bk prints that brick's wet cells after every pass, on both paths.
+struct SubTraceCfg { bool on = false; int bi = 0, bj = 0, bk = 0; };
+const SubTraceCfg& SubTrace() {
+    static const SubTraceCfg c = [] { SubTraceCfg t; const char* e = getenv("RAYLIBGAME_FLUID_TRACE_SUB"); t.on = e && sscanf(e, "%d,%d,%d", &t.bi, &t.bj, &t.bk) == 3; return t; }();
+    return c;
+}
+Brick* SubTraceBrick() {
+    for (auto& s : sites) for (auto& kv : s->bricks) { Brick* b = kv.second.get(); if (b->bi == SubTrace().bi && b->bj == SubTrace().bj && b->bk == SubTrace().bk) return b; }
+    return nullptr;
+}
+float HalfToFloat(unsigned h) {
+    const unsigned e = (h >> 10) & 31u, m = h & 1023u; const float s = (h & 0x8000u) ? -1.0f : 1.0f;
+    if (e == 0) return s * ldexpf((float)m, -24);
+    if (e == 31) return s * INFINITY;
+    return s * ldexpf((float)(m | 1024u), (int)e - 25);
+}
+void SubTracePrint(const char* path, int k, int pass, const uint32_t* a, const uint32_t* b, const float* P, const float* N) {
+    std::string s;
+    for (int i = 0; i < B3; ++i) {
+        const bool fp = P && (P[i * 4] || P[i * 4 + 1] || P[i * 4 + 2] || P[i * 4 + 3]);
+        const bool fn = N && (N[i * 8] || N[i * 8 + 1] || N[i * 8 + 2] || N[i * 8 + 3]);
+        if (!(a[i] & 255u) && !(b[i] & 255u) && !fp && !fn) continue;
+        s += TextFormat(" %d:%u/%u", i, a[i] & 255u, b[i] & 255u);
+        if (fp) s += TextFormat(" P%.9g,%.9g,%.9g,%.9g", P[i * 4], P[i * 4 + 1], P[i * 4 + 2], P[i * 4 + 3]);
+        if (fn) s += TextFormat(" N%.9g,%.9g,%.9g,%.9g|%.9g,%.9g,%.9g,%.9g", N[i * 8], N[i * 8 + 1], N[i * 8 + 2], N[i * 8 + 3], N[i * 8 + 4], N[i * 8 + 5], N[i * 8 + 6], N[i * 8 + 7]);
+    }
+    printf("fluid sub %s %lld k%d p%d:%s\n", path, stepCount, k, pass, s.c_str());
+}
+void SubTraceGpu(int k, int pass) {
+    if (!SubTrace().on) return;
+    Brick* br = SubTraceBrick();
+    if (!br || br->slot < 0) return;
+    Compute_Barrier();
+    static std::vector<uint32_t> a(kCellsPerBrick), b(kCellsPerBrick), pr(kCellsPerBrick * 2), nr(kCellsPerBrick * 4);
+    static std::vector<float> P(kCellsPerBrick * 4), N(kCellsPerBrick * 8);
+    G.a.download(a.data(), kCellsPerBrick * 4, br->slot * kCellsPerBrick * 4);
+    G.b.download(b.data(), kCellsPerBrick * 4, br->slot * kCellsPerBrick * 4);
+    G.faceP.download(pr.data(), kCellsPerBrick * kFacePBytes, br->slot * kCellsPerBrick * kFacePBytes);
+    G.faceN.download(nr.data(), kCellsPerBrick * kFaceNBytes, br->slot * kCellsPerBrick * kFaceNBytes);
+    for (unsigned i = 0; i < kCellsPerBrick; ++i) {
+        for (int c = 0; c < 2; ++c) { P[i * 4 + c * 2] = HalfToFloat(pr[i * 2 + c] & 0xFFFFu); P[i * 4 + c * 2 + 1] = HalfToFloat(pr[i * 2 + c] >> 16); }
+        for (int c = 0; c < 2; ++c) { N[i * 8 + c * 2] = HalfToFloat(nr[i * 4 + c] & 0xFFFFu); N[i * 8 + c * 2 + 1] = HalfToFloat(nr[i * 4 + c] >> 16); }
+        for (int c = 0; c < 2; ++c) { N[i * 8 + 4 + c * 2] = (float)(int16_t)(nr[i * 4 + 2 + c] & 0xFFFFu); N[i * 8 + 4 + c * 2 + 1] = (float)(int16_t)(nr[i * 4 + 2 + c] >> 16); }
+    }
+    SubTracePrint("gpu", k, pass, a.data(), b.data(), P.data(), N.data());
+}
+int subTraceK = 0;
+void SubTraceCpu(const FluidKernel::Grid& g, int pass) {
+    Brick* br = SubTraceBrick();
+    if (!br || br->cpuSlot < 0) return;
+    const size_t o = (size_t)br->cpuSlot * B3;
+    SubTracePrint("cpu", subTraceK, pass, &g.a[o], &g.b[o], &g.faceP[o].x, &g.faceN[o * 2].x);
+    if (pass == 2) ++subTraceK;
+}
+
 void GpuTick(int n) {
     ++diagDispatches;
     G.sinkOn = false;
@@ -1951,13 +2006,13 @@ void GpuTick(int n) {
             G.step.use();
             G.step.setInt("maskCur", G.maskCur);
         }
-        G.a.bind(0); G.b.bind(1); pass(0);
-        G.b.bind(0); G.a.bind(1); pass(1);
+        G.a.bind(0); G.b.bind(1); pass(0); SubTraceGpu(k, 0);
+        G.b.bind(0); G.a.bind(1); pass(1); SubTraceGpu(k, 1);
         if (G.colOn) pass(3); // the column pairs' scaled move (#680)
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
         G.step.setInt("evaporate", !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0 ? 1 : 0);
-        pass(2);
+        pass(2); SubTraceGpu(k, 2);
     }
     G.lastList = list;
     G.lastN = n;
@@ -2096,6 +2151,8 @@ void CpuTick(int n) {
     static const bool fullFirst = EnvFlag("FLUID_CPU_FULLFIRST");
     if (fullFirst) g.groupsFull = true;
     else FluidKernel::BeginTick(g, list, S);
+    subTraceK = 0;
+    FluidKernel::PassHook = SubTrace().on ? SubTraceCpu : nullptr;
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);

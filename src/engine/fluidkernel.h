@@ -90,6 +90,7 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list);
 // other bricks (face records of the processed slots, every slot's column deltas) and seeds the dry-cell skip's masks
 // from the cells, so the first substep skips dry groups like the rest. Runs the slots on the job system.
 void BeginTick(Grid& g, const std::vector<int>& list, int slots);
+extern void (*PassHook)(const Grid& g, int pass); // SCRATCH #2116: called after each pass
 
 } // namespace FluidKernel
 

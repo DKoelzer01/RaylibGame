@@ -853,11 +853,12 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
         }
     }
     static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
-    RunPass(g, p, list, 0);
-    RunPass(g, p, list, 1);
+    RunPass(g, p, list, 0); if (PassHook) PassHook(g, 0);
+    RunPass(g, p, list, 1); if (PassHook) PassHook(g, 1);
     if (p.columns && !quarter) RunPass(g, p, list, 3); // the column pairs' scaled move (#680)
-    RunPass(g, p, list, 2);
+    RunPass(g, p, list, 2); if (PassHook) PassHook(g, 2);
 }
+void (*PassHook)(const Grid& g, int pass) = nullptr; // SCRATCH #2116
 
 float HalfRound(float f) { return H(f); } // tests (#968): the half rounding the shader's packHalf2x16 must match
 
