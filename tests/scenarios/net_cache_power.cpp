@@ -68,6 +68,7 @@ SCENARIO("net/cache-power") {
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-cache-power.sav", "--port", std::to_string(kPort) };
     s.timeout = 120.0;
+    s.realTime = true; // (#1972) the join goes over real sockets: headless, sim time runs far ahead of them
     s.step("bob joins; a sealed small cache at his feet, a generator burning coal beside it", 40.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
