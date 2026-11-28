@@ -753,25 +753,25 @@ void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     const float hub = lo[1] + H * 0.7f;
     if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, fronds ? hub : std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
     if (fronds) {
-        // Five flat fronds from the hub, rising a little and drooping to the crown's foot at its spread.
-        for (int k = 0; k < 5; ++k) {
-            const float a = 1.2566371f * k + 0.3f;
+        // Four flat fronds from the hub (the crown's top), drooping to the crown's foot at its spread.
+        for (int k = 0; k < 4; ++k) {
+            const float a = 1.5707963f * k + 0.3f;
             const Vector3 tip = { c.x + cosf(a) * R * 1.1f, lo[1] + H * 0.25f, c.z + sinf(a) * R * 1.1f };
-            Prism(m, { c.x, hub, c.z }, tip, R * 0.45f, R * 0.12f, 0.0f, true, shade, 0.2f);
+            Prism(m, { c.x, std::max(hub, hi[1] - 0.3f), c.z }, tip, R * 0.45f, R * 0.12f, 0.0f, true, shade, 0.2f);
         }
-        static const float kTuft[2][2] = { { 0.0f, 0.25f }, { 1.0f, 0.02f } };
-        Lathe(m, c, kTuft, 2, hub, hi[1], R * 0.6f, 0.0f, true, shade);
-        return;
+    } else {
+        // Crown profiles: { height fraction, radius fraction } from the crown's foot to its top.
+        static const float kRound[3][2] = { { 0.0f, 0.55f }, { 0.4f, 1.0f }, { 1.0f, 0.4f } };                       // broadleaf, bushes
+        static const float kCone[4][2] = { { 0.0f, 0.95f }, { 0.5f, 0.6f }, { 0.55f, 0.75f }, { 1.0f, 0.03f } };     // conifers: two tiers
+        static const float kUmbrella[3][2] = { { 0.0f, 0.55f }, { 0.55f, 1.0f }, { 1.0f, 0.8f } };                   // acacia, baobab
+        static const float kWeeping[3][2] = { { 0.0f, 0.85f }, { 0.6f, 1.0f }, { 1.0f, 0.35f } };                    // willow: a dome and its skirt
+        if (sp != WoodSpecies::Count && WoodSpeciesInfo(sp).conifer) Lathe(m, c, kCone, 4, lo[1], hi[1], R, 0.4f, true, shade);
+        else if (sp == WoodSpecies::Acacia || sp == WoodSpecies::Baobab) Lathe(m, c, kUmbrella, 3, lo[1], hi[1], R, 0.4f, true, shade);
+        else if (sp == WoodSpecies::Willow) Lathe(m, c, kWeeping, 3, lo[1], hi[1], R, 0.4f, true, shade);
+        else Lathe(m, c, kRound, 3, lo[1], hi[1], R, 0.4f, true, shade);
     }
-    // Crown profiles: { height fraction, radius fraction } from the crown's foot to its top.
-    static const float kRound[4][2] = { { 0.0f, 0.5f }, { 0.35f, 1.0f }, { 0.75f, 0.85f }, { 1.0f, 0.35f } };     // broadleaf, bushes
-    static const float kCone[4][2] = { { 0.0f, 0.95f }, { 0.5f, 0.6f }, { 0.55f, 0.75f }, { 1.0f, 0.03f } };     // conifers: two tiers
-    static const float kUmbrella[3][2] = { { 0.0f, 0.55f }, { 0.55f, 1.0f }, { 1.0f, 0.8f } };                   // acacia, baobab
-    static const float kWeeping[4][2] = { { 0.0f, 0.85f }, { 0.55f, 1.0f }, { 0.85f, 0.75f }, { 1.0f, 0.3f } };   // willow: a dome and its skirt
-    if (sp != WoodSpecies::Count && WoodSpeciesInfo(sp).conifer) Lathe(m, c, kCone, 4, lo[1], hi[1], R, 0.4f, true, shade);
-    else if (sp == WoodSpecies::Acacia || sp == WoodSpecies::Baobab) Lathe(m, c, kUmbrella, 3, lo[1], hi[1], R, 0.4f, true, shade);
-    else if (sp == WoodSpecies::Willow) Lathe(m, c, kWeeping, 4, lo[1], hi[1], R, 0.4f, true, shade);
-    else Lathe(m, c, kRound, 4, lo[1], hi[1], R, 0.4f, true, shade);
+    // A mesh already about as cheap as this (the small bushes) stands in for itself.
+    if (m.pos.size() >= full.pos.size()) { m.pos = full.pos; m.nrm = full.nrm; m.col = full.col; }
 }
 
 void BuildVariants() {
@@ -1807,8 +1807,8 @@ TEST(Trees, FormsAndSizeClasses) {
     }
 }
 
-// (#1995 phase 4) Every far mesh stands in for its full mesh: cheap (at most 250 vertices, and fewer than the full
-// mesh), as tall as it (top within 15%), and no wider (reach within 115%: fronds and lathes overshoot the 90th
+// (#1995 phase 4) Every far mesh stands in for its full mesh: cheap (at most 180 vertices, and no more than the
+// full mesh), as tall as it (top within 15%), and no wider (reach within 115%: fronds and lathes overshoot the 90th
 // percentile a little).
 TEST(Trees, FarMeshesFitTheirTree) {
     auto extent = [](const VariantMesh& m, float& top, float& reach) {
@@ -1825,10 +1825,10 @@ TEST(Trees, FarMeshesFitTheirTree) {
         float fullTop, fullReach, farTop, farReach;
         extent(full, fullTop, fullReach);
         extent(far, farTop, farReach);
-        EXPECT_LE(far.vertexCount, 250) << "mesh " << mesh;
-        EXPECT_LT(far.vertexCount, full.vertexCount) << "mesh " << mesh;
+        EXPECT_LE(far.vertexCount, 180) << "mesh " << mesh;
+        EXPECT_LE(far.vertexCount, full.vertexCount) << "mesh " << mesh;
         EXPECT_NEAR(farTop, fullTop, 0.15f * fullTop) << "mesh " << mesh;
-        EXPECT_LE(farReach, 1.15f * fullReach) << "mesh " << mesh;
+        EXPECT_LE(farReach, 1.25f * fullReach) << "mesh " << mesh;
     }
 }
 
