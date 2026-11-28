@@ -346,7 +346,8 @@ ScenarioRegistrar::ScenarioRegistrar(const char* name, const char* file, Scenari
 
 bool Scenario_Active() { return R.active; }
 
-// (#2130) A scenario that looks at the screen: it must draw even in a no-render tier.
+// (#2130) A scenario that looks at the screen: it must draw even in a no-render tier. visual/ and light/ judge pictures;
+// perf/ measures frame and pass times, and the draw is most of what they time.
 static bool NeedsPictures(const ScenarioDef& d) {
     if (d.needsRender || d.legacyDrives || d.hasTag("visual")) return true;
     for (const char* area : { "visual/", "light/", "perf/" }) if (d.name.rfind(area, 0) == 0) return true;

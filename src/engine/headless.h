@@ -20,7 +20,6 @@ inline bool Headless() { return gHeadless; }
 // shadow cascades, the main pass (with the Hi-Z pyramid and onDraw3D), the viewmodel and the HUD are left out. Set by
 // RAYLIBGAME_NO_RENDER=1 (the scenario harness sets it for scenarios that take no shot and keep no recording).
 inline bool gNoRender = false;
-inline long long gNoRenderSkippedDraws = 0;
 inline bool NoRender() { return gNoRender; }
 
 #endif

@@ -550,7 +550,7 @@ void Scene::drawScene(int gamestate) {
     }
 
     // (#2130) No-render: the camera and the sun's light are this frame's (game code reads them); the passes are skipped.
-    if (NoRender()) { ++gNoRenderSkippedDraws; return; }
+    if (NoRender()) return;
 
     // --- Shadow pass ---
     // Read the light's matrices back from rlgl inside BeginMode3D so the shader's light matrix is
