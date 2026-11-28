@@ -368,6 +368,7 @@ item_out_hatch   | Item output hatch | 64 | 150,120,100 | A casing with a small 
 lv_energy_hatch  | LV energy hatch  | 64  | 190,170, 90 | Takes LV power from cables into a formed multiblock; several structures may share one.
 large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
 coke_oven_battery_controller | Coke oven battery controller | 64 | 110, 70, 55 | The brain of a coke oven battery: it bakes four loads of coal at once in a block of casings.
+large_macerator_controller | Large macerator controller | 64 | 95, 125, 160 | The brain of a large macerator: four macerators' work at once in a steel crusher, fed from the hopper on top, powered through an energy hatch.
 wrench           | Wrench           | tool | 150,150,160 | Hold it and right-click a multiblock controller to form the structure around it.
 # (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)
 mv_motor         | MV motor         | 64  | 140,150,150 | An MV motor: invar rods, a heavy copper winding. MV machines that move have one or two.
