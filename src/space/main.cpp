@@ -71,6 +71,7 @@
 #include "fishing.h"
 #include "trapping.h"
 #include "dungeontraps.h"
+#include "cavegas.h"
 #include "playerrecord.h"
 #include "commandline.h"
 #include "locate.h"
@@ -323,6 +324,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Fishing_Reset();
         Trapping_Reset();
         DungeonTraps_Reset();
+        CaveGas_Reset();
         Combat_Reset();
         Blueprint_ResetGhosts(); // (#1018)
         Claims_Reset(); // (#343)
@@ -10642,6 +10644,7 @@ int main(int argc, char** argv)
                 else GameUI_Toast(TextFormat("%s uses food, a consumable, a bucket or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
+            if (!loading) CaveGas_Update(world); // cave gas pockets (#1472)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
             if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
             // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
@@ -14033,6 +14036,7 @@ int main(int argc, char** argv)
                 Machine_DrawHUD();
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
+                CaveGas_DrawHUD(world);
                 Weather_DrawHUD();
                 if (Audio_V2()) Subtitles_Draw(GameUI_HudScale()); // (#1244) sound captions and edge arcs
                 Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1

@@ -22,6 +22,7 @@ struct SuitStats {
     float cold = 1.0f;                   // share of the cold's extra hunger felt (insulation 0.4, regulator 0)
     bool heatProof = false;              // thermal regulator: no heat damage
     bool grip = false, scanner = false, servo = false;
+    bool gasSensor = false;              // (#1472) cave gas warnings from 15 m, with a direction
     bool hover = false;                  // flight pack (#163): hover mode (H)
     bool powered = false;                // a battery pack fitted: suit power at all (#217: the basic suit has none)
     bool jetpack = false;                // a thruster pack fitted: a jetpack at all (#217: flight comes at MV)
