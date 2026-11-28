@@ -4,6 +4,7 @@
 #include "gpumem.h"
 #include "jobsystem.h"
 #include "profiler.h"
+#include "scenetarget.h"
 #include "worldtypes.h"
 #include "world.h"
 
@@ -1443,6 +1444,7 @@ namespace {
     ComputeProgram gTreeCull;
     int gTreeCullState = 0; // 0 untried, 1 ok, -1 unavailable
     GLint gTcN = -1, gTcCmd = -1, gTcModel = -1, gTcRadius = -1, gTcPlanes = -1;
+    GLint gTcHizOn = -1, gTcHizTex = -1, gTcHizSize = -1, gTcHizLevels = -1, gTcPrevVP = -1, gTcPrevModel = -1, gTcCam = -1, gTcHizNear = -1; // (#2141)
     bool TreeCullReady() {
         if (gTreeCullState == 0) {
             const char* e = getenv("RAYLIBGAME_TREE_CULL");
@@ -1451,10 +1453,25 @@ namespace {
                 const GLuint p = gTreeCull.id;
                 gTcN = glGetUniformLocation(p, "n"); gTcCmd = glGetUniformLocation(p, "cmdIndex"); gTcModel = glGetUniformLocation(p, "model");
                 gTcRadius = glGetUniformLocation(p, "radius"); gTcPlanes = glGetUniformLocation(p, "planes");
+                gTcHizOn = glGetUniformLocation(p, "hizOn"); gTcHizTex = glGetUniformLocation(p, "hizTex");
+                gTcHizSize = glGetUniformLocation(p, "hizSize"); gTcHizLevels = glGetUniformLocation(p, "hizLevels");
+                gTcPrevVP = glGetUniformLocation(p, "prevViewProj"); gTcPrevModel = glGetUniformLocation(p, "prevModel");
+                gTcCam = glGetUniformLocation(p, "camPos"); gTcHizNear = glGetUniformLocation(p, "hizNear");
             }
         }
         return gTreeCullState == 1;
     }
+}
+
+int TreeSystem::visibleInstances() const {
+    if (!cmdBuf) return -1;
+    GLuint cmds[2 * kTreeMeshes][4];
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
+    glGetBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(cmds), cmds);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    int n = 0;
+    for (int slot = 0; slot < 2 * kTreeMeshes; ++slot) if (count[0][slot]) n += (int)cmds[slot][1];
+    return n;
 }
 
 void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyLod, int set) {
@@ -1482,6 +1499,34 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
         glUseProgram(gTreeCull.id);
         glUniformMatrix4fv(gTcModel, 1, GL_FALSE, MatrixToFloat(model));
         glUniform4fv(gTcPlanes, 6, (const float*)ctx.frustum->planes);
+        // (#2141) Occlusion against last frame's Hi-Z pyramid (the terrain's, #134), with the placement these instances had
+        // in that frame: the model then, moved by how far the anchor has moved since (a batch upload re-anchors them).
+        // RAYLIBGAME_TREE_HIZ=0: off (A/Bs).
+        static const bool hizAllowed = !(getenv("RAYLIBGAME_TREE_HIZ") && !EnvFlag("RAYLIBGAME_TREE_HIZ"));
+        unsigned hizTex = 0; int hizW = 0, hizH = 0, hizLevels = 0; Matrix hizVP{};
+        const bool hiz = hizAllowed && hizFrame >= 0 && SceneTarget_HiZFrame() == hizFrame && SceneTarget_HiZ(hizTex, hizW, hizH, hizLevels, hizVP);
+        glUniform1i(gTcHizOn, hiz ? 1 : 0);
+        constexpr int kHizUnit = 31; // its own unit: 7 (the terrain cull's) holds the near shadow cascade the tree draw samples
+        if (hiz) {
+            Matrix prev = hizModel;
+            const Vector3 d = (anchor - hizAnchor).toFloat();
+            prev.m12 += prev.m0 * d.x + prev.m4 * d.y + prev.m8 * d.z;
+            prev.m13 += prev.m1 * d.x + prev.m5 * d.y + prev.m9 * d.z;
+            prev.m14 += prev.m2 * d.x + prev.m6 * d.y + prev.m10 * d.z;
+            glActiveTexture(GL_TEXTURE0 + kHizUnit);
+            glBindTexture(GL_TEXTURE_2D, hizTex);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(gTcHizTex, kHizUnit);
+            glUniform2f(gTcHizSize, (float)hizW, (float)hizH);
+            glUniform1i(gTcHizLevels, hizLevels);
+            glUniformMatrix4fv(gTcPrevVP, 1, GL_FALSE, MatrixToFloat(hizVP));
+            glUniformMatrix4fv(gTcPrevModel, 1, GL_FALSE, MatrixToFloat(prev));
+            glUniform3f(gTcCam, ctx.cameraPos.x, ctx.cameraPos.y, ctx.cameraPos.z);
+            // As the terrain's (#910): last frame's depth was seen from another eye; near trees move most across the screen.
+            static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f;
+            glUniform1f(gTcHizNear, hizNear);
+        }
+        if (hizFrame != SceneTarget_Frame()) { hizModel = model; hizAnchor = anchor; hizFrame = SceneTarget_Frame(); }
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, cmdBuf);
         for (int slot = 0; slot < kCmds; ++slot) {
             const int mesh = slot % kTreeMeshes, lod = slot / kTreeMeshes;
@@ -1497,6 +1542,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+        if (hiz) { glActiveTexture(GL_TEXTURE0 + kHizUnit); glBindTexture(GL_TEXTURE_2D, 0); glActiveTexture(GL_TEXTURE0); }
         glUseProgram(ctx.treeShader->id);
     }
     for (int slot = 0; slot < 2 * kTreeMeshes; ++slot) {

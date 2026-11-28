@@ -190,7 +190,11 @@ SCENARIO("perf/forest-view") {
         f.timing.frame();
         c.waitingFor("the timed window");
         if (c.t <= 20.0) return false;
-        if (c.body->trees) c.metric("tree instances drawn", (double)c.body->trees->instanceCount(), "");
+        if (c.body->trees) {
+            c.metric("tree instances drawn", (double)c.body->trees->instanceCount(), "");
+            c.metric("tree instances visible (after the GPU cull)", (double)c.body->trees->visibleInstances(), "");
+        }
+        c.metric("gpu:trees", std::max(0.0, Profiler_ZoneMeanMs("gpu:trees")), "ms");
         f.timing.report(c);
         c.shot("forest view", 100.0); // after the timed window: what was measured, to judge the far trees by eye
         return true;
@@ -263,4 +267,141 @@ SCENARIO("perf/horizon-view") {
             return true;
         });
     }
+}
+
+// (#2141) A view where a hill hides a forest: a ridge crest near FindForestView's patch with the most trees 300-1500 m
+// behind it (the ground falling away there), the eye 150 m in front of the crest and 6 m below its line, looking over it
+// at the forest. 10 s timed: gpu:trees and the instances the GPU cull keeps, the Hi-Z occlusion's saving
+// (RAYLIBGAME_TREE_HIZ=0 for the A/B). Crests are often cliff faces: the view need not be pretty, only hide the forest.
+SCENARIO("perf/hill-view") {
+    s.tags = { "perf", "planet", "foliage" };
+    s.world = ScenarioWorld::Planet;
+    s.args = { "--day", "--no-hud" };
+    s.env = { { "RAYLIBGAME_WEATHER_FORCE", "0" } };
+    s.timeout = 240.0;
+    s.record = false;
+    struct V { Vector3 up{}, ax{}, eye{}, at{}; float hit = 0.0f; Timing timing; };
+    static V v;
+    s.step("find a hidden forest", 60.0, [](ScenarioCtx& c) {
+        c.waitingFor("an idle world");
+        if (c.T < 2.0 || !WorldIdle()) return false;
+        ForestView fv;
+        FindForestView(c, fv);
+        const float R = c.field->radius;
+        // The ground by density (cliffs and tors are not in the elevation field), down from 300 m over the elevation.
+        auto groundAt = [&](Vector3 dir) {
+            const float g = R + std::max(0.0f, c.field->elevation(dir));
+            for (float y = g + 300.0f; y > g - 100.0f; y -= 1.0f)
+                if (c.field->density(Vector3Scale(dir, y), nullptr) >= ISO_LEVEL) return y;
+            return g;
+        };
+        const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(fv.up, fabsf(fv.up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(fv.up, e1);
+        float best = 0.0f;
+        for (int i = -4; i <= 4; ++i)
+            for (int j = -4; j <= 4; ++j) { // crest candidates on a 400 m grid round the patch
+                const Vector3 crest = Vector3Normalize(Vector3Add(fv.up, Vector3Scale(Vector3Add(Vector3Scale(e1, (float)i), Vector3Scale(e2, (float)j)), 400.0f / R)));
+                if (c.field->elevation(crest) < 3.0f) continue;
+                const float top = R + c.field->elevation(crest);
+                const Vector3 f1 = Vector3Normalize(Vector3CrossProduct(crest, fabsf(crest.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), f2 = Vector3CrossProduct(crest, f1);
+                for (int d = 0; d < 16; ++d) {
+                    const float a = d * 0.3926991f;
+                    const Vector3 ax = Vector3Add(Vector3Scale(f1, cosf(a)), Vector3Scale(f2, sinf(a)));
+                    auto dirAt = [&](float m) { return Vector3Normalize(Vector3Add(crest, Vector3Scale(ax, m / R))); };
+                    auto elev = [&](float m) { return R + c.field->elevation(dirAt(m)); };
+                    if (elev(-150.0f) > top - 4.0f) continue; // the eye's side lies below the crest
+                    bool falls = true;                          // and the far side falls away: hidden from the eye
+                    for (float m = 150.0f; m <= 450.0f && falls; m += 100.0f) falls = elev(m) < top - 8.0f;
+                    if (!falls) continue;
+                    int trees = 0;
+                    for (float m : { 300.0f, 500.0f, 800.0f, 1100.0f, 1400.0f }) {
+                        int t = 0, b = 0, sn = 0;
+                        Trees_CountScatter(*c.field, c.field->foliageSeed, dirAt(m), 96.0f, t, b, sn);
+                        trees += t;
+                    }
+                    if ((float)trees <= best) continue;
+                    // The eye 150 m before the crest, 6 m under its line, in the open (by density) and its sight line to
+                    // the crest clear of rock.
+                    const Vector3 eyeDir = dirAt(-150.0f);
+                    const float crestTop = groundAt(crest);
+                    const Vector3 eye = Vector3Scale(eyeDir, std::max(crestTop - 6.0f, groundAt(eyeDir) + 2.0f));
+                    const Vector3 toCrest = Vector3Subtract(Vector3Scale(crest, crestTop - 2.0f), eye);
+                    bool open = true;
+                    for (float k = 0.0f; k <= 0.9f && open; k += 0.03f) open = c.field->density(Vector3Add(eye, Vector3Scale(toCrest, k)), nullptr) < ISO_LEVEL;
+                    if (!open) continue;
+                    // The view's centre line (to the forest) meets rock at the crest, not a wall close by.
+                    const Vector3 at = Vector3Scale(dirAt(800.0f), R + c.field->elevation(dirAt(800.0f)) + 10.0f);
+                    const Vector3 look = Vector3Normalize(Vector3Subtract(at, eye));
+                    float hit = 0.0f;
+                    while (hit < 400.0f && c.field->density(Vector3Add(eye, Vector3Scale(look, hit)), nullptr) < ISO_LEVEL) hit += 2.0f;
+                    if (hit < 120.0f) continue;
+                    best = (float)trees; v.up = eyeDir; v.ax = ax; v.eye = eye; v.at = at;
+                    v.hit = hit;
+                }
+            }
+        if (best <= 0.0f) { c.note("no ridge hides a forest near the patch: the forest view's eye at 2 m"); v.up = fv.up; v.ax = fv.ax; v.eye = Vector3Scale(fv.up, fv.ground + 2.0f); v.at = Vector3Add(v.eye, Vector3Scale(fv.ax, 1000.0f)); }
+        c.note(TextFormat("hill view: %.0f trees generated behind the crest, the view meets rock at %.0f m", best, v.hit));
+        c.camera(v.eye, v.at, v.up);
+        c.gt("trees behind the crest", best, 20.0);
+        return true;
+    });
+    s.step("warm", 60.0, [](ScenarioCtx& c) {
+        c.camera(v.eye, v.at, v.up);
+        c.waitingFor("streaming to settle");
+        return c.t > 5.0 && (WorldIdle() || c.t > 45.0);
+    });
+    s.step("measure", 15.0, [](ScenarioCtx& c) {
+        if (c.t < 0.02) Profiler_Reset();
+        c.camera(v.eye, v.at, v.up);
+        v.timing.frame();
+        c.waitingFor("the timed window");
+        if (c.t <= 10.0) return false;
+        if (c.body->trees) {
+            c.metric("tree instances drawn", (double)c.body->trees->instanceCount(), "");
+            c.metric("tree instances visible (after the GPU cull)", (double)c.body->trees->visibleInstances(), "");
+        }
+        c.metric("gpu:trees", std::max(0.0, Profiler_ZoneMeanMs("gpu:trees")), "ms");
+        v.timing.report(c);
+        c.shot("hill view", 100.0);
+        return true;
+    });
+}
+
+// (#2141) Hill edges sweeping across trees, recorded: from the forest view's eye (70 m over the patch, where the terrain
+// hides about half the forest's trees) the camera sinks to 12 m in 6 s, looking at the same point 1.5 km out, so ridge
+// lines climb across the forest behind them. Run it with RAYLIBGAME_TREE_HIZ=0 and =1 (--record-compare): the pyramid is
+// a frame old, so a tree must not pop in or out at an edge. The recording starts at the sink (--record-on-cue): runs line
+// up frame by frame.
+SCENARIO("visual/hill-edge-trees") {
+    s.tags = { "visual", "planet", "foliage" };
+    s.world = ScenarioWorld::Planet;
+    s.args = { "--day", "--no-hud", "--record-on-cue", "--record-every", "1" };
+    s.env = { { "RAYLIBGAME_WEATHER_FORCE", "0" } };
+    s.timeout = 180.0;
+    struct E { Vector3 up{}, at{}; float ground = 0.0f; };
+    static E e;
+    auto eyeAt = [](float h) { return Vector3Scale(e.up, e.ground + h); };
+    s.step("find a forest", 60.0, [eyeAt](ScenarioCtx& c) {
+        c.waitingFor("an idle world");
+        if (c.T < 2.0 || !WorldIdle()) return false;
+        ForestView fv;
+        FindForestView(c, fv);
+        e.up = fv.up;
+        e.ground = fv.ground;
+        e.at = Vector3Add(Vector3Scale(fv.up, fv.ground), Vector3Scale(fv.ax, 1500.0f));
+        c.camera(eyeAt(70.0f), e.at, e.up);
+        return true;
+    });
+    s.step("warm", 60.0, [eyeAt](ScenarioCtx& c) {
+        c.camera(eyeAt(70.0f), e.at, e.up);
+        c.waitingFor("streaming to settle");
+        return c.t > 5.0 && (WorldIdle() || c.t > 45.0);
+    });
+    s.step("sink", 8.0, [eyeAt](ScenarioCtx& c) {
+        if (c.t < 0.02) c.cue();
+        c.camera(eyeAt(70.0f - 58.0f * (float)std::min(c.t / 6.0, 1.0)), e.at, e.up);
+        c.waitingFor("the sink");
+        if (c.t <= 6.0) return false;
+        c.keepCapture("hill edges sweeping across the forest: trees must not pop in or out (#2141)");
+        return true;
+    });
 }
