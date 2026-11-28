@@ -71,6 +71,7 @@ SCENARIO("net/team-store") {
     s.args = { "--host", "saves/scenario-net-team-store.sav", "--port", std::to_string(kPort) };
     s.env = { { "RAYLIBGAME_HOST_TEAM", "bob,dave" } };
     s.timeout = 120.0;
+    s.realTime = true; // (#1972) joins over real sockets
     s.step("bob and carol join, each in a team of one", 40.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
@@ -85,12 +86,12 @@ SCENARIO("net/team-store") {
             const std::string addr = TextFormat("127.0.0.1:%d", kPort);
             NetClient_Connect(S.bob, addr.c_str(), "bob");
             NetClient_Connect(S.carol, addr.c_str(), "carol");
-            S.t0 = c.t;
+            S.t0 = c.clock;
         }
         UpdateAll();
         c.waitingFor(TextFormat("bob %s, carol %s", NetClient_StateName(S.bob.state), NetClient_StateName(S.carol.state)));
         if (!(Joined(S.bob) && Joined(S.carol) && S.bob.teamStores > 0 && S.carol.teamStores > 0)) {
-            if (c.t - S.t0 > 30.0) c.fail("bob and carol not both joined with a team store after 30 s");
+            if (c.clock - S.t0 > 30.0) c.fail("bob and carol not both joined with a team store after 30 s");
             return false;
         }
         S.bobTeam = Teams_Of(PlayerId_FromName("bob"));
@@ -123,7 +124,7 @@ SCENARIO("net/team-store") {
         c.check("bob's research queue change is sent", NetClient_SendResearchQueue(S.bob, (uint8_t)ResearchQueueOp::Add, "steelmaking"));
         c.check("carol's is sent", NetClient_SendResearchQueue(S.carol, (uint8_t)ResearchQueueOp::Add, "aluminium"));
         NetClient_Connect(S.dave, TextFormat("127.0.0.1:%d", kPort), "dave");
-        S.t0 = c.t;
+        S.t0 = c.clock;
         return true;
     });
     s.step("dave joins bob's team late and gets its research with his join", 30.0, [](ScenarioCtx& c) {
@@ -132,7 +133,7 @@ SCENARIO("net/team-store") {
         if (Joined(S.dave) && S.daveJoinedAt < 0.0) S.daveJoinedAt = c.t;
         c.waitingFor(TextFormat("dave %s, %d stores", NetClient_StateName(S.dave.state), S.dave.teamStores));
         if (!(Joined(S.dave) && S.dave.teamStores > 0)) {
-            if (c.t - S.t0 > 25.0) c.fail("dave not joined with a team store after 25 s");
+            if (c.clock - S.t0 > 25.0) c.fail("dave not joined with a team store after 25 s");
             return false;
         }
         c.eq("dave's store is bob's team's", S.dave.teamStoreTeam, S.bobTeam);

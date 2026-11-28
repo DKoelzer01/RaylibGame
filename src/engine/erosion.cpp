@@ -82,7 +82,7 @@ namespace {
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t) pool.emplace_back([&, t] {
         for (size_t c = t; c < d.cells; c += T) {
-            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c]);
+            if (!d.col.empty()) d.col[c] = (*strata)(d.dir[c], h0[c]);
             const Vector3 q = Vector3Scale(d.dir[c], R / 25000.0f);
             d.hardness[c] = ValueNoise(q, seed ^ 0xA11u);
             d.strata[c] = std::clamp((ValueNoise(Vector3Scale(q, 0.7f), seed ^ 0x57Au) - 0.55f) / 0.15f, 0.0f, 1.0f);
@@ -259,7 +259,7 @@ namespace {
         auto capRock = [&](float hc) { return fmodf(hc + stratumOffset + 1200.0f, 120.0f) < 36.0f; }; // the hard 30% of each 120 m band
         const bool layered = !d.col.empty(); // #587: the rock column's layer at the cell's current height
         auto erodibility = [&](size_t c, float hc) {
-            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed));
+            if (layered) return p.k * kScale * Strata_Erodibility(Strata_RockAt(d.col[c], hc, d.strataSeed)) * d.col[c].kMul; // #1990: x the biome's
             const float k = d.rockK[c] * kScale;
             if (d.strata[c] <= 0.0f) return k;
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
@@ -420,7 +420,7 @@ namespace {
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L * (layered ? d.col[c].glacialMul : 1.0f); // #1990: alpine ice carves deeper
                     f += (fg - f) * g;
                 }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
@@ -460,7 +460,9 @@ namespace {
                             const int o = nbOf(c, k);
                             if (o < 0) continue;
                             const float L = nbDist(c, k, o) * R;
-                            dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                            // #1990: the pair's mean biome creep (symmetric, so the pass still conserves mass)
+                            const float D = layered ? p.hillslope * 0.5f * (d.col[c].creepMul + d.col[o].creepMul) : p.hillslope;
+                            dh += std::min(2.0f * D / (L * L), 0.1f) * (d.h[o] - d.h[c]);
                         }
                         // #1965: on the fine pass creep never fills a closed hollow's deep floor (the flood filled it 0.4 m+,
                         // half a bake pond's 0.8 m minimum): it filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it
@@ -485,6 +487,7 @@ namespace {
                     const float hard = layered ? Strata_Hardness(Strata_RockAt(d.col[c], d.h[c], d.strataSeed))
                                                : std::max(d.hardness[c], d.strata[c] * (capRock(d.h[c]) ? 1.0f : 0.0f));
                     float maxSlope = p.talusSoft + (p.talusHard - p.talusSoft) * hard;
+                    if (layered) maxSlope *= d.col[c].talusMul; // #1990
                     if (!talusVar.empty()) maxSlope *= talusVar[c] * (0.8f + 0.45f * Hash3((int)floorf((d.h[c] + talusBandOff[c]) / 30.0f), 0, 0, seed ^ 0x7A4u));
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
@@ -724,12 +727,17 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
-    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (default key unchanged)
+    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (mixed only when != 1)
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
+    if (p.biomeKey) mix(&p.biomeKey, sizeof p.biomeKey); // #1990 (0 mixes nothing)
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
+    if (p.bFace >= 0) { // #1988: B faces bake their own (A, -1, mixes nothing); v2: basins breached (RAYLIBGAME_B_BREACH)
+        const int b = 0x19880 + p.bFace; mix(&b, sizeof b);
+        const float br = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f; const int v = 2; mix(&br, sizeof br); mix(&v, sizeof v);
+    }
     if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
@@ -738,6 +746,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     gBakeProgress.store(0.0f, std::memory_order_relaxed);
     struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
+    bFace = p.bFace; // #1988
     const auto t0 = std::chrono::steady_clock::now();
     double freeMB0 = 0.0; unsigned long long faults0 = 0; Profiler_MemoryHealth(freeMB0, faults0); // #1914: the machine's state, for the profile
     R = planetRadius; seed = seedIn;
@@ -904,6 +913,15 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             }
             flap(0);
             StageHash("sampled", f, fd, fh0);
+            if (f == p.bFace || p.bFace == 6) { // (6: every face)
+                // #1988 (option B): no 50 m simulation. The fine grid is the coarse result resampled (Catmull-Rom, so C1
+                // across the 200 m cells; land and sea from this face's own input as on the other faces); the chunks add
+                // the detail (TerrainBDetail) and the final drainage routes rivers and lakes over it. No ponds: those came
+                // from the refinement's flood.
+                for (size_t c = 0; c < fd.cells; ++c) fine[(size_t)f * FE * FE + c] = Q(fh0[c] <= 0.0f ? fh0[c] : std::max(0.5f, coarseAt(fd.dir[c])));
+                flap(3);
+                return;
+            }
             SetRock(fd, fh0, maxH0, R, seed, p, &strata, sampleThreads);
             flap(1);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
@@ -1108,6 +1126,23 @@ float PlanetErosion::flowArea(int g) const {
     return cls == 0 ? 0.0f : kFlowArea0 * ldexpf(1.41421356f, cls - 1);
 }
 
+float PlanetErosion::drainageAt(Vector3 dv) const {
+    // Bilinear over the 4 nearest flow cells of dir's face, in log10 area, so masks built on it are continuous (the
+    // nearest cell's class jumps at every 50 m border: visible steps in the B detail, #1988). Off the network: 4.7, just
+    // under its 1e5 m^2 start (a 0 there made a 0 -> 5 step across one cell beside every channel).
+    if (flow.empty()) return 0.0f;
+    const int f = FaceOf(dv);
+    Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+    const float s = Vector3DotProduct(dv, nrm), duf = 2.0f / nf;
+    const float x = std::clamp((Vector3DotProduct(dv, t1) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const float y = std::clamp((Vector3DotProduct(dv, t2) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const int i0 = std::min((int)x, nf - 2), j0 = std::min((int)y, nf - 2);
+    float fx = x - i0, fy = y - j0;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); // C1: linear weights leave kinks a hillshade shows
+    auto L =[&](int i, int j) { const float a = flowArea((f * nf + j) * nf + i); return a > 0.0f ? 0.30103f * det::Log2f(a) : 4.7f; };
+    return (1 - fy) * ((1 - fx) * L(i0, j0) + fx * L(i0 + 1, j0)) + fy * ((1 - fx) * L(i0, j0 + 1) + fx * L(i0 + 1, j0 + 1));
+}
+
 float PlanetErosion::IncisionDepth(float area) {
     // Light: 0.5 m where a stream starts (0.1 km^2), ~2 m at 10 km^2, at most 4 m.
     return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * det::Powf(area / kFlowArea0, 0.3f));
@@ -1133,7 +1168,12 @@ void PlanetErosion::routeFinal(int threads) {
     // One routing: priority flood over 8 neighbours (the bake's own connectivity: its valleys run diagonally too), steepest
     // descent on the filled surface - with preferD4, the steepest of the 4 side neighbours when one is lower, else of all
     // 8 - and the drainage area, downstream in reverse flood order.
-    auto route = [&](bool preferD4) {
+    // #1988: option B's faces, and how deep a breach may cut (m; GUESS 8, RAYLIBGAME_B_BREACH=0: fill as on A)
+    auto isB = [&](int g) { return bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace); };
+    static const float kBreach = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f;
+    std::vector<float> breachCut(bFace >= 0 ? G : 0, 0.0f);
+    std::vector<uint8_t> keepPond; // #2039: B's pond cells, never breached (filled; empty: none)
+    auto route = [&](bool preferD4, bool breach) {
         RadixHeap heap;
         std::fill(seen.begin(), seen.end(), 0);
         std::fill(recv.begin(), recv.end(), -1);
@@ -1148,6 +1188,23 @@ void PlanetErosion::routeFinal(int threads) {
                 const int o = nb[k];
                 if (o < 0 || seen[o]) continue;
                 seen[o] = 1;
+                // #1988: on option B's faces a shallow closed basin is breached rather than filled (Barnes' carving
+                // priority flood): the path back toward the outlet is lowered just under this cell, when no cell on it
+                // must drop more than kBreach. The smooth 100-200 m surface leaves hollows the 50 m simulation would have
+                // worn an outlet through on A; filled, they stood as still ponds where A had a stream. Deeper basins
+                // stay lakes.
+                if (breach && h[o] < hf[c] - 0.05f && isB(o) && (keepPond.empty() || !keepPond[o])) { // (a hollow, not the jitter across a flat; not a pond, #2039)
+                    float need = 0.0f, t = h[o];
+                    int p = c, steps = 0;
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, h[p] - t);
+                    if (need <= kBreach && steps < 400) {
+                        t = h[o];
+                        for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
+                        hf[o] = h[o]; recv[o] = c;
+                        heap.push(RadixHeap::Key(hf[o], o));
+                        continue;
+                    }
+                }
                 hf[o] = std::max(h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, 0, 13, seed))); // jittered across flats
                 recv[o] = c;
                 heap.push(RadixHeap::Key(hf[o], o));
@@ -1184,7 +1241,39 @@ void PlanetErosion::routeFinal(int threads) {
         }
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
     };
-    route(false);
+    if (bFace >= 0 && kBreach > 0.0f) {
+        // #2039: option B's ponds. B has no 50 m simulation, whose flood left the hollows A's ponds come from (#360), and
+        // the breach drains shallow basins. A first routing without breaching finds the closed basins: a small one (A's
+        // pond rule: <= 12 cells, 0.8 m+ deep) that no stream runs through (its catchment under kFlowArea0) becomes a pond
+        // and is filled, not breached. Basins a stream crosses are still breached (#1988 pose 2); shallower pits drain
+        // or stay dry, as fluid/flow and fluid/slope-drain need (Water, 2026-11-27).
+        route(false, false);
+        keepPond.assign(G, 0);
+        std::vector<uint8_t> done(G, 0);
+        std::vector<int> stack, members;
+        auto pit = [&](int g) { return !outlet[g] && isB(g) && hf[g] - h[g] > 0.05f; };
+        int nb[8];
+        const size_t before = pondList.size();
+        for (int g0 = 0; g0 < G; ++g0) { // cell order: deterministic
+            if (done[g0] || !pit(g0)) continue;
+            members.clear(); stack.assign(1, g0); done[g0] = 1;
+            while (!stack.empty()) {
+                const int q = stack.back(); stack.pop_back();
+                members.push_back(q);
+                nbs(q, nb);
+                for (int k = 0; k < 8; ++k) if (const int o = nb[k]; o >= 0 && !done[o] && pit(o)) { done[o] = 1; stack.push_back(o); }
+            }
+            if (members.size() > 12) continue;
+            float level = -1e9f, low = 1e9f, inflow = 0.0f; Vector3 sum{ 0, 0, 0 };
+            for (int q : members) { level = std::max(level, hf[q]); low = std::min(low, h[q]); inflow = std::max(inflow, area[q]); sum = Vector3Add(sum, flowDir(q)); }
+            if (level - low < 0.8f || inflow >= kFlowArea0) continue;
+            for (int q : members) keepPond[q] = 1;
+            const float r = std::clamp(sqrtf((float)members.size() * side * side / PI) + 6.0f, 12.0f, 60.0f);
+            pondList.push_back({ Vector3Normalize(sum), r, level, level - low });
+        }
+        LOG_INFO("Erosion", "option B ponds (#2039): %d from the routing's closed basins\n", (int)(pondList.size() - before));
+    }
+    route(false, bFace >= 0 && kBreach > 0.0f);
     // Diagonal channel links (#547): the line between two diagonal cells crosses the corner of the two cells beside them,
     // where the bilinear ground stands at the four cells' mean - up to half a V valley's side over the channel, which the
     // river then cut as a slot. The lower of those two side cells is worn down to the link's middle height, so the
@@ -1204,7 +1293,7 @@ void PlanetErosion::routeFinal(int threads) {
             h[s] = std::min(h[s], 0.5f * (h[c] + h[r]));
         }
     }
-    route(true);
+    route(true, false);
     // Classes, the filled cells, and the incision (channel cells off the filled surface, by their drainage).
     flow.assign(G, 0);
     filled.clear();
@@ -1217,6 +1306,10 @@ void PlanetErosion::routeFinal(int threads) {
         cut[g] = h0[g] - h[g]; // the corners worn above
         if (hf[g] - h[g] > 0.05f) filled.push_back({ g, hf[g] });
         else if (cls > 0) cut[g] += IncisionDepth(flowArea(g));
+        // #1988: no groove on the B face. Its grid is the smooth coarse surface, where 50 m D4/D8 paths run straight, and
+        // a cut along them showed as ruled lines and staircases (on A the refined valleys hide the path). Rivers keep
+        // their routing and classes; the drainage mask keeps their floors smooth.
+        if (isB(g)) cut[g] = breachCut[g]; // (only the breaches, #1988)
     }
     // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
     for (int f = 0; f < 6; ++f) {
@@ -1474,7 +1567,7 @@ namespace {
     }
 }
 
-float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength) {
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength, int firstOctave) {
     static const float kLambda[6] = { 900.0f, 420.0f, 190.0f, 85.0f, 38.0f, 17.0f };
     constexpr float kTwoPi = 6.28318531f;
     static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.14f; // tuning (0.11 read as smooth ridges, user 2026-11-14)
@@ -1492,6 +1585,7 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         const float lam = kLambda[o];
         const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
         if (fade <= 0.0f) break;
+        if (o < firstOctave) continue;
         const float slope = Vector3Length(grad);
         if (slope < 1e-4f) continue;
         const Vector3 across = Vector3Scale(Vector3CrossProduct(dir, grad), 1.0f / slope); // unit, along the contour
@@ -1523,6 +1617,109 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         grad = Vector3Add(grad, Vector3Scale(across, amp * dval * kTwoPi * inv));
     }
     return h;
+}
+
+float PlanetErosion::bWeight(Vector3 dir) const {
+    // 1 on the B face, 0 off it, a smoothstep across its edge (gnomonic 0.97..1.03, ~1.5 km each side): the detail
+    // functions differ, and a hard switch drew the face edge as a straight line in the terrain.
+    if (bFace < 0) return 0.0f;
+    if (bFace == 6) return 1.0f; // every face
+    Vector3 nrm, t1, t2; FaceAxes(bFace, nrm, t1, t2);
+    const float s = Vector3DotProduct(dir, nrm);
+    if (s <= 0.0f) return 0.0f;
+    const float m = std::max(fabsf(Vector3DotProduct(dir, t1)), fabsf(Vector3DotProduct(dir, t2))) / s;
+    const float t = std::clamp((1.03f - m) / 0.06f, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+namespace {
+    // Value noise in [-1, 1] with its gradient (per unit of p): trilinear over lattice hashes, smoothstep-eased.
+    float ValueNoiseD(Vector3 p, unsigned int seed, Vector3& g) {
+        const int x0 = (int)floorf(p.x), y0 = (int)floorf(p.y), z0 = (int)floorf(p.z);
+        const float fx = p.x - x0, fy = p.y - y0, fz = p.z - z0;
+        const float u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+        const float du = 6 * fx * (1 - fx), dv = 6 * fy * (1 - fy), dw = 6 * fz * (1 - fz);
+        auto H = [&](int i, int j, int k) { return 2.0f * Hash3(x0 + i, y0 + j, z0 + k, seed) - 1.0f; };
+        const float a = H(0, 0, 0), b = H(1, 0, 0), c = H(0, 1, 0), d = H(1, 1, 0), e = H(0, 0, 1), f = H(1, 0, 1), gg = H(0, 1, 1), h = H(1, 1, 1);
+        const float k1 = b - a, k2 = c - a, k3 = e - a, k4 = a - b - c + d, k5 = a - c - e + gg, k6 = a - b - e + f, k7 = -a + b + c - d + e - f - gg + h;
+        g = { du * (k1 + k4 * v + k6 * w + k7 * v * w), dv * (k2 + k5 * w + k4 * u + k7 * w * u), dw * (k3 + k6 * u + k5 * v + k7 * u * v) };
+        return a + k1 * u + k2 * v + k3 * w + k4 * u * v + k5 * v * w + k6 * w * u + k7 * u * v * w;
+    }
+    float EnvTune(const char* name, float def) { const char* e = getenv(name); return e ? (float)atof(e) : def; } // live tuning (#1988)
+}
+
+float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage) {
+    if (h <= 0.0f) return 0.0f;
+    static const float kGully = EnvTune("RAYLIBGAME_B_GULLY", 1.5f); // GUESS: x the A faces' gully strength
+    static const int kFirst = (int)EnvTune("RAYLIBGAME_B_FIRST_OCTAVE", 2.0f); // GUESS: the gullies from 190 m (0: from 900 m as on A)
+    static const float kFbm = EnvTune("RAYLIBGAME_B_FBM", 6.0f);     // GUESS: m, the first fBm octave's amplitude
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    // Valley floors stay smooth: full detail up to ~0.3 km^2, none from 10 km^2 (the small streams run straight along the 50 m grid: a mask on them drew ruled lines).
+    const float dry = 1.0f - smooth(5.5f, 7.0f, drainage);
+    if (dry <= 0.0f) return 0.0f;
+    const float coast = smooth(2.0f, 15.0f, h); // as the A faces' gullies: the shore stays a shore
+    float out = ErosionGullies(p, dir, grad, footprint, seed, coast * kGully * dry, kFirst);
+    // Derivative fBm (the octaves' running slope damps the next ones): on gentle ground only, where the gullies are weak.
+    const float gentle = 1.0f - smooth(0.12f, 0.45f, Vector3Length(grad));
+    if (gentle > 0.0f && kFbm > 0.0f) {
+        float amp = kFbm, sum = 0.0f; Vector3 dsum{ 0, 0, 0 };
+        for (int o = 0; o < 5; ++o, amp *= 0.5f) {
+            const float lam = 320.0f / (float)(1 << o); // 320, 160, 80, 40, 20 m
+            const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
+            if (fade <= 0.0f) break;
+            Vector3 g;
+            const float n = ValueNoiseD(Vector3Scale(p, 1.0f / lam), seed ^ (0x1988u + 977u * o), g);
+            dsum = Vector3Add(dsum, Vector3Scale(g, amp * fade / lam)); // m per m
+            sum += amp * fade * n / (1.0f + Vector3DotProduct(dsum, dsum) / (0.15f * 0.15f));
+        }
+        out += sum * gentle * dry * coast;
+    }
+    return out;
+}
+
+Vector3 PlanetErosion::meanderShift(Vector3 dir, float area) const {
+    // #1988 (user 2026-11-27: option a, valleys that meander): the river network's nodes move along a smooth noise field
+    // (700 m and 230 m, projected onto the tangent plane: no face axes, so no seams), so the rivers wind off the 50 m grid
+    // path, and valleyCut digs their valleys along the moved line: the water and its valley stay together.
+    const float wb = bWeight(dir);
+    if (wb <= 0.0f) return dir;
+    static const float kM = EnvTune("RAYLIBGAME_B_MEANDER", 1.0f); // x the swing (GUESS 20 m x (A / 1 km^2)^0.25, 15-60 m)
+    const float amp = std::clamp(20.0f * det::Powf(area / 1.0e6f, 0.25f), 15.0f, 60.0f) * kM * wb;
+    if (amp <= 0.0f) return dir;
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    auto nv = [&](float lam, unsigned int s) {
+        const Vector3 q = Vector3Scale(p, 1.0f / lam);
+        return Vector3{ ValueNoiseD(q, seed ^ s, gd), ValueNoiseD(q, seed ^ (s + 101u), gd), ValueNoiseD(q, seed ^ (s + 202u), gd) };
+    };
+    Vector3 w = Vector3Add(nv(700.0f, 0x7A11u), Vector3Scale(nv(230.0f, 0x7B22u), 0.2f)); // swing slope under 1: no loops
+    w = Vector3Subtract(w, Vector3Scale(dir, Vector3DotProduct(w, dir)));
+    return Vector3Normalize(Vector3Add(p, Vector3Scale(w, amp)));
+}
+
+float PlanetErosion::valleyCut(Vector3 dir, float h, float dist, float level, float halfWidth) const {
+    // #1988: the valley around a river (dist m from its centreline, its water at level): the ground is lowered toward a floor
+    // just above the water, across a half width that grows with the river; width, depth cap and cross-profile (a narrow
+    // V-floor to a wide U-floor, the rim always smooth) vary along the valley on 400-500 m. The bake's 100-200 m grid
+    // resolves only the larger valleys; these are the ones under that.
+    const float wb = bWeight(dir);
+    const float floorY = level + 0.6f;
+    if (wb <= 0.0f || h <= floorY) return 0.0f;
+    static const float kW = EnvTune("RAYLIBGAME_B_VALLEY_W", 1.0f); // x the half width (GUESS 40 m + 4 x the river's, <= 170 m)
+    static const float kD = EnvTune("RAYLIBGAME_B_VALLEY_D", 1.0f); // x the depth cap (GUESS 25 m + 1.5 x the river's half width)
+    if (dist >= std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * 1.3f)) return 0.0f; // past the widest the noise allows: skip it
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    const float nW = ValueNoiseD(Vector3Scale(p, 1.0f / 450.0f), seed ^ 0x7C33u, gd);
+    const float nD = ValueNoiseD(Vector3Scale(p, 1.0f / 520.0f), seed ^ 0x7D44u, gd);
+    const float nP = ValueNoiseD(Vector3Scale(p, 1.0f / 380.0f), seed ^ 0x7E55u, gd);
+    const float W = std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * (1.0f + 0.3f * nW)); // the index reaches 180 m
+    if (dist >= W) return 0.0f;
+    const float D = (25.0f + 1.5f * halfWidth) * kD * (1.0f + 0.35f * nD);
+    const float floorShare = 0.2f + 0.12f * nP, wallExp = 1.6f + 0.6f * nP;
+    const float u = std::max(0.0f, (dist - floorShare * W) / ((1.0f - floorShare) * W)); // 0 on the floor, 1 at the rim
+    const float s = 1.0f - det::Powf(u, wallExp);
+    return std::min(h - floorY, D) * s * s * wb;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS

@@ -9,13 +9,23 @@
 #     moist   <min> <max>    base (the biome as it was): it takes no gate, it is the fallback.
 #     flora   <trees> <bushes> <stones> <size>   (#1978) multipliers on the type's flora (trees.cpp FloraOf; "-" = 1)
 #     cover   <0..1>         least tree odds anywhere in it (a closed canopy; default: the type's)
-#     species <name> <w> ... tree species weights (oak birch maple pine spruce); default: the type's broadleaf or
+#     species <name> <w> ... tree species weights (names: woodspecies.h, looks: trees.txt); default: the type's broadleaf or
 #                            conifer mix. Above the tree-line band a warm variant still grows conifers.
 #     tint    <grass r g b> <leaf r g b>   (#2032) colour multipliers (linear) on grass (blades and ground) and on leaves
 #                            (trees, bushes, the far canopy), over the climate colour, which keeps 40% of its pull. On a
 #                            type's base it is the type's tint; another variant without one takes its base's; "- - -"
 #                            keeps the base's for that group. Default 1. RAYLIBGAME_BIOME_TINT=0: off. Values: GUESS.
+#     sizes   <bushes> <stones> <grass>   (#1995) size-class shifts on the type's own (trees.cpp/biomevariants.cpp:
+#                            SmallFloraSizesOf): -1 mostly small .. +1 mostly large and extra large (thickets, boulders,
+#                            waist-high grass); "-" = 0. Values: GUESS.
+#     shrubs  <round> <mat> <upright>     (#1995) bush kind weights (default: the three alike)
 #     rubber  <percent>      (#2012) the share of its felled trees that give one rubber (default 0; jungle trees always do)
+#     bake    <k> <talus> <creep> <glacial>   (#1990) the erosion bake's multipliers here: stream-power erodibility,
+#                            the talus slope limit, hillslope creep, glacial carving (default 1; a variant without one
+#                            takes its base's). Read from a bake-free biome estimate on the input land; changing them
+#                            bakes again (~35 s). RAYLIBGAME_BAKE_BIOME=0: off. Values: GUESS.
+#     ponds   <0..1>         (#1990) the share of the bake's ponds kept here (dry land: few; default 1, or its base's).
+#                            Which ones: a hash of the pond's place. GUESS.
 # Variants cross-fade over ~200 m at their borders (the flora reads its variant ~100 m off per plant).
 # Weights and gates are GUESSes for the first playtests (the user approved the set, 2026-11-27).
 
@@ -23,6 +33,7 @@ variant ocean.open
   name    Open ocean
 
 variant forest.mixed
+  bake    0.8 1.1 1.0 1
   name    Mixed woodland
   weight  40
 variant forest.birch_grove
@@ -37,7 +48,9 @@ variant forest.old_growth
   weight  15
   flora   1.3 0.7 0.8 1.3
   cover   0.3        # closed canopy
-  species oak 4 maple 2 birch 1
+  species oak 4 maple 2 birch 1 snag 0.3
+  sizes   -0.4 - -0.6    # little light under the canopy: small undergrowth, short grass
+  shrubs  2 0 1
   rubber  33         # a third of the jungle's latex (user, #1964 ruling 7)
 variant forest.maple_hills
   name    Maple hills
@@ -46,6 +59,7 @@ variant forest.maple_hills
   species maple 5 oak 2 birch 1
 
 variant meadow.grassland
+  bake    1.0 1.0 1.3 1
   name    Grassland
   tint    1.12 1.06 0.88   1.05 1.05 0.92
   weight  45
@@ -54,24 +68,31 @@ variant meadow.flower_meadow
   tint    1.08 1.1 0.95   - - -
   weight  30
   flora   0.5 1.4 0.6 1.0
+  sizes   - - 0.3
 variant meadow.chalk_downs
   name    Chalk downs
   tint    1.2 1.15 0.95   - - -
   weight  25
+  sizes   -0.3 0.3 -1.2  # grazed turf: short grass, low scrub
   flora   0.4 0.6 1.6 0.9
 
 variant swamp.reed_marsh
+  bake    1.0 1.0 1.3 1
   name    Reed marsh
+  cover   0.01       # (#1995) willows along the marsh: GUESS
+  species willow 3 birch 1
   tint    0.95 0.88 0.6   0.85 0.85 0.65
   weight  45
   flora   0.4 1.3 0.6 0.9
+  sizes   0.3 - 0.8      # reed beds: tall grass, upright clumps
+  shrubs  0 1 3
 variant swamp.mangrove
   name    Mangrove
   tint    0.8 0.95 0.7   0.7 0.9 0.7
   weight  25
   flora   2.2 1.0 0.5 0.8
   cover   0.25
-  species oak 3 birch 1
+  species mangrove 6 palm 1 willow 1
   rubber  33         # a third of the jungle's latex (user, #1964 ruling 7)
   temp    20 -       # warm...
   elev    - 20       # ...coasts
@@ -80,10 +101,11 @@ variant swamp.peat_bog
   tint    1.15 0.9 0.6   - - -
   weight  30
   flora   0.3 1.1 0.5 0.7
-  species spruce 3 birch 2 pine 1
+  species spruce 3 birch 2 pine 1 snag 1
   temp    - 13       # the cool half of the swamps
 
 variant taiga.spruce
+  bake    0.8 1.1 1.0 1
   name    Spruce taiga
   tint    0.72 0.86 0.92   0.65 0.8 0.98
   weight  40
@@ -98,8 +120,9 @@ variant taiga.burnt
   tint    0.8 0.72 0.55   0.7 0.65 0.55
   weight  15
   flora   0.25 1.3 1.3 0.8
+  sizes   0.3 - 0.3      # regrowth thickets between the snags
   cover   0
-  species pine 3 birch 2
+  species snag 5 pine 2 birch 2
 variant taiga.muskeg
   name    Muskeg
   tint    1.0 0.92 0.7   - - -
@@ -109,6 +132,7 @@ variant taiga.muskeg
   species spruce 4 pine 1 birch 1
 
 variant tundra.stony
+  bake    1.0 1.0 1.8 1.2
   name    Stony tundra
   tint    1.25 0.95 0.72   0.9 0.85 0.75
   weight  40
@@ -121,8 +145,10 @@ variant tundra.lichen_heath
   tint    1.35 1.15 0.85   - - -
   weight  25
   flora   0.7 1.5 0.8 0.9
+  shrubs  1 4 0          # low mats
 
 variant alpine.bare_peaks
+  bake    1.0 1.2 0.8 1.5
   name    Bare peaks
   tint    0.95 1.0 0.95   0.8 0.9 0.95
   weight  50
@@ -130,12 +156,13 @@ variant alpine.krummholz
   name    Krummholz slopes
   weight  30
   flora   2.5 1.2 1.0 0.6   # stunted trees
-  species spruce 3 pine 2
+  species krummholz 5 spruce 1
   elev    - 1050     # the tree line, just over the 850 m alpine line
 variant alpine.cirque_lakes
   name    Cirque lakes
   weight  20
   flora   1.2 1.0 1.4 0.9
+  sizes   - 0.8 -        # glacial boulders
 
 variant polar.ice_sheet
   name    Ice sheet
@@ -147,6 +174,8 @@ variant polar.frozen_coast
   elev    - 40
 
 variant desert.sand_sea
+  bake    1.3 1.0 0.5 1
+  ponds   0.25
   name    Sand sea
   tint    2.2 1.4 0.55   1.6 1.2 0.6
   weight  45
@@ -154,6 +183,7 @@ variant desert.hamada
   name    Rocky hamada
   weight  35
   flora   1.0 1.0 2.0 1.0
+  sizes   - 0.8 -
 variant desert.salt_flats
   name    Salt flats
   weight  20
@@ -161,6 +191,8 @@ variant desert.salt_flats
   elev    - 250      # low basins
 
 variant badlands.rill
+  bake    2.5 0.7 0.3 1
+  ponds   0.1
   name    Rill badlands
   tint    2.0 1.25 0.6   1.5 1.1 0.6
   weight  35
@@ -172,33 +204,47 @@ variant badlands.red_canyon
   name    Red canyon
   weight  25
   flora   1.0 0.8 1.3 1.0
+  sizes   - 0.8 -
 
 variant savanna.grassland
+  bake    1.1 1.0 0.8 1
+  ponds   0.6
   name    Grass savanna
+  cover   0.004      # (#1995) lone trees on the open grass: GUESS
+  species acacia 4 baobab 1
   tint    2.5 1.25 0.38   1.5 1.1 0.5
   weight  40
+  sizes   - - 0.5        # the tall grass of the open savanna
 variant savanna.acacia
   name    Acacia woodland
+  cover   0.02       # (#1995) open woodland, a tree every ~30 m: GUESS
   tint    2.2 1.2 0.42   - - -
   weight  35
   flora   4.0 0.9 0.8 1.1
-  species oak 3
+  species acacia 6 baobab 1
   rubber  33         # a third of the jungle's latex (user, #1964 ruling 7)
 variant savanna.kopje
   name    Kopje country
+  cover   0.006      # (#1995) baobabs among the rocks: GUESS
+  species baobab 3 acacia 2
   weight  25
   flora   1.0 0.8 2.0 1.0
+  sizes   - 1.2 -        # boulder piles
 
 variant jungle.lowland
+  bake    1.3 0.9 1.5 1
   name    Lowland rainforest
+  species oak 3 palm 2 kapok 1 tree_fern 1
   tint    0.7 1.0 0.62   0.6 0.95 0.6
   weight  50
 variant jungle.karst_towers
   name    Karst towers
+  species palm 3 oak 2 kapok 1
   weight  25
   flora   0.9 1.0 1.2 1.0
 variant jungle.cloud_forest
   name    Cloud forest
+  species tree_fern 4 oak 2 kapok 1
   tint    0.8 1.0 0.85   0.7 0.95 0.85
   weight  25
   flora   0.9 1.2 0.8 0.85

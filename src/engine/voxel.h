@@ -200,6 +200,7 @@ public:
     WorldGenParams gen;           // the world's generation parameters (#504): defaults = the terrain as before
     uint32_t caveEpoch = 0;       // #1055: unique per field and land (renewed by setGenParams / setSandbox): part of the cave cells' key
     bool caveBaked() const;       // #1055: whether the erosion bake is visible here (part of the cave cells' key)
+    uint64_t erosionHash() const; // #1882: the bake's hash (PlanetErosion::hash), 0 without a bake (worldgen/metrics)
     // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
     void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
@@ -259,6 +260,9 @@ public:
     // Rock strata (#587): the column here (from region-scale fields, as the erosion bake sees it) and the rock at a
     // body-local point (its layer at the point's height, in the bake's simulation heights).
     StrataColumn strataColumn(Vector3 dir) const;
+    // #1990: the erosion bake's column: strataColumn + the biome's bake multipliers (biomes.txt `bake`), from a bake-free
+    // estimate at the input land height h0 (m): biomeOf/variantAt on climateAt(dir, h0), never elevation() or the bake.
+    StrataColumn bakeStrataColumn(Vector3 dir, float h0) const;
     RockType rockTypeAt(Vector3 p) const;
     // Tests (#561): true on this thread = the bake is ignored (erosion() answers nullptr), so land() / elevationBase()
     // give the noise terrain the GPU point kernel ports (it has no bake).

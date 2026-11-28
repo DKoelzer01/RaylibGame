@@ -17,6 +17,8 @@
 #      two branches can't ship the same number for different wire formats.
 #   7. A kNetProtocol / kSaveVersion / kErosionBakeVersion number this branch reserves is not reserved for another issue on origin/staging,
 #      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
+#   8. Every tools/ci/known_failures.txt line's note starts "[<owner>, until <date>]", at most 7 days ahead (#2122): else an
+#      error; a line past its date is a warning.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
@@ -287,6 +289,35 @@ if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
     printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
     sum ""; sum "**Reservation clashes (check 7):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
     [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
+fi
+
+# ---- 8. (#2122) every known-failure line names its owner and an expiry, at most 7 days ahead ----
+# The note starts "[<owner>, until <YYYY-MM-DD>]" (or "until never": a baseline by design). A line past its date is a
+# warning (its owner fixes it or renews it, at most 7 days ahead); a missing or malformed tag, or a date further out, is an
+# error. KNOWN_TODAY=<YYYY-MM-DD> overrides today (tests).
+KF=tools/ci/known_failures.txt
+if [ -f "$KF" ]; then
+    today="${KNOWN_TODAY:-$(date -u +%F)}"
+    latest=$(date -u -d "$today +7 days" +%F 2>/dev/null || echo 9999-12-31)
+    kf_out=$(tr -d '\r' < "$KF" | awk -F'|' -v today="$today" -v latest="$latest" -v kf="$KF" '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            note = $3; sub(/^[[:space:]]+/, "", note)
+            if (NF < 3 || note !~ /^\[(L&G|Water|UI\/UX|Progression|Space|Tools|Coordinator), until ([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|never)\]/) {
+                printf "::error file=%s,line=%d::known failure line without \"[<owner>, until <YYYY-MM-DD>]\" at the start of its note (owners: L&G, Water, UI/UX, Progression, Space, Tools, Coordinator; #2122)\n", kf, NR; bad++; next
+            }
+            d = note; sub(/^\[[^,]*, until /, "", d); sub(/\].*/, "", d)
+            o = note; sub(/^\[/, "", o); sub(/,.*/, "", o)
+            if (d == "never") { never++; next }
+            if (d > latest) { printf "::error file=%s,line=%d::known failure expiry %s is more than 7 days ahead (latest %s, #2122)\n", kf, NR, d, latest; bad++; next }
+            if (d < today) { printf "::warning file=%s,line=%d::known failure expired %s (%s): fix it, drop it, or renew it (#2122)\n", kf, NR, d, o; expired++ }
+            lines++
+        }
+        END { printf "known_lines: %d dated, %d never, %d expired, %d bad\n", lines, never, expired, bad; exit bad > 0 }')
+    kf_rc=$?
+    printf '%s\n' "$kf_out" | grep -E '^::'
+    sum ""; sum "**Known failures (check 8):** $(printf '%s\n' "$kf_out" | grep '^known_lines:' | sed 's/^known_lines: //')"
+    [ "$kf_rc" -ne 0 ] && errors=$((errors + 1))
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi

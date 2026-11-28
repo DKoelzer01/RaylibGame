@@ -25,6 +25,7 @@
 #include "navigation.h"
 #include "farming.h"
 #include "animals.h"
+#include "flares.h"
 #include "particles.h"
 #include "ambience.h"
 #include "suit.h"
@@ -52,19 +53,24 @@ static int savedCols = 9;          // the loading save's inventory width (inv_co
 static bool playerLoaded = false;  // the load found the player's record
 static double recordFirstSeen = 0.0, recordPlayTime = 0.0, recordLoadedAt = 0.0;
 static std::function<void()> newPlayerHook;
+static std::function<void()> serverSpawnHook; // (#2157)
 static bool bodyFramed = false;  // the record being read gave a player_body line (its up and velocity are rebuilt)
 // Body-frame positions read during a world load (#901): the records are read in the save's extras, before the load puts the
 // bodies back in their saved rotation, so the conversion to world space waits for loadDoneHook. Outside a load (a record
 // read for a joining player) the bodies are as they are and the conversion at once is right.
-struct PendingFrame { Player* p; unsigned long long body; DVec3 local; };
+struct PendingFrame { Player* p; unsigned long long body; DVec3 local; bool framed = false; FramePos fp{}; }; // framed: a player_frame line (F7a)
 static std::vector<PendingFrame> pendingFrames;
 static bool inWorldLoad = false;
 static bool loadedFrameSet = false; // the local player's frame from the last load, for the loading screen's hold (once)
 static unsigned long long loadedFrameBody = 0;
 static DVec3 loadedFrameLocal{};
-bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local) {
+static bool loadedFramePosSet = false; // (F7a) and its frame state, when the record had a player_frame line
+static FramePos loadedFramePos{};
+bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local, FramePos* framePos) {
     if (!loadedFrameSet) return false;
     loadedFrameSet = false; bodyNetId = loadedFrameBody; local = loadedFrameLocal;
+    if (framePos) { if (loadedFramePosSet) *framePos = loadedFramePos; else framePos->frame.body = 0; }
+    loadedFramePosSet = false;
     return true;
 }
 
@@ -89,6 +95,13 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
     }
     fprintf(f, "player_up %f %f %f\n", t.p.up.x, t.p.up.y, t.p.up.z);
     fprintf(f, "player_vel %f %f %f\n", t.p.velocity.x, t.p.velocity.y, t.p.velocity.z);
+    // (Plan 11 F7a, #2074) With RAYLIBGAME_FRAMES=1, the state physics runs on: its frame (F Fixed, C Centred), position and
+    // velocity in it, in double. After the lines above, so a load that reads it takes it over them (mid-jump keeps its speed).
+    if (Frames_On() && t.p.frame.frame.body != 0 && !t.p.flyMode) {
+        const FramePos& fp = t.p.frame;
+        fprintf(f, "player_frame %llu %c %.9f %.9f %.9f %.9f %.9f %.9f\n", (unsigned long long)fp.frame.body, fp.frame.kind == FrameKind::Fixed ? 'F' : 'C',
+                fp.pos.x, fp.pos.y, fp.pos.z, fp.vel.x, fp.vel.y, fp.vel.z);
+    }
     fprintf(f, "inv_cols %d\n", Inventory::kCols); // before the slots: older saves (no line) had 9 columns (#495)
     for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
         const InvSlot& s = t.inv.grid()[i];
@@ -166,6 +179,16 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
                 t.p.position = b->toWorldD(l); t.p.up = { 0, 0, 0 }; bodyFramed = true;
                 if (inWorldLoad) pendingFrames.push_back({ &t.p, id, l }); // again once the body has its saved rotation
             }
+        return true;
+    }
+    if (strcmp(tok, "player_frame") == 0) { // (F7a, #2074) read only on the frame path (else player_body's spot stands)
+        unsigned long long id = 0; char kind = 'F'; FramePos fp;
+        if (fscanf(f, " %llu %c %lf %lf %lf %lf %lf %lf", &id, &kind, &fp.pos.x, &fp.pos.y, &fp.pos.z, &fp.vel.x, &fp.vel.y, &fp.vel.z) == 8 &&
+            Frames_On() && (kind == 'F' || kind == 'C')) {
+            fp.frame = FrameRef{ id, kind == 'F' ? FrameKind::Fixed : FrameKind::Centred };
+            if (inWorldLoad) pendingFrames.push_back({ &t.p, id, {}, true, fp }); // with the bodies in their saved state
+            else t.p.restoreFrame(fp);
+        }
         return true;
     }
     if (strcmp(tok, "player_up") == 0) { Vector3 u{}; fscanf(f, " %f %f %f", &u.x, &u.y, &u.z); if (!bodyFramed) t.p.up = u; return true; } // (with player_body: rebuilt from the body)
@@ -355,6 +378,7 @@ std::vector<PlayerRecordMeta> PlayerRecord_List() {
 bool GameSave_PlayerLoaded() { return playerLoaded; }
 double GameSave_PlayTime() { return recordPlayTime + std::max(0.0, GetTime() - recordLoadedAt); }
 void GameSave_SetNewPlayerHook(std::function<void()> hook) { newPlayerHook = std::move(hook); }
+void GameSave_SetServerSpawnHook(std::function<void()> hook) { serverSpawnHook = std::move(hook); }
 
 void GameSave_Register() {
     saveExtrasHook = [](FILE* f) {
@@ -385,14 +409,21 @@ void GameSave_Register() {
         if (!me.empty() && !WriteRecord(me)) TraceLog(LOG_WARNING, "save: could not write the player record %s", PlayerRecord_Path(me).c_str());
     };
     loadDoneHook = [] { // (#901) body-frame positions back to world space with the bodies in their saved state
+        loadedFramePosSet = false;
         for (const PendingFrame& pf : pendingFrames)
-            if (Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
+            if (pf.framed) { // (F7a) after the player_body entry: the frame state wins
+                if (pf.p->restoreFrame(pf.fp) && pf.p == &player) {
+                    loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = player.nearest->toLocalD(player.position);
+                    loadedFramePosSet = true; loadedFramePos = pf.fp;
+                }
+            } else if (Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
                 pf.p->position = b->toWorldD(pf.local);
                 pf.p->nearest = b; // (#1881) a save before the next update wrote no player_body line without it
 
                 if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
             }
         pendingFrames.clear();
+        if (!LocalPlayer() && serverSpawnHook) serverSpawnHook(); // (#2157) no record placed it: else it stays at body-local zero
         Farm_LoadDone(); // (#1085) an old save's farmland parts become tilled ground, with their crops
         inWorldLoad = false;
     };
@@ -405,6 +436,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Flares_Clear(); // (#2062) flares are not saved: none survive into the loaded world
         Fishing_Reset(); // (#902) a line cast in the old world held its body
         Particles_Clear();
         Ambience_Reset();

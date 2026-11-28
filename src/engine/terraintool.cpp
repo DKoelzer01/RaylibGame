@@ -872,8 +872,13 @@ void TerrainTool_DrawHUD() {
             std::string species = WoodSpeciesInfo(SpeciesOfVariant(p.variant)).name;
             for (char& ch : species) ch = (char)tolower((unsigned char)ch);
             what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
+        } else { // (#1995 phase 3) the small flora's size class
+            static const char* kStone[] = { "pebbles", "stones", "rock", "boulder" }, *kBush[] = { "small bush", "bush", "large bush", "thicket" };
+            const int cls = std::max(0, std::min(p.smallClass(), 3));
+            what = (p.stone() ? kStone : kBush)[cls];
         }
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
+        const bool breaks = p.stone() && p.smallClass() >= kBoulderClass;
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : breaks ? "break" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
         if (chopId == p.id && chopWork > 0.0f) {
             const float f = std::min(chopWork, 1.0f);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
@@ -911,6 +916,7 @@ void TerrainTool_DrawHUD() {
 bool TerrainTool_Chop() { tool = HeldTool(); return Chop(); }
 
 int TerrainTool_HitsToFell(const Plant& p, const ToolSpec& t) {
+    if (p.stone() && p.smallClass() >= kBoulderClass) return 6; // (#1995 phase 3) a boulder takes a few blows to break (GUESS)
     if (!p.tree()) return 1;
     return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(t))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
 }
@@ -951,13 +957,18 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
         const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
         d.items.push_back({ sp.log, logs });
-        d.toast = TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", rubber ? "  +1 rubber" : "");
+        const ItemDef* logDef = itemDB.find(sp.log); // (#1995 phase 2) the new species drop existing logs: name the item
+        d.toast = TextFormat("+%d %s%s%s", logs, logDef ? logDef->name.c_str() : sp.log.c_str(), logs > 1 && logDef ? "s" : "", rubber ? "  +1 rubber" : "");
         d.sound = 1;
     } else if (p.stone()) {
-        const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
+        // A stone or two picked up off the ground; by size class (#1995 phase 3, GUESS): pebbles 1, a rock 3, a boulder 6.
+        static const int kStones[4] = { 1, 1, 3, 6 };
+        const int n = kStones[std::clamp(p.smallClass(), 0, 3)] + (int)((p.id >> 3) & 1);
         add("stone", n); d.toast = TextFormat("+%d stone", n); d.sound = 2;
     } else {
-        add("fibre", 2);
+        static const int kFibre[4] = { 1, 2, 3, 5 }; // by size class (#1995 phase 3, GUESS): a thicket gives the most
+        const int fibre = kFibre[std::clamp(p.smallClass(), 0, 3)];
+        add("fibre", fibre);
         const bool berries = (p.id & 1) == 0;
         if (berries) add("berries", 1);
         // Seeds for farming: one of grain, roots or flax from half the bushes.
@@ -969,7 +980,7 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const bool wet = biome == Biome::Swamp || biome == Biome::Jungle;
         const bool root = ((p.id >> 5) & (wet ? 1u : 3u)) == 0 && itemDB.find("bitterroot");
         if (root) add("bitterroot", 1);
-        d.toast = TextFormat("+2 fibre%s%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
+        d.toast = TextFormat("+%d fibre%s%s%s", fibre, berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
     }
     return d;
 }

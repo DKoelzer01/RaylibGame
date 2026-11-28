@@ -1,0 +1,75 @@
+# Tree species (#1995 phase 2). The species list and each one's structure (its form) are code (src/engine/woodspecies.h,
+# trees.cpp); this file sets how each looks and what it drops. One block per species:
+#   species <name>          one of: oak birch maple pine spruce acacia kapok mangrove krummholz snag baobab tree_fern palm willow
+#     log     <item>        what felling it drops (items.txt)
+#     bark    <r g b>       multiplier on the shader's bark brown (linear; capped at 0.85 after it)
+#     leaf    <r g b>       multiplier on the climate leaf colour, after the biome's tint (biomes.txt `tint`)
+#     texture <name>        bark texture: furrows birch plates rings smooth
+#     size    <n>           scale multiplier over the biome's (default 1)
+# Missing keys keep the code's defaults (every tint 1, furrows, size 1, log oak_log). Biomes pick species with
+# biomes.txt `species`. The phase-2 values (acacia on) are GUESSes for the playtest; the new species drop existing logs
+# (their own log items can come later).
+
+species oak
+  log     oak_log
+species birch
+  log     birch_log
+  bark    3.7 5.5 8.6          # white
+  leaf    1.45 1.35 0.8        # light yellow-green
+  texture birch
+  size    0.85                 # slender
+species maple
+  log     maple_log
+  bark    1.2 0.85 0.8
+  leaf    4.4 0.55 0.6         # red-orange crowns
+species pine
+  log     pine_log
+  bark    1.15 1.0 0.9
+  texture plates
+species spruce
+  log     spruce_log
+  bark    0.75 0.7 0.7
+  leaf    0.7 0.85 1.7         # dark blue-green
+  texture plates
+
+species acacia                 # savanna: flat umbrella crowns
+  log     oak_log
+  bark    1.1 0.95 0.9
+  leaf    0.8 1.0 1.35         # grey-green against the savanna's yellow tint
+species kapok                  # jungle emergent
+  log     birch_log
+  bark    3.0 4.0 5.0          # pale grey
+  leaf    1.05 1.1 1.0
+  texture smooth
+  size    1.15
+species mangrove               # swamp: stilt roots
+  log     oak_log
+  bark    0.95 0.85 0.8
+  leaf    1.0 1.2 0.95         # glossy green
+species krummholz              # alpine: wind-stunted
+  log     spruce_log
+  bark    0.8 0.7 0.65
+  leaf    0.7 0.85 1.5
+  texture plates
+species snag                   # dead standing trees (burnt taiga, old growth)
+  log     pine_log
+  bark    3.2 4.4 6.0          # weathered silver-grey (the base bark is brown: blue-heavy to grey it)
+  texture smooth
+species baobab                 # savanna: bottle trunks
+  log     birch_log
+  bark    3.0 3.4 4.0          # grey-pink
+  leaf    0.85 1.0 1.2
+  texture smooth
+species tree_fern              # cloud forest
+  log     pine_log
+  bark    0.7 0.55 0.5         # dark fibrous stem
+  leaf    0.95 1.25 0.8        # bright fern green
+species palm                   # jungle, warm coasts
+  log     birch_log
+  bark    1.9 1.6 1.25         # tan, ringed
+  leaf    1.15 1.15 0.85
+  texture rings
+species willow                 # swamp margins: hanging curtains
+  log     birch_log
+  bark    1.0 0.9 0.8
+  leaf    1.35 1.35 0.75       # light yellow-green

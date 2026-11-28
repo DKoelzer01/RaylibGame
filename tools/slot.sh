@@ -53,7 +53,18 @@ parse() { # minutes [quiet] what...
 
 write_hold() { echo "$me|$mode|$(( $(now) + mins*60 ))|${what//|//}|$sid" > "$LOCK"; }
 
+# A warning (never a refusal: a full disk must not block the run that cleans it) when the drive holding the repo has
+# under SLOT_DISK_WARN_GB free (default 20). The PC's drive filled up on 2026-11-27 with nothing warning first (#2065).
+disk_check() {
+  local warn=${SLOT_DISK_WARN_GB:-20} kb
+  kb=$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+  [[ "$kb" =~ ^[0-9]+$ ]] || return 0
+  [ $(( kb / 1048576 )) -lt "$warn" ] || return 0
+  echo "slot: WARNING low disk: $(( kb / 1048576 )) GB free on $ROOT's drive (under $warn GB, #2065). Usual hogs: build/scen-trees dumps, idle worktrees under .claude/worktrees (clean and pushed ones), build/logs." >&2
+}
+
 cmd=$1; shift
+case "$cmd" in status|take|request) disk_check ;; esac
 case "$cmd" in
   status)
     if c=$(current); then IFS='|' read -r h m u w s <<< "$c"; echo "held by $h ($m) until $(hhmm $u): $w${s:+ [session ${s:0:8}]}"; else echo "free"; fi
