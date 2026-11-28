@@ -22,9 +22,9 @@ std::string ore; // the deposit's main ore, as the miner's variant
 
 bool Place(ScenarioCtx& c, PartType t, Int3 at) { return BuildTool_Place(*c.body, *plot, { t, at, 0 }, false); }
 MachineView Look(int part) { Factory::View(bodyId, plot->id, part); Factory::WaitTicks(2); return Factory::View(bodyId, plot->id, part); }
-int Count(int part, const std::string& item) {
+int Count(const MachineView& m, const std::string& item) {
     int n = 0;
-    for (const auto& s : Look(part).outSlots) if (s.first == item) n += s.second;
+    for (const auto& s : m.outSlots) if (s.first == item) n += s.second;
     return n;
 }
 }
@@ -72,19 +72,22 @@ SCENARIO("factory/drill-deposit") {
         if ((a.status != MachineStatus::Working || b.status != MachineStatus::TooClose) && c.t < 15.0) return false;
         c.check("the first miner works", a.status == MachineStatus::Working, MachineStatusName(a.status));
         c.check("the second, 3 m away, is too close", b.status == MachineStatus::TooClose, MachineStatusName(b.status));
-        ore = a.output.substr(0, a.output.find(' '));
-        c.check("it mines an ore", ore.find("_ore") != std::string::npos || ore == "coal", a.output);
-        c.note("the deposit's ore: " + ore);
         c.keepCapture("a miner on a finite deposit and one too close (#2071)");
         return true;
     });
-    s.step("5 s on: the first has mined its ore, the second nothing", 30.0, [](ScenarioCtx& c) {
+    s.step("5 s on: the first has mined its deposit's ore, the second nothing", 30.0, [](ScenarioCtx& c) {
         Factory::Sync(c.world);
-        const int n = Count(minerA, ore);
+        const MachineView a = Look(minerA);
+        for (const auto& s : a.outSlots) if (ore.empty() && s.second > 0) ore = s.first; // they hold only the deposit's main ore
+        const int n = ore.empty() ? 0 : Count(a, ore);
         c.waitingFor(TextFormat("%d %s", n, ore.c_str()));
         if (n < 4 && c.t < 25.0) return false; // 1 unit a second at grade >= 1
+        c.check("it mines an ore", ore.find("_ore") != std::string::npos || ore == "coal", ore);
+        c.note("the deposit's ore: " + ore);
         c.gt("the first miner mined ore", n, 3);
-        c.eq("the too-close miner mined nothing", Count(minerB, ore), 0);
+        int other = 0;
+        for (const auto& s : Look(minerB).outSlots) other += s.second;
+        c.eq("the too-close miner mined nothing", other, 0);
         return true;
     });
 }
