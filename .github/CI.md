@@ -95,9 +95,9 @@ tier first; its summary line says which and why.
 
 | Tier | When | What runs |
 |---|---|---|
-| **affected** | a dispatch on a PR's branch (`runner-evidence`; `tier=auto`) | build, unit tests, the GPU check if its paths changed (`gpu_changes.sh`, diffed from the merge base), and only the scenarios `tools/ci/scenario_map.txt` maps its changed files to; the server and join tests only when mapped (`SERVER`) |
-| **batch** | `staging` every 4 h (the second cron; skipped when staging hasn't moved since the last batch), or a dispatch on `staging`/`develop`/`main` | all headless scenarios, the server and join tests, the full-run steps (fluid parity, pose twins, perf budgets) |
-| **full** | the nightly, a push to `develop`, a dispatch with `tier=full` (before staging -> develop and develop -> main) | the batch plus the world generation metrics (`tag:worldgen`, also on manual batch dispatches) and the headless regression (nightly, or `regression=headless`) |
+| **affected** | a dispatch on a PR's branch (`runner-evidence`; `tier=auto`) | build, unit tests, the GPU check if its paths changed (`gpu_changes.sh`, diffed from the merge base), and only the scenarios `tools/ci/scenario_map.txt` maps its changed files to (a slow one only when a line names it, #2121); the server and join tests only when mapped (`SERVER`) |
+| **batch** | `staging` every 4 h (the second cron; skipped when staging hasn't moved since the last batch), or a dispatch on `staging`/`develop`/`main` | the headless scenarios except `tools/ci/nightly_scenarios.txt` (#2121: those over ~100 s and the twins), the server and join tests, the full-run steps (fluid parity, perf budgets) |
+| **full** | the nightly, a push to `develop`, a dispatch with `tier=full` (before staging -> develop and develop -> main) | the batch plus the slow scenarios and twins (`nightly_scenarios.txt`), the pose twins, the world generation metrics (`tag:worldgen`, also on manual batch dispatches) and the headless regression (nightly, or `regression=headless`) |
 
 - **The map** (`tools/ci/scenario_map.txt`): `<regex on a changed path> | <targets>`; targets are scenario names,
   `tag:X`, `ALL` or `SERVER`. Every matching line adds its targets. A changed scenario file adds its own scenarios
