@@ -27,6 +27,7 @@
 #include "net.h"
 #include "hostserver.h" // (#1684) Host_BroadcastPartEdits
 #include "ruincache.h"  // (#2072)
+#include "navigation.h" // (#2072) Nav_MinimapRect: the cache panel keeps clear of the minimap
 #include "combat.h"     // (#2072) Combat_Drop: a cache's overflow
 #include "playersession.h"
 #include <ctime>
@@ -977,8 +978,13 @@ void Machine_DrawHUD() {
         if (const size_t paren = what.find(" ("); paren != std::string::npos) lines = { what.substr(0, paren), what.substr(paren + 1) };
         int w = std::max(300, MeasureText(CacheKindName(CacheKindOf(q)), 20));
         for (const std::string& l : lines) w = std::max(w, MeasureText(l.c_str(), 16));
-        const int x = std::max(8, std::min(GetScreenWidth() / 2 + 20, GetScreenWidth() - w - 16)), y = GetScreenHeight() / 2 + 40;
-        DrawRectangle(x - 8, y - 6, w + 16, 32 + 20 * (int)lines.size(), Fade(BLACK, 0.55f));
+        const int y = GetScreenHeight() / 2 + 40, h = 32 + 20 * (int)lines.size();
+        // Clear of the minimap too: at 960x540 the panel's rows are the minimap's and it covered the line's end.
+        const Rectangle mm = Nav_MinimapRect();
+        const bool besideMap = mm.width > 0.0f && y - 6 < mm.y + mm.height && y - 6 + h > mm.y;
+        const int right = besideMap ? (int)mm.x - 8 : GetScreenWidth() - 8; // the panel's right edge, px
+        const int x = std::max(8, std::min(GetScreenWidth() / 2 + 20, right - w - 8));
+        DrawRectangle(x - 8, y - 6, w + 16, h, Fade(BLACK, 0.55f));
         DrawText(CacheKindName(CacheKindOf(q)), x, y, 20, SKYBLUE);
         for (size_t i = 0; i < lines.size(); ++i) DrawText(lines[i].c_str(), x, y + 24 + 20 * (int)i, 16, RAYWHITE);
         return;
