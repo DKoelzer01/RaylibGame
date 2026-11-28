@@ -249,13 +249,19 @@ void CaveGas_Update(Scene& world) {
         for (const CaveGasPocket& p : near) {
             if (p.kind == CaveGasKind::Methane && Burnt(p.id)) continue;
             if (Vector3Distance(p.centre, head) > kHazeReach + p.radius) continue;
-            for (int k = 0, shown = 0; k < 16 && shown < 5; ++k) {
-                const Vector3 q = Vector3Add(p.centre, Vector3Scale({ U(r) * 2 - 1, U(r) * 2 - 1, U(r) * 2 - 1 }, p.radius * 0.9f));
+            for (int k = 0, shown = 0; k < 32 && shown < 10; ++k) {
+                // Half round the pocket, half within 6 m of the head (where the player looks: a pocket's sphere often
+                // spans several passages, and puffs behind the rock show nothing).
+                const Vector3 around = k % 2 ? head : p.centre;
+                const float reach = k % 2 ? 6.0f : p.radius * 0.9f;
+                const Vector3 q = Vector3Add(around, Vector3Scale({ U(r) * 2 - 1, U(r) * 2 - 1, U(r) * 2 - 1 }, reach));
                 if (!CaveGas_InPocket(p, q) || body->densityAt(q) >= ISO_LEVEL) continue;
-                ++shown;
+                ++shown; ++stats.puffs;
                 ParticleBurst s;
                 s.count = 1; s.spread = 1.0f;
-                if (p.kind == CaveGasKind::CO2) { s.kind = ParticleKind::Dust; s.color = { 150, 168, 128, 120 }; s.size = 1.4f; s.life = 5.0f; s.speed = 0.06f; s.dir = Vector3Negate(p.up); }
+                s.selfLit = true; // in a cave the sun's shading turns it black: seen by the player's lamp or torch
+                // CO2 olive, darker than lamp-lit rock (GUESS)
+                if (p.kind == CaveGasKind::CO2) { s.kind = ParticleKind::Dust; s.color = { 96, 128, 48, 235 }; s.size = 1.8f; s.life = 5.0f; s.speed = 0.06f; s.dir = Vector3Negate(p.up); }
                 else { s.kind = ParticleKind::Smoke; s.color = { 222, 206, 128, 70 }; s.size = 1.1f; s.life = 4.0f; s.speed = 0.10f; s.dir = p.up; }
                 Particles_Emit(*body, q, s);
             }

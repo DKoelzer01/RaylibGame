@@ -20,6 +20,7 @@ struct Particle {
     Color color = WHITE;
     ParticleKind kind = ParticleKind::Dust;
     bool bounced = false;
+    bool selfLit = false; // (ParticleBurst::selfLit)
     bool alive() const { return age < life; }
 };
 
@@ -79,6 +80,7 @@ void Particles_Emit(const Planetoid& body, Vector3 local, const ParticleBurst& b
         p.groundR = r - 0.08f;
         p.seed = Rand01();
         p.bounced = false;
+        p.selfLit = b.selfLit;
         // A little variation in colour, as real smoke and dust have.
         const float k = RandRange(0.88f, 1.08f);
         p.color = { (unsigned char)std::min(255.0f, b.color.r * k), (unsigned char)std::min(255.0f, b.color.g * k), (unsigned char)std::min(255.0f, b.color.b * k), b.color.a };
@@ -202,7 +204,7 @@ void Particles_Draw(Scene& world) {
             }
             a *= Particles_NearFade(sqrtf(it.d2), it.size); // (#1126) dust drifting into the eye fades out
             if (a <= 0.0f) continue;
-            float k = kInfo[(int)p.kind].additive ? 1.0f : it.light;
+            float k = kInfo[(int)p.kind].additive || p.selfLit ? 1.0f : it.light;
             if (!kInfo[(int)p.kind].additive && p.kind != ParticleKind::Debris) k = std::max(k, 0.2f);
             rlColor4ub((unsigned char)(c.r * k), (unsigned char)(c.g * k), (unsigned char)(c.b * k), (unsigned char)std::clamp(a * c.a, 0.0f, 255.0f));
             const float h = it.size * 0.5f;

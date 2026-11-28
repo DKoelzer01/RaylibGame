@@ -50,7 +50,7 @@ float CaveGas_BlastDamage(Vector3 renderPos, uint32_t& lastSeen);
 
 // Tests: pockets added by hand (body-local, on the player's body; ids from 0xF0000000 up); what the warning shows.
 void CaveGas_TestAdd(const CaveGasPocket& p);
-struct CaveGasStats { int pockets = 0; int blasts = 0; int warnKind = 0; float warnDist = -1.0f; float edgeDist = -1.0f; bool hissing = false; }; // edgeDist: the head to the nearest live pocket's gas (m, 0 in it)
+struct CaveGasStats { int pockets = 0; int blasts = 0; int puffs = 0; /* haze puffs emitted (since the start) */ int warnKind = 0; float warnDist = -1.0f; float edgeDist = -1.0f; bool hissing = false; }; // edgeDist: the head to the nearest live pocket's gas (m, 0 in it)
 const CaveGasStats& CaveGas_Stats();
 
 #endif
