@@ -22,7 +22,7 @@
 55 | ladder          | #1734 | the rotary sieve part type in NetPart
 56 | ladder          | #1734 | the rotary pump part type in NetPart
 57 | staging         | #1886 | TeamStore: the team's progression store (research, map, blueprints) to its members
-60 | ladder          | #2097 | staging and ladder merged (57 staging, 58-59 open PRs #2047/#2059)
+61 | ladder          | #2097 | staging and ladder merged (57 staging, 58-60 open PRs #2047/#2059/#2101)
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
