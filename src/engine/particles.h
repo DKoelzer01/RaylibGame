@@ -53,5 +53,6 @@ float Particles_NearFade(float dist, float size);
 // through particles.fs (false: RAYLIBGAME_PARTICLE_LIGHT=0, the shader failed, or none drawn).
 float Particles_SkyAt(const Planetoid& body, Vector3 local);
 bool Particles_LastDrawLit();
+int Particles_DrawnCount(); // tests (#2140): particles past the distance and view culls in the last Particles_Draw
 
 #endif
