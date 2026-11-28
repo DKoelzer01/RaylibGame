@@ -700,6 +700,21 @@ void NetClient_SendChat(NetClient& c, const std::string& text) {
     SendMsg(c, MsgChat{ 0, text.substr(0, 256) });
 }
 
+bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vector3 dir, const std::string& name) {
+    if (c.state != NetClient::State::Joined || !c.conn) return false;
+    MsgMapPin m; m.add = add; m.body = body; m.name = name;
+    m.dir[0] = dir.x; m.dir[1] = dir.y; m.dir[2] = dir.z;
+    SendMsg(c, m);
+    ++c.mapPinsSent;
+    return true;
+}
+
+bool NetClient_SendResearchQueue(NetClient& c, uint8_t op, const std::string& node) {
+    if (c.state != NetClient::State::Joined || !c.conn) return false;
+    SendMsg(c, MsgResearchQueue{ op, node });
+    return true;
+}
+
 // ---- Join sync (#776) helpers ----
 
 // A body's plots as the save writes them (text; the same file mode both ways, so equal plots give equal bytes).

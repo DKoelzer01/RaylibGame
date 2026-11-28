@@ -156,12 +156,14 @@ void Particles_Update(Scene&, float dt) {
     }
 }
 
-namespace { bool lastDrawLit = false; }
+namespace { bool lastDrawLit = false; int drawnLast = 0; }
+int Particles_DrawnCount() { return drawnLast; }
 float Particles_SkyAt(const Planetoid& body, Vector3 local) { return SkyAt(body, local); }
 bool Particles_LastDrawLit() { return lastDrawLit; }
 
 void Particles_Draw(Scene& world) {
     lastDrawLit = false;
+    drawnLast = 0;
     if (pool.empty()) return;
     if (sprite.id == 0) {
         Image img = GenImageGradientRadial(32, 32, 0.0f, WHITE, BLANK);
@@ -200,11 +202,13 @@ void Particles_Draw(Scene& world) {
         case ParticleKind::Dust: size *= 1.0f + 1.2f * t; break;
         default: break;
         }
+        if (!world.inView(at, size)) continue; // (#2140) the billboard: a size-wide square, its corners within 0.71 x size
         const float lr = Vector3Length(p.pos);
         const Vector3 upW = b->dirToWorld(lr > 1e-3f ? Vector3Scale(p.pos, 1.0f / lr) : Vector3{ 0, 1, 0 });
         const float light = std::clamp(Vector3DotProduct(upW, sun) * 2.5f + 0.35f, 0.12f, 1.0f);
         (kInfo[(int)p.kind].additive ? glow : alpha).push_back({ at, d2, size, light, &p });
     }
+    drawnLast = (int)(alpha.size() + glow.size());
     if (alpha.empty() && glow.empty()) return;
 
     std::sort(alpha.begin(), alpha.end(), [](const Item& a, const Item& b) { return a.d2 > b.d2; }); // far first

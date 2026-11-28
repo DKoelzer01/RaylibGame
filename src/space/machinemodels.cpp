@@ -496,6 +496,11 @@ void Machines_Draw3D(Scene& world) {
             for (const MachineSpot& s : pc.spots) {
                 const float d2 = Vector3DistanceSqr(s.floorPlot, camPlot);
                 if (d2 > 32.0f * 32.0f) continue; // the casings read on their own beyond this
+                {   // (#2140) Out of view (before the nearest-kMaxDetailed cut, so the budget goes to machines in view): the details
+                    // stand on the machine's floor cell within a few metres of it (the largest machines are 3 x 3 cells).
+                    const Matrix at = body->localModel(DVec3(plot->toBody({ s.floorPlot.x, s.floorPlot.y + 1.0f, s.floorPlot.z })), world.renderOrigin);
+                    if (!world.inView({ at.m12, at.m13, at.m14 }, 4.0f)) continue;
+                }
                 Pending q; q.d2 = d2; q.body = body; q.plot = plot.get(); q.spot = &s; q.e = e; q.u = u; q.n = n; q.light = p.light;
                 pending.push_back(q);
             }

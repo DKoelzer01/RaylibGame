@@ -56,7 +56,7 @@ using TileSet = std::unordered_set<uint64_t>;
 std::unordered_map<std::string, TileSet> explored;     // body name -> explored tiles (main thread)
 std::unordered_map<std::string, int> exploredVersion;  // bumped when a tile is added
 
-struct Waypoint { std::string body, name; Vector3 dir; };
+struct Waypoint { std::string body, name; Vector3 dir; bool team = false; }; // team (#1886): the team's shared pin, from the host
 std::vector<Waypoint> waypoints;
 std::string startBody;
 Vector3 startDir{ 0, 0, 0 };
@@ -293,6 +293,14 @@ int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
 static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
 bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.25; } // (#937: 0.25 s, so one slow frame does not blink the readout)
+static constexpr float kMiniSize = 200.0f, kMiniRim = 4.0f; // the minimap's diameter and its dark rim, px
+static Vector2 MinimapCentre() { return { GetScreenWidth() - kMiniSize * 0.5f - 20.0f, 150.0f + kMiniSize * 0.5f }; }
+Rectangle Nav_MinimapRect() {
+    if (!Nav_MinimapShown()) return { 0, 0, 0, 0 };
+    const Vector2 c = MinimapCentre();
+    const float r = kMiniSize * 0.5f + kMiniRim;
+    return { c.x - r, c.y - r, 2.0f * r, 2.0f * r };
+}
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
@@ -383,7 +391,11 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
                 const Vector3 dir = PixelDir(m, (mouse.x - r.x) * scale, (mouse.y - r.y) * scale);
                 int n = 1;
                 for (const Waypoint& w : waypoints) if (w.body == h.body->name) ++n;
-                Nav_AddWaypoint(h.body->name, dir, TextFormat("WP%d", n));
+                auto taken = [&](const std::string& s) { for (const Waypoint& w : waypoints) if (w.body == h.body->name && w.name == s) return true; return false; };
+                while (taken(TextFormat("WP%d", n))) ++n; // (#1886) a teammate's pins share the numbers
+                const std::string name = TextFormat("WP%d", n);
+                Nav_AddWaypoint(h.body->name, dir, name);
+                if (gNavSharePin && gNavSharePin(true, NavPin{ h.body->name, name, Vector3Normalize(dir) })) waypoints.back().team = true;
             }
             dragging = false;
         }
@@ -401,7 +413,11 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
                 const float dd = Vector2Distance(s, mouse);
                 if (dd < bestD) { bestD = dd; best = (int)i; }
             }
-            if (best >= 0) waypoints.erase(waypoints.begin() + best);
+            if (best >= 0) {
+                const Waypoint w = waypoints[best];
+                if (w.team && gNavSharePin) gNavSharePin(false, NavPin{ w.body, w.name, w.dir }); // (#1886) gone for the team too
+                waypoints.erase(waypoints.begin() + best);
+            }
         }
         if (IsKeyPressed(KEY_C)) { mapCentre = h.up; mapDirtyAt = GetTime(); } // back to the player
     }
@@ -463,8 +479,8 @@ void Nav_DrawHUD(Scene& world) {
     if (!HasMap() || !minimap.tex.id || !minimap.shown || minimapBody != h.body->name) return;
     minimapDrawnAt = GetTime();
     const MapImage& m = *minimap.shown;
-    const float size = 200.0f, rad = size * 0.5f;
-    const Vector2 c = { sw - rad - 20.0f, 150.0f + rad };
+    const float size = kMiniSize, rad = size * 0.5f;
+    const Vector2 c = MinimapCentre();
     const float rot = heading >= 0.0f ? -heading : 0.0f;
     DrawCircleV(c, rad + 4.0f, Fade(BLACK, 0.55f));
     // The image is centred where it was rendered and wider than the circle; shift it by how far the
@@ -607,7 +623,7 @@ void Nav_Save(FILE* f) {
         for (uint64_t k : kv.second) fprintf(f, " %llu", (unsigned long long)k);
         fprintf(f, "\n");
     }
-    for (const Waypoint& w : waypoints) fprintf(f, "nav_waypoint %s %f %f %f %s\n", w.body.c_str(), w.dir.x, w.dir.y, w.dir.z, w.name.c_str());
+    for (const Waypoint& w : waypoints) if (!w.team) fprintf(f, "nav_waypoint %s %f %f %f %s\n", w.body.c_str(), w.dir.x, w.dir.y, w.dir.z, w.name.c_str());
     if (hasStart) fprintf(f, "nav_start %s %f %f %f\n", startBody.c_str(), startDir.x, startDir.y, startDir.z);
 }
 
@@ -671,6 +687,46 @@ void Nav_MergeTilesText(const std::string& text) {
         if (mine.size() != before) ++exploredVersion[body]; // the map images redraw
     }
 }
+
+std::function<bool(bool, const NavPin&)> gNavSharePin;
+
+std::string Nav_PinName(const std::string& raw) {
+    std::string s;
+    for (char ch : raw) {
+        if (s.size() >= 48) break;
+        if (ch == ' ' || ch == '\t') s += '_';
+        else if (ch > ' ' && ch < 127) s += ch; // (one word in the text and the save)
+    }
+    return s;
+}
+
+std::string Nav_PinsText(const std::vector<NavPin>& pins) {
+    std::string s;
+    for (const NavPin& p : pins) s += TextFormat("pin %s %.9g %.9g %.9g %s\n", p.body.c_str(), p.dir.x, p.dir.y, p.dir.z, p.name.c_str());
+    return s;
+}
+
+std::vector<NavPin> Nav_PinsFromText(const std::string& text) {
+    std::vector<NavPin> out;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream words(line);
+        std::string tag;
+        NavPin p;
+        if (!(words >> tag) || tag != "pin" || !(words >> p.body >> p.dir.x >> p.dir.y >> p.dir.z >> p.name)) continue;
+        if (!std::isfinite(p.dir.x) || !std::isfinite(p.dir.y) || !std::isfinite(p.dir.z) || Vector3Length(p.dir) < 0.5f) continue;
+        p.dir = Vector3Normalize(p.dir);
+        out.push_back(p);
+    }
+    return out;
+}
+
+void Nav_SetTeamPins(const std::string& text) {
+    waypoints.erase(std::remove_if(waypoints.begin(), waypoints.end(), [](const Waypoint& w) { return w.team; }), waypoints.end());
+    for (const NavPin& p : Nav_PinsFromText(text)) waypoints.push_back({ p.body, p.name, p.dir, true });
+}
+
+int Nav_TeamPinCount() { int n = 0; for (const Waypoint& w : waypoints) n += w.team; return n; }
 
 int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {
     const size_t before = set.size();
