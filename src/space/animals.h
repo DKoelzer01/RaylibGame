@@ -75,6 +75,8 @@ int Animals_CaveSites();
 // (#1740, #1739) A cave spawn site is dark: no fire, lamp or carried light within 12 m, and the light grid 1 m over its floor
 // at most SpawnTune::kDarkLevel (torches and lamps round corners and down tunnels). floor, up: body-local.
 bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up);
+// (#1740) The light (0..1) a cave spawn site gets (SpawnSite::light): SpawnSite_Light with the grid's level 1 m over its floor.
+float Animals_CaveSiteLight(const Planetoid& body, Vector3 floor, Vector3 up, bool nearMouth, float depth, bool openSky);
 void Animals_CaveSpawnNow();
 void Animals_ResetCaveSpawns();
 void Animals_Reset();

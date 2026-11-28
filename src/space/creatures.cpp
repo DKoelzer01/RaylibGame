@@ -1,5 +1,6 @@
 // Creature framework (#1223): see creatures.h.
 #include "creatures.h"
+#include "underground.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -197,6 +198,16 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "cap") { float n = 0.0f; ok = num(n); c.capPerChunk = (int)n; }
         else if (k == "respawn") ok = num(c.respawn);
         else if (k == "nests") c.nests = v == "1" || v == "yes";
+        else if (k == "region") { // (#1740) region=karst,flooded: the underground regions it spawns in (underground.h names)
+            static_assert((int)UndergroundRegion::Count <= 32, "CreatureSpec::regions is a 32-bit mask");
+            c.regions = 0;
+            for (const std::string& name : SplitOn(v, ',')) {
+                bool found = false;
+                for (int r = 0; r < (int)UndergroundRegion::Count; ++r)
+                    if (name == UndergroundRegion_Name((UndergroundRegion)r)) { c.regions |= 1u << r; found = true; }
+                if (!found) { ok = false; break; }
+            }
+        }
         else if (k == "loot") { // item:n,item:n
             for (const std::string& p : SplitOn(v, ',')) {
                 const size_t colon = p.find(':');
@@ -386,11 +397,17 @@ bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s) {
     if (s.depth < c.depthMin || s.depth > c.depthMax) return false;
     if (s.light > c.darkMax + 1e-4f) return false;
     if (c.wet && !s.wet) return false;                             // (#1226) by the cave water only
+    if (c.regions && !((c.regions >> s.region) & 1u)) return false; // (#1740) only in its underground regions
     switch (c.habitat) {
         case Habitat::Cave: return !s.nearMouth && !s.openSky && (s.kind == 0 || s.kind == 3 || s.kind == 4); // (#1592) under rock
         case Habitat::Mouth: return s.nearMouth;                    // scavengers: by the entrances (decided)
         default: return false;                                     // the surface and night ones spawn as herds and hunters do; dungeons later
     }
+}
+
+float SpawnSite_Light(bool nearMouth, float depth, bool openSky, int gridLevel) {
+    const float sky = nearMouth ? 0.5f : depth < 4.0f || openSky ? 0.6f : 0.0f;
+    return std::max(sky, std::clamp(gridLevel, 0, 255) / 255.0f);
 }
 
 int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now) {
@@ -574,6 +591,32 @@ TEST(Creatures, InfightingAndAlert) {
     BrainState p;
     BrainInput pin; pin.now = 0.0; pin.peaceful = true; pin.others = { Player(2.0f) };
     EXPECT_EQ(Brain_Step(p, c, pin, 0.1f).mood, Mood::Idle);
+}
+
+// (#1740) region= keeps a species to its underground regions; absent, any region. The site's light reads the light grid.
+TEST(Creatures, SpawnRegionAndGridLight) {
+    CreatureSpec any, ooze; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("miner | undead | habitat=cave depth=8-400 dark=0.1", any, &err)) << err;
+    ASSERT_TRUE(Creatures_ParseLine("ooze | ooze | habitat=cave depth=8-400 dark=0.2 region=karst,flooded", ooze, &err)) << err;
+    EXPECT_EQ(any.regions, 0u);
+    EXPECT_EQ(ooze.regions, (1u << (int)UndergroundRegion::Karst) | (1u << (int)UndergroundRegion::Flooded));
+    CreatureSpec bad; EXPECT_FALSE(Creatures_ParseLine("x | y | region=karst,lava", bad, &err)) << "an unknown region name";
+    SpawnSite s; s.kind = 0; s.depth = 50.0f; s.light = 0.0f;
+    for (int r = 0; r < (int)UndergroundRegion::Count; ++r) {
+        s.region = (uint8_t)r;
+        EXPECT_TRUE(Spawn_Fits(any, s)) << UndergroundRegion_Name((UndergroundRegion)r);
+        const bool in = r == (int)UndergroundRegion::Karst || r == (int)UndergroundRegion::Flooded;
+        EXPECT_EQ(Spawn_Fits(ooze, s), in) << UndergroundRegion_Name((UndergroundRegion)r);
+    }
+    // Light: a deep site with no grid light is dark; a torch-lit one (grid 200 of 255) is too bright; the sky's share stays.
+    EXPECT_FLOAT_EQ(SpawnSite_Light(false, 50.0f, false, 0), 0.0f);
+    EXPECT_NEAR(SpawnSite_Light(false, 50.0f, false, 200), 200.0f / 255.0f, 1e-6f);
+    EXPECT_FLOAT_EQ(SpawnSite_Light(true, 50.0f, false, 0), 0.5f);
+    EXPECT_FLOAT_EQ(SpawnSite_Light(false, 2.0f, false, 10), 0.6f);
+    EXPECT_FLOAT_EQ(SpawnSite_Light(false, 50.0f, false, 999), 1.0f);
+    s.region = 0;
+    s.light = SpawnSite_Light(false, 50.0f, false, 200); EXPECT_FALSE(Spawn_Fits(any, s)) << "lit by the grid";
+    s.light = SpawnSite_Light(false, 50.0f, false, 0); EXPECT_TRUE(Spawn_Fits(any, s)) << "dark";
 }
 
 TEST(Creatures, SpawnFitsAndDue) {

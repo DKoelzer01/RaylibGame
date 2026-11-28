@@ -91,6 +91,7 @@ struct CreatureSpec {
     int capPerChunk = 2;       // alive at once per 64 m chunk
     float respawn = 600.0f;    // s for a chunk to refill one, after it was cleared
     bool nests = false;        // larger caves hold a nest: destroyed, the chunk stops respawning
+    uint32_t regions = 0;      // (#1740, #1465) region=karst,flooded: a bit per UndergroundRegion it spawns in; 0 any region
     std::vector<std::pair<std::string, int>> loot; // extra drops on top of animals.txt's
     // (#1227) A front shield: shield= of a non-blunt hit from in front (within shieldArc degrees of its facing) is stopped; blunt
     // and hits from the side or back land whole. wake=light: it sleeps until a light comes within wakeRange m (or it is hit),
@@ -202,8 +203,12 @@ bool Throw_Aim(Vector3 from, Vector3 to, Vector3 up, float speed, float g, Vecto
 // A place a creature could appear: a cave floor (body-local) with what it is (the segment kind: 0 passage, 1 mouth, 3 chamber,
 // 4 slot; its radius), how deep under the surface, the light there (0..1), and whether a cave entrance is near (20 m).
 struct SpawnSite { Vector3 floor{}, up{}; int kind = 0; float radius = 0.0f, depth = 0.0f, light = 0.0f; bool nearMouth = false, wet = false;
-                   bool openSky = false; }; // (#1592) openSky: no rock over the floor within 80 m (the open ground under the sky)
+                   bool openSky = false;    // (#1592) openSky: no rock over the floor within 80 m (the open ground under the sky)
+                   uint8_t region = 0; };   // (#1740) the UndergroundRegion (underground.h) at the floor
 bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s);
+// (#1740) A site's light (0..1): the brighter of the sky's (0.5 by a cave mouth, 0.6 near the surface or under open sky, else
+// 0: a GUESS kept from before the grid) and the light grid's level 1 m over the floor (0-255; the grid holds torches and lamps).
+float SpawnSite_Light(bool nearMouth, float depth, bool openSky, int gridLevel);
 // One species in one 64 m chunk: what has spawned there. The first visit fills it to the cap; after that one more every
 // respawn seconds while below the cap, and none once a nest there was destroyed (species with nests=1; decided).
 struct SpawnChunk { double nextAt = 0.0; bool filled = false; bool hasNest = false; bool nestDestroyed = false; uint64_t nest = 0;
