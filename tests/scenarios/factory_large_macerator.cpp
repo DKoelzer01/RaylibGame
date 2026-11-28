@@ -24,8 +24,8 @@ int ctlPart = -1, inHatch = -1, outHatch = -1, energyHatch = -1, gen = -1;
 bool sawWorking = false;
 Vector3 At(float x, float y, float z) { return plot->toBody({ x * kCellSize, y * kCellSize, z * kCellSize }); }
 Vector3 Up() { return Vector3Normalize(Vector3Subtract(At(0, 1, 0), At(0, 0, 0))); }
-// Front and to the west, above: the controller, the energy hatch, the cable and the generator, the hopper on top.
-void View(ScenarioCtx& c) { c.camera(At(ctl.x - 4.5f, ctl.y + 5.0f, ctl.z + 5.5f), At(ctl.x - 1.0f, ctl.y + 1.5f, ctl.z - 1.0f), Up()); }
+// High in front, between the structure and the generator: the controller, the cable and the generator, the hopper on top.
+void View(ScenarioCtx& c) { c.camera(At(ctl.x - 1.5f, ctl.y + 7.5f, ctl.z + 7.0f), At(ctl.x - 1.5f, ctl.y + 1.5f, ctl.z - 1.0f), Up()); }
 int Count(const std::vector<std::pair<std::string, int>>& slots, const char* item) { int n = 0; for (const auto& [i, k] : slots) if (i == item) n += k; return n; }
 MachineView ViewOf(ScenarioCtx& c, int part) { // (View follows one machine: the first call after a switch is stale)
     Factory::View(c.body->id, plot->id, part); Factory::WaitTicks(2);
