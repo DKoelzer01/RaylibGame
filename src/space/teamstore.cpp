@@ -1,6 +1,7 @@
 #include "teamstore.h"
 
 #include "blueprint.h"
+#include "caches.h"
 #include "navigation.h"
 #include "research.h"
 #include "teamquests.h"
@@ -23,6 +24,7 @@ const Section kSections[] = {
     {"map", TeamQuests_TilesText, nullptr, ApplyMap}, // (#338) saved with the team's book (team_tiles); Nav_TilesText lines
     {"blueprints", Blueprint_TeamText, Blueprint_SetTeamText, Blueprint_ApplyTeamText}, // the team library: .bp texts
     {"pins", TeamQuests_PinsText, TeamQuests_SetPinsText, ApplyPins}, // (#1886) the team's shared map pins (MsgMapPin): Nav_PinsText lines
+    {"alt_recipes", Caches_TeamAltsText, Caches_SetTeamAltsText, Caches_SetTeamAltsText}, // (#2072) alternate recipes from caches: one id a line
 };
 
 int localTeam = 0; // a client's team, in the host's ids

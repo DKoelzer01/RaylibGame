@@ -4,6 +4,7 @@
 #include "inventory.h"
 #include "worldtypes.h"
 #include "research.h"
+#include "survival.h"
 #include "uipalette.h"
 #include "voxel.h"
 
@@ -66,6 +67,12 @@ CacheTeam CacheTeamOf(int team) {
     t.researched.assign(rs.done.begin(), rs.done.end());
     for (const std::string& id : rs.done)
         if (const ResearchNode* n = Research_Find(id)) t.tier = std::max(t.tier, n->tier);
+    // (#2072) The ladder tier: the host's book (a dedicated server's teams have their own books: a known gap, their research
+    // tier stands in from tier 3).
+    t.tier = std::max(t.tier, QuestBook_Tier());
+    for (const ResearchNode& n : Research_Nodes())
+        if (Research_CanStart(rs, n)) t.frontier.push_back({ n.id, n.name, n.tier, n.units, n.core });
+    t.alts.assign(Caches_TeamAlts(team).begin(), Caches_TeamAlts(team).end());
     return t;
 }
 
