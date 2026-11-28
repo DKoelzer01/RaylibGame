@@ -112,6 +112,10 @@ tier first; its summary line says which and why.
   that (user, 2026-11-26: no outside trigger). A by-hand batch: `gh workflow run selfhosted.yml -r staging`
   (`-f tier=scheduled` skips it when staging hasn't moved).
 - `vars.INTEGRATION_BRANCH` names the integration branch (default `staging`).
+- **The plan job runs on `ubuntu-latest` (#2144)**, so a run that plans a skip or no scenarios never waits for a GPU
+  runner. Its skip markers are commit statuses (`self-hosted/batch`, `self-hosted/nightly`) on the commit a run started
+  on, the same for every runner (they were files in each runner's `ci-persist`, which disagreed). When the statuses
+  can't be read, the run doesn't skip.
 - **Superseded runs are cancelled (#2117, user 2026-11-28).** `concurrency` groups runs by the branch they build and
   by class: `full` (the nightly, a push to `develop`, `tier=full`), `timed` (the 4-h batch, `tier=scheduled`) and `run`
   (everything else, e.g. a PR's evidence). In `full` and `run` the newer run cancels the older one, queued or running:
