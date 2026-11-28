@@ -70,6 +70,13 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
 static bool FeltIsRelative(Vector3 feet, const Planetoid* nearest) {
     return nearest && nearest->orbitParent && Vector3Length(BodyGravityAt(*nearest, feet)) >= 0.1f;
 }
+// (#2149) Another body's surface motion at `at`, in the terms of the player's velocity. That velocity is measured against
+// the nearest body's ground less `nearestFrameVel` (collideFrameVel: the nearest's surface motion when it is world-frame,
+// airborne off the frame path; 0 when it is ground-relative, grounded or on the frame path). Passing the other body's
+// world-frame motion against a ground-relative velocity read a ring rock's orbit (km/s) as an impact.
+static Vector3 ContactFrameVelocity(const Planetoid& other, const Planetoid& nearest, Vector3 at, Vector3 nearestFrameVel) {
+    return Vector3Subtract(other.surfaceVelocity(at), Vector3Subtract(nearest.surfaceVelocity(at), nearestFrameVel));
+}
 static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
     const Vector3 g = GravityAt(world, feet);
     if (!FeltIsRelative(feet, nearest)) return g;
@@ -830,7 +837,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
         auto* other = dynamic_cast<Planetoid*>(obj.get());
         if (!other || other == &p || other->flat || (other->vehicle && !other->freeFall)) continue; // not a flying rocket (as frames.cpp)
         if (Vector3Distance(mid, other->position) > other->radius * other->scale + 0.5f * height + radius) continue;
-        onGround = collideBody(*other, offsets, kSamples, feet, other->surfaceVelocity(mid), pushBudget, nullptr, world.renderOrigin) || onGround;
+        onGround = collideBody(*other, offsets, kSamples, feet, ContactFrameVelocity(*other, p, mid, collideFrameVel), pushBudget, nullptr, world.renderOrigin) || onGround;
     }
     if (p.plots) {
         // Standing on a part: a probe just below the feet sphere.
@@ -1239,6 +1246,21 @@ TEST_F(PlayerNetTest, PlacedPlayerStaysPutOnATurningPlanet) {
     Player::NetState s;
     ASSERT_TRUE(p.netState(world, s));
     EXPECT_LT((s.local - local).length(), 0.02) << "float render feet: within 2 cm at 60 km";
+}
+
+// #2149: a second body's motion at a contact, in the player's velocity terms. Two ring rocks on near orbits, 3 km/s each:
+// ground-relative (grounded, or the frame path) the contact sees only their difference, never the orbit itself.
+TEST(PlayerContact, OtherBodyMotionIsInThePlayersTerms) {
+    Planetoid a("rockA", DVec3{ 0.0, 0.0, 0.0 }, Vector3{ 0, 0, 0 }, 1.0f, 7u, 20.0f);
+    Planetoid b("rockB", DVec3{ 45.0, 0.0, 0.0 }, Vector3{ 0, 0, 0 }, 1.0f, 8u, 20.0f);
+    a.linearVelocity = { 0, 0, 3000.0f };
+    b.linearVelocity = { 0, 0.5f, 3001.0f };
+    a.spin = b.spin = { 0, 0, 0 };
+    const Vector3 at = { 22.5f, 0, 0 };
+    const Vector3 rel = ContactFrameVelocity(b, a, at, Vector3{ 0, 0, 0 }); // ground-relative velocity
+    EXPECT_LT(Vector3Distance(rel, Vector3{ 0, 0.5f, 1.0f }), 1e-3f) << rel.x << " " << rel.y << " " << rel.z;
+    const Vector3 world = ContactFrameVelocity(b, a, at, a.surfaceVelocity(at)); // world-frame (airborne, frames off)
+    EXPECT_LT(Vector3Distance(world, b.surfaceVelocity(at)), 1e-3f);
 }
 
 TEST_F(PlayerNetTest, UnknownBodyIsRefused) {
