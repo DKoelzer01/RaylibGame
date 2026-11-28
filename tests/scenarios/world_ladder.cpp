@@ -112,6 +112,9 @@ SCENARIO("world/ladder") {
     s.step("no input holds on the ladder", 3.0, [](ScenarioCtx& c) {
         FollowCam(c); Trace(c); FaceWall(c);
         Hold(0);
+        // (#2086) This step's own start: c.t restarts each step, so the previous step's t0 is on another clock.
+        static bool started = false;
+        if (!started) { started = true; t0 = c.t; h0 = Height(c); }
         if (c.t - t0 < 1.0) return false;
         c.lt("height change while holding (m)", fabs(Height(c) - h0), 0.1);
         c.check("still on the ladder", player.onLadder);
