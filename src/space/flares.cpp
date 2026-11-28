@@ -21,13 +21,15 @@ constexpr float kLift = 0.25f;       // m: the light's cell is taken this far ab
 
 struct Flare {
     uint64_t bodyId = 0;
-    Vector3 pos{}, vel{};      // body-local (the frame of the body it lies on: it turns with the ground)
+    DVec3 pos{};               // body-local, double (Plan 11 F4: 60 km out a float steps ~4 mm); turns with the ground
+    Vector3 vel{};             // body-local m/s
     float age = 0.0f, burn = kFlareBurnSeconds;
     bool landed = false;       // touched the ground: from then on it lights the grid
 };
 std::vector<Flare> flares;
 
 Planetoid* BodyOf(uint64_t id) { return Planetoid::find(id); }
+Vector3 UpOf(const DVec3& p) { const double l = p.length(); return l > 0.0 ? Vector3{ (float)(p.x / l), (float)(p.y / l), (float)(p.z / l) } : Vector3{ 0, 1, 0 }; }
 
 // The reach now: full, then down to 0 over the fade (whole metres, so the fade is ~16 relights, not one a frame).
 float ReachOf(const Flare& f) {
@@ -38,7 +40,7 @@ float ReachOf(const Flare& f) {
 }
 }
 
-void Flares_Throw(Planetoid& body, Vector3 from, Vector3 velocity, float burnSeconds) {
+void Flares_Throw(Planetoid& body, const DVec3& from, Vector3 velocity, float burnSeconds) {
     Flare f;
     f.bodyId = body.id;
     f.pos = from; f.vel = velocity;
@@ -54,13 +56,12 @@ bool Flares_ThrowFromPlayer(Scene& world, float burnSeconds) {
         Audio_Play(Sfx::Error, 0.3f);
         return false;
     }
-    const Vector3 eye = body->toLocal(world.camera.position);
+    const DVec3 eye = body->toLocalRenderD(world.camera.position, world.renderOrigin);
     const Vector3 look = body->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
-    const Vector3 up = Vector3Normalize(eye);
     // A little upward lob on the view, from just in front of the eye.
-    const Vector3 dir = Vector3Normalize(Vector3Add(look, Vector3Scale(up, 0.2f)));
+    const Vector3 dir = Vector3Normalize(Vector3Add(look, Vector3Scale(UpOf(eye), 0.2f)));
     if (!inventory.remove("flare", 1)) return false;
-    Flares_Throw(*body, Vector3Add(eye, Vector3Scale(look, 0.4f)), Vector3Scale(dir, kThrowSpeed), burnSeconds);
+    Flares_Throw(*body, eye + Vector3Scale(look, 0.4f), Vector3Scale(dir, kThrowSpeed), burnSeconds);
     Audio_Play(Sfx::Build, 0.4f, 1.6f);
     return true;
 }
@@ -75,10 +76,9 @@ void Flares_Update(Scene&, float dt) {
         if (!gone) {
             // Ballistic under the body's pull; a step into the ground is not taken and the flare stops there. A resting
             // flare keeps trying the next step down, so it settles onto the floor and falls again if the floor is dug.
-            const Vector3 up = Vector3Normalize(f.pos);
-            f.vel = Vector3Add(f.vel, Vector3Scale(up, -9.81f * Fluid::GravityScale(*body) * dt));
-            const Vector3 next = Vector3Add(f.pos, Vector3Scale(f.vel, dt));
-            if (body->densityAt(next) >= ISO_LEVEL) { f.vel = {}; f.landed = true; }
+            f.vel = Vector3Add(f.vel, Vector3Scale(UpOf(f.pos), -9.81f * Fluid::GravityScale(*body) * dt));
+            const DVec3 next = f.pos + Vector3Scale(f.vel, dt);
+            if (body->densityAt(next.toFloat()) >= ISO_LEVEL) { f.vel = {}; f.landed = true; } // (densityAt takes floats)
             else f.pos = next;
         }
         if (gone) { flares[k] = flares.back(); flares.pop_back(); }
@@ -91,9 +91,9 @@ void Flares_Draw3D(Scene& world) {
         Planetoid* body = BodyOf(f.bodyId);
         if (!body) continue;
         // Under the body's localModel (double translation): a float toWorld 60 km out steps ~4 mm and jitters (#271/#284).
-        const Matrix m = body->localModel(DVec3(f.pos), world.renderOrigin);
+        const Matrix m = body->localModel(f.pos, world.renderOrigin);
         if (Vector3Distance({ m.m12, m.m13, m.m14 }, world.camera.position) > 150.0f) continue;
-        const Vector3 up = Vector3Normalize(f.pos);
+        const Vector3 up = UpOf(f.pos);
         // Lying on its side once down; end over end in flight.
         Vector3 side = Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
         side = Vector3Normalize(side);
@@ -118,13 +118,14 @@ void Flares_Lights(const Planetoid& body, std::vector<FlareLight>& out) {
         if (f.bodyId != body.id || !f.landed) continue; // in flight it only glows: a moving source would relight every frame
         const float reach = ReachOf(f);
         if (reach <= 0.0f) continue;
-        out.push_back({ Vector3Add(f.pos, Vector3Scale(Vector3Normalize(f.pos), kLift)), reach });
+        const DVec3 at = f.pos + Vector3Scale(UpOf(f.pos), kLift);
+        out.push_back({ (int)std::floor(at.x), (int)std::floor(at.y), (int)std::floor(at.z), reach });
     }
 }
 
 int Flares_Count() { return (int)flares.size(); }
 
-bool Flares_First(Vector3& local, bool& resting, float& reach) {
+bool Flares_First(DVec3& local, bool& resting, float& reach) {
     if (flares.empty()) return false;
     local = flares[0].pos; resting = flares[0].landed; reach = ReachOf(flares[0]);
     return true;

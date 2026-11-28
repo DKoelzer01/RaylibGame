@@ -7,6 +7,7 @@
 // reads see it with no code of their own. Its reach fades to nothing over its last seconds, then it is gone.
 // Local only: flares are not saved and do not replicate yet (a client cannot throw one; a host's flare is its own).
 
+#include "dvec3.h"
 #include <raylib.h>
 #include <cstdint>
 #include <vector>
@@ -19,19 +20,19 @@ constexpr float kFlareFadeSeconds = 10.0f; // the last seconds the reach shrinks
 constexpr float kFlareReach = 16.0f;       // m of light-grid reach at full burn (GUESS: between a torch's 12 and a lamp's 20)
 
 // A flare thrown from `from` (body-local) with `velocity` (body-local m/s); burnSeconds < 0: kFlareBurnSeconds.
-void Flares_Throw(Planetoid& body, Vector3 from, Vector3 velocity, float burnSeconds = -1.0f);
+void Flares_Throw(Planetoid& body, const DVec3& from, Vector3 velocity, float burnSeconds = -1.0f);
 // The local player's throw from the eye along the view (RMB with a flare in hand): takes one from the inventory.
 bool Flares_ThrowFromPlayer(Scene& world, float burnSeconds = -1.0f); // burnSeconds: as Flares_Throw (tests shorten it)
 void Flares_Update(Scene& world, float dt);
 void Flares_Draw3D(Scene& world);
-void Flares_Clear();
+void Flares_Clear(); // every flare gone (world unload, new world, save load: flares are not saved)
 
-// A flare's light for the grid: its cell's body-local point and its reach now (m; 0 = dark).
-struct FlareLight { Vector3 local; float reach; };
+// A flare's light for the grid: its 1 m cell (body-local) and its reach now (m; 0 = dark).
+struct FlareLight { int x, y, z; float reach; };
 void Flares_Lights(const Planetoid& body, std::vector<FlareLight>& out);
 
 // Tests: the flares in the world (any body), and where the first one is.
 int Flares_Count();
-bool Flares_First(Vector3& local, bool& resting, float& reach);
+bool Flares_First(DVec3& local, bool& resting, float& reach);
 
 #endif

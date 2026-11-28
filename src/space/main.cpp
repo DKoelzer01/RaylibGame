@@ -318,6 +318,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Nav_Reset();
         Farm_Reset();
         Animals_Reset();
+        Flares_Clear(); // (#2062)
         Structures_Reset();
         Fishing_Reset();
         Trapping_Reset();
@@ -1468,7 +1469,7 @@ int main(int argc, char** argv)
     gSaveNoticeHook = [](const std::string& note) { GameUI_Toast(note.c_str()); }; // (#1693) a save upgraded on load: one toast
     // (#902) Pointers into a world being unloaded (a body, a plot, a hit) dropped before its bodies go: frames go on drawing
     // while the next world loads, and a reload crashed in TerrainTool_Draw3D / Wind_Bind on the old, freed planet.
-    World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); });
+    World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); Flares_Clear(); }); // (#2062) a burning flare stays in its world
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);

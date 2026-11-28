@@ -187,7 +187,7 @@ void LightLevel_Update(Scene& world, bool inGame) {
     flareLights.clear();
     Flares_Lights(*body, flareLights);
     for (const FlareLight& f : flareLights)
-        ++want[{ FloorI(f.local.x), FloorI(f.local.y), FloorI(f.local.z), LightGrid::Emission(f.reach, kFlareColour[0], kFlareColour[1], kFlareColour[2]) }];
+        ++want[{ f.x, f.y, f.z, LightGrid::Emission(f.reach, kFlareColour[0], kFlareColour[1], kFlareColour[2]) }];
     for (uint64_t k : changed) S.refresh.insert(k); // re-read below, in the frame's time budget
     // Sources: the difference between what the plots hold and what the grid has.
     for (auto it = S.current.begin(); it != S.current.end();) {

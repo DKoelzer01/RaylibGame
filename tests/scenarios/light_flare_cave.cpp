@@ -81,20 +81,20 @@ SCENARIO("light/flare-cave") {
     });
     s.step("it lands", 5.0, [](ScenarioCtx& c) {
         View(c);
-        Vector3 at{}; bool resting = false; float reach = 0.0f;
+        DVec3 at{}; bool resting = false; float reach = 0.0f;
         if (!Flares_First(at, resting, reach)) { c.fail("the flare vanished in flight"); return true; }
         c.waitingFor("the flare on the floor");
         if (!resting) return false;
-        S.rest = at;
-        const float h = Vector3Length(at) - Vector3Length(S.pt(0.0f, 0.0f, kFloor));
+        S.rest = at.toFloat(); // (the grid reads float points: its 1 m cells)
+        const double h = at.length() - Vector3Length(S.pt(0.0f, 0.0f, kFloor));
         c.between("it rests on the floor (m above the carved floor)", h, -0.6, 0.6);
-        c.gt("it flew from the hand (m along the room)", Vector3DotProduct(Vector3Subtract(at, S.pt(-7.0f, -1.5f, kFloor)), S.ax), 2.0);
+        c.gt("it flew from the hand (m along the room)", Vector3DotProduct(Vector3Subtract(S.rest, S.pt(-7.0f, -1.5f, kFloor)), S.ax), 2.0);
         return true;
     });
     s.step("the grid lights up", 4.0, [](ScenarioCtx& c) {
         View(c);
-        Vector3 at{}; bool resting = false; float reach = 0.0f;
-        if (Flares_First(at, resting, reach)) S.rest = at;
+        DVec3 at{}; bool resting = false; float reach = 0.0f;
+        if (Flares_First(at, resting, reach)) S.rest = at.toFloat();
         S.peak = std::max(S.peak, LevelAtFlare());
         c.waitingFor("the grid lit round the flare: level " + std::to_string(LevelAtFlare()));
         return S.peak >= 100 && !LightLevel_Stats().busy;
