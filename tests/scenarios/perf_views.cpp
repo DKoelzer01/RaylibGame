@@ -5,6 +5,7 @@
 #include "scenario.h"
 #include "biomevariants.h"
 #include "fluid.h"
+#include "foliage.h"
 #include "profiler.h"
 #include "trees.h"
 #include "world.h"
@@ -37,6 +38,11 @@ struct Timing {
         c.metric("frame p99", pct(0.99), "ms");
         c.metric("frame max", s.back(), "ms");
         c.metric("frames over 30 ms", (double)(s.end() - std::upper_bound(s.begin(), s.end(), 30.0)), "");
+        int listed = 0;
+        const int kept = Foliage_KeptDraws(listed); // (#2164) grass draws left after the terrain's Hi-Z verdict
+        c.metric("grass draws listed", (double)listed, "");
+        c.metric("grass draws kept", (double)kept, "");
+        c.metric("gpu:grass", std::max(0.0, Profiler_ZoneMeanMs("gpu:grass")), "ms");
         c.gt("frames timed", (double)s.size(), 60.0);
     }
 };
@@ -288,6 +294,79 @@ SCENARIO("perf/horizon-view") {
         c.metric("fly: frame max", s.empty() ? 0.0 : s.back(), "ms");
         for (const char* z : { "trees: batch start", "trees: batch sort", "trees: batch upload" })
             c.metric(std::string("fly: ") + z, std::max(0.0, Profiler_ZoneMeanMs(z)), "ms");
+        return true;
+    });
+}
+
+// (#2164) Grass hidden by a rise: from the meadow round the start (flora-view's), the eye 1.8 m over the ground where the
+// rise ahead hides the most of the ring Hi-Z may cull (70-100 m out, 3 m up: a grass box reaches ~1.5 m over the ground and a
+// shallow dip hid only the ground; nearer than RAYLIBGAME_HIZ_NEAR,
+// 64 m, nothing is culled), looking along the ground. 10 s timed: gpu:grass and the grass draws kept / listed
+// (RAYLIBGAME_GRASS_HIZ=0 for the A/B).
+SCENARIO("perf/grass-ridge") {
+    s.tags = { "perf", "planet", "foliage" };
+    s.world = ScenarioWorld::Planet;
+    s.args = { "--day", "--no-hud" };
+    s.env = { { "RAYLIBGAME_WEATHER_FORCE", "0" } };
+    s.timeout = 180.0;
+    s.record = false;
+    struct V { Vector3 up{}, eye{}, at{}; int hidden = -1; Timing timing; };
+    static V v;
+    s.step("find a rise", 60.0, [](ScenarioCtx& c) {
+        c.waitingFor("an idle world");
+        if (c.T < 2.0 || !WorldIdle()) return false;
+        const float R = c.field->radius;
+        const Vector3 home = c.spawnDirLocal();
+        auto groundAt = [&](Vector3 dir) { // by density, down from 8 m over the elevation (banks and rocks; a meadow, not cliffs)
+            const float g = R + std::max(0.0f, c.field->elevation(dir));
+            for (float y = g + 8.0f; y > g - 8.0f; y -= 0.5f)
+                if (c.field->density(Vector3Scale(dir, y), nullptr) >= ISO_LEVEL) return y;
+            return g;
+        };
+        auto blocked = [&](Vector3 a, Vector3 b) {
+            for (int k = 1; k < 40; ++k) if (c.field->density(Vector3Lerp(a, b, k / 40.0f), nullptr) >= ISO_LEVEL) return true;
+            return false;
+        };
+        const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(home, fabsf(home.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(home, e1);
+        for (int i = -4; i <= 4; ++i)
+            for (int j = -4; j <= 4; ++j) { // eyes on an 80 m grid within ~320 m of the start (the meadow)
+                const Vector3 up = Vector3Normalize(Vector3Add(home, Vector3Scale(Vector3Add(Vector3Scale(e1, (float)i), Vector3Scale(e2, (float)j)), 80.0f / R)));
+                if (c.field->elevation(up) < 1.0f) continue; // not at the sea
+                const Vector3 eye = Vector3Scale(up, groundAt(up) + 1.8f);
+                const Vector3 f1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), f2 = Vector3CrossProduct(up, f1);
+                for (int d = 0; d < 16; ++d) {
+                    const float a = d * 0.3926991f;
+                    const Vector3 ax = Vector3Add(Vector3Scale(f1, cosf(a)), Vector3Scale(f2, sinf(a))), side = Vector3CrossProduct(up, ax);
+                    auto ground = [&](float m, float s, float lift) {
+                        const Vector3 dir = Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Add(Vector3Scale(ax, m), Vector3Scale(side, s)), 1.0f / R)));
+                        return Vector3Scale(dir, groundAt(dir) + lift);
+                    };
+                    if (blocked(eye, ground(25.0f, 0.0f, 0.3f))) continue; // not facing a bank: the ground in front is seen
+                    int hidden = 0;
+                    for (float m : { 70.0f, 80.0f, 90.0f, 100.0f })
+                        for (float sd : { -40.0f, -20.0f, 0.0f, 20.0f, 40.0f }) hidden += blocked(eye, ground(m, sd, 3.0f));
+                    if (hidden <= v.hidden) continue;
+                    v.hidden = hidden; v.up = up; v.eye = eye;
+                    v.at = Vector3Add(eye, Vector3Scale(ax, 100.0f));
+                }
+            }
+        c.note(TextFormat("grass ridge: %d of 20 points 3 m over the ground 70-100 m ahead hidden from the eye", v.hidden));
+        c.camera(v.eye, v.at, v.up);
+        return c.gt("hidden ground points", (double)v.hidden, 5.0);
+    });
+    s.step("warm", 60.0, [](ScenarioCtx& c) {
+        c.camera(v.eye, v.at, v.up);
+        c.waitingFor("streaming to settle");
+        return c.t > 5.0 && (WorldIdle() || c.t > 45.0);
+    });
+    s.step("measure", 15.0, [](ScenarioCtx& c) {
+        if (c.t < 0.02) Profiler_Reset();
+        c.camera(v.eye, v.at, v.up);
+        v.timing.frame();
+        c.waitingFor("the timed window");
+        if (c.t <= 10.0) return false;
+        v.timing.report(c);
+        c.shot("grass ridge", 100.0);
         return true;
     });
 }

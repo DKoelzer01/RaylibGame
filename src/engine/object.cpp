@@ -291,13 +291,13 @@ void Chunk::drawChunkDepth(const RenderContext& ctx, const Matrix& m) {
     else DrawMesh(mesh, *ctx.depthMaterial, m);
 }
 
-void Chunk::drawGrass(const RenderContext& ctx, const Matrix& m) {
-    if (!isActive || !grass.vbo || !ctx.grassShader) return;
+bool Chunk::grassInView(const RenderContext& ctx, const Matrix& m) const {
+    if (!isActive || !grass.vbo || !ctx.grassShader) return false;
     // Only near chunks: grass is gone (faded) by kGrassDrawDistance.
     const float h = key.size() * 0.5f;
     const Vector3 centre = Vector3Transform({ h, h, h }, m);
-    if (Vector3Distance(centre, ctx.cameraPos) > kGrassDrawDistance + h * 1.7320508f) return;
-    if (!visible(ctx, m)) return;
-    Foliage_Draw(grass, *ctx.grassShader, ctx.grassModelLoc, m);
+    if (Vector3Distance(centre, ctx.cameraPos) > kGrassDrawDistance + h * 1.7320508f) return false;
+    if (!visible(ctx, m)) return false;
     if (ctx.drawCalls) ++*ctx.drawCalls;
+    return true;
 }

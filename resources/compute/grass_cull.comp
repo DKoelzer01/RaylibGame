@@ -1,0 +1,50 @@
+#version 430
+// #2164: grass Hi-Z. One thread per indirect command (one grass variant of one chunk, glDrawArraysIndirect): a command whose
+// tufts' box, placed where it stood last frame, lay wholly on last frame's screen and wholly behind that frame's depth is
+// emptied (instances 0). The test is chunk_cull.comp's (#134, #1532), on an oriented box instead of the chunk's cube: the
+// grass is a thin layer, and the chunk's 32 m cube reached over any rise in front of it.
+layout(local_size_x = 64) in;
+
+struct Box { vec4 centre; vec4 axis[3]; };   // last frame's render space; centre.w 1 = test, 0 = keep; half-axes
+layout(std430, binding = 0) readonly buffer Boxes { Box boxes[]; };
+struct Cmd { uint count; uint instances; uint first; uint baseInstance; };
+layout(std430, binding = 1) buffer Cmds { Cmd cmds[]; };
+
+uniform uint count;
+uniform sampler2D hizTex;  // last frame's min-depth pyramid (reverse-Z: smaller = farther)
+uniform vec2 hizSize;
+uniform int hizLevels;
+uniform mat4 prevViewProj;
+
+bool hizOccluded(Box b) {
+    vec2 lo = vec2(1e9), hi = vec2(-1e9);
+    float nearest = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        vec3 s = vec3(float(k & 1), float((k >> 1) & 1), float((k >> 2) & 1)) * 2.0 - 1.0;
+        vec3 p = b.centre.xyz + b.axis[0].xyz * s.x + b.axis[1].xyz * s.y + b.axis[2].xyz * s.z;
+        vec4 c = prevViewProj * vec4(p, 1.0);
+        if (c.w <= 1e-3) return false;                 // reaches behind last frame's camera
+        vec3 ndc = c.xyz / c.w;
+        lo = min(lo, ndc.xy); hi = max(hi, ndc.xy);
+        nearest = max(nearest, ndc.z);                 // reverse-Z: larger = nearer
+    }
+    if (lo.x < -1.0 || lo.y < -1.0 || hi.x > 1.0 || hi.y > 1.0) return false; // partly off last frame's screen (#910)
+    if (lo.x >= hi.x || lo.y >= hi.y) return false;
+    vec2 p0 = (lo * 0.5 + 0.5) * hizSize, p1 = (hi * 0.5 + 0.5) * hizSize;
+    vec2 px = p1 - p0;
+    int level = int(clamp(ceil(log2(max(max(px.x, px.y) * 0.5, 1.0))), 0.0, float(hizLevels - 1)));
+    ivec2 size = textureSize(hizTex, level);
+    float cell = exp2(float(level));                   // (#1532) texel x of level L: level-0 pixels [x * 2^L, (x + 1) * 2^L)
+    ivec2 t0 = clamp(ivec2(floor(p0 / cell)), ivec2(0), size - 1), t1 = clamp(ivec2(floor(p1 / cell)), ivec2(0), size - 1);
+    t1 = min(t1, t0 + 3);
+    float far0 = 1e30;
+    for (int y = t0.y; y <= t1.y; ++y)
+        for (int x = t0.x; x <= t1.x; ++x) far0 = min(far0, texelFetch(hizTex, ivec2(x, y), level).r);
+    return nearest < far0 * 0.9999;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= count) return;
+    if (boxes[i].centre.w > 0.5 && hizOccluded(boxes[i])) cmds[i].instances = 0u;
+}

@@ -67,7 +67,7 @@ public:
     void drawChunk(const RenderContext& ctx, const Matrix& model);
     void drawChunkDepth(const RenderContext& ctx, const Matrix& model);
     void drawWater(const RenderContext& ctx, const Matrix& model);  // with ctx.batch bound to the water material
-    void drawGrass(const RenderContext& ctx, const Matrix& model);  // grass shader bound (Planetoid::drawFoliage)
+    bool grassInView(const RenderContext& ctx, const Matrix& model) const; // has grass, near and in the frustum (Planetoid::drawFoliage draws it)
 
 private:
     void releaseMesh(bool keepWater = false);
@@ -117,6 +117,10 @@ public:
     std::vector<Chunk*> drawList;                                // what is rendered this frame
     ArenaBody hizBody{};       // #134: the chunk placement the main pass drew with, and in which scene-target frame
     long long hizBodyFrame = -1;
+    // (#2164) The placement the Hi-Z pyramid's frame drew with, kept by this frame's terrain pass for the grass drawn after
+    // it (hizBody already holds this frame's by then); valid in grassHizFrame only.
+    ArenaBody grassHizBody{};
+    long long grassHizFrame = -1;
     int rootLevel = 0;                                           // level whose 2x2x2 nodes cover the body
     // UpdateLod skips work while nothing changed: the camera (in body space) stayed within 1 m of
     // where the node selection was last made and no chunk results or edits arrived.

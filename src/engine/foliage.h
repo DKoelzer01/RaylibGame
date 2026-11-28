@@ -42,10 +42,20 @@ std::shared_ptr<const GrassBlockers> Grass_BlockersOf(const DensityField* field)
 struct FoliageGpu {
     unsigned int vao[kGrassVariants] = {}, vbo = 0;  // a VAO per variant over one instance buffer
     int count[kGrassVariants] = {};
+    Vector3 lo{}, hi{}; // (#2164) the tufts' bounds, chunk-local (mesh frame), padded by their height
 };
 void Foliage_Upload(FoliageGpu& g, const std::vector<float>& instances); // main thread
 void Foliage_Release(FoliageGpu& g);
 // Draws one chunk's tufts; the grass shader must be bound and its view-projection set.
 void Foliage_Draw(const FoliageGpu& g, Shader shader, int modelLoc, const Matrix& model);
+// (#2164) One body's grass chunks, drawn together. With last frame's depth pyramid (hiz) the draws go through indirect
+// commands and a compute pass (grass_cull.comp) empties those whose tufts' box, placed where it stood last frame, lay wholly
+// behind that frame's depth. prevBox: the box in last frame's render space, centre (xyz; w 1 = test it, 0 = keep: near the
+// camera or no placement) and its three half-axes (xyz, w unused). hiz null or RAYLIBGAME_GRASS_HIZ=0: plain instanced draws.
+struct GrassDraw { const FoliageGpu* g; Matrix model; float prevBox[16]; };
+struct GrassHiz { unsigned tex = 0; int w = 0, h = 0, levels = 0; Matrix viewProj{}; };
+bool Foliage_HizReady(); // the cull program loaded (and not switched off)
+void Foliage_DrawBatch(const std::vector<GrassDraw>& draws, Shader shader, int modelLoc, const GrassHiz* hiz);
+int Foliage_KeptDraws(int& listed); // tests: the last batch's draws (chunk x variant) kept / listed; a GPU readback
 
 #endif

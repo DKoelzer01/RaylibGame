@@ -633,6 +633,7 @@ void Planetoid::draw(const RenderContext& ctx) {
             // was culled for a frame while visible from this one (grass over nothing). RAYLIBGAME_HIZ_NEAR (m, default 64).
             static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f;
             cull.hizCam = toLocal(ctx.cameraPos); cull.hizNear = hizNear;
+            grassHizBody = hizBody; grassHizFrame = SceneTarget_Frame(); // (#2164) for this frame's grass
         }
     }
     const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, bodyNow, cull);
@@ -672,7 +673,39 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
     const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f }; // night side, planets and moons only, as for terrain (#1859 L9)
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
-    for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f && !ch->fadeOut) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp); not a node fading out (#243)
+    // (#2164) Hi-Z: last frame's pyramid, with the placement this body had in that frame (kept by this frame's terrain pass).
+    GrassHiz hiz;
+    // (grassHizFrame is set only when the terrain pass found the pyramid and that frame's placement matching.)
+    const bool useHiz = grassHizFrame == SceneTarget_Frame() && Foliage_HizReady() && SceneTarget_HiZ(hiz.tex, hiz.w, hiz.h, hiz.levels, hiz.viewProj);
+    static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f; // as the terrain's (#910)
+    const Vector3 camL = toLocal(ctx.cameraPos);
+    const ArenaBody& pb = grassHizBody;
+    static std::vector<GrassDraw> draws;
+    draws.clear();
+    for (Chunk* ch : drawList) {
+        if (ch->key.stride() > 1.0f || ch->fadeOut) continue; // the levels that carry grass (foliage.cpp); not a node fading out (#243)
+        const Matrix m = placer.model(ch->key);
+        if (!ch->grassInView(ctx, m)) continue;
+        GrassDraw d{ &ch->grass, m, {} };
+        if (useHiz) {
+            // The tufts' box, body-local, and its nearest point's distance from the camera: within hizNear it is always drawn
+            // (walking parallax: last frame's depth was seen from another eye).
+            const Vector3 o = ch->key.origin(), lo = Vector3Add(o, ch->grass.lo), hi = Vector3Add(o, ch->grass.hi);
+            const Vector3 q = Vector3Clamp(camL, lo, hi);
+            if (Vector3Distance(q, camL) * scale > hizNear) {
+                // Placed where it stood last frame, in double (the centre is up to 60 km from the body's), then relative.
+                const double c[3] = { 0.5 * ((double)lo.x + hi.x), 0.5 * ((double)lo.y + hi.y), 0.5 * ((double)lo.z + hi.z) };
+                const double e[3] = { 0.5 * ((double)hi.x - lo.x), 0.5 * ((double)hi.y - lo.y), 0.5 * ((double)hi.z - lo.z) };
+                for (int i = 0; i < 3; ++i) {
+                    d.prevBox[i] = (float)(pb.offset[i] + (pb.rot[i * 3] * c[0] + pb.rot[i * 3 + 1] * c[1] + pb.rot[i * 3 + 2] * c[2]) * pb.scale);
+                    for (int a = 0; a < 3; ++a) d.prevBox[4 + 4 * a + i] = (float)(pb.rot[i * 3 + a] * e[a] * pb.scale); // half-axis a
+                }
+                d.prevBox[3] = 1.0f;
+            }
+        }
+        draws.push_back(d);
+    }
+    Foliage_DrawBatch(draws, *ctx.grassShader, ctx.grassModelLoc, useHiz ? &hiz : nullptr);
 }
 
 void Planetoid::drawDepthOnly(const RenderContext& ctx) {

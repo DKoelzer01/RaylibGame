@@ -3,6 +3,8 @@
 #include "gpumem.h"
 #include "voxel.h"
 #include "plots.h"
+#include "gpucompute.h"
+#include "external/glad.h"
 #include <mutex>
 #include <unordered_map>
 
@@ -226,7 +228,16 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
     EnsureTuftMesh();
     // Instances arrive grouped by variant (ScatterGrass); count each group from the scale's tens.
     const int n = (int)(inst.size() / kGrassFloats);
-    for (int i = 0; i < n; ++i) ++g.count[std::clamp((int)(inst[(size_t)i * kGrassFloats + 3] / 10.0f), 0, kGrassVariants - 1)];
+    g.lo = { 1e30f, 1e30f, 1e30f }; g.hi = { -1e30f, -1e30f, -1e30f };
+    for (int i = 0; i < n; ++i) {
+        const float* p = &inst[(size_t)i * kGrassFloats];
+        ++g.count[std::clamp((int)(p[3] / 10.0f), 0, kGrassVariants - 1)];
+        // (#2164) A blade reaches at most its scale from the root in any direction (it leans and bends in the wind): pad by
+        // 1.5 x scale, plus 0.1 m.
+        const float r = fmodf(p[3], 10.0f) * 1.5f + 0.1f;
+        g.lo = Vector3Min(g.lo, { p[0] - r, p[1] - r, p[2] - r });
+        g.hi = Vector3Max(g.hi, { p[0] + r, p[1] + r, p[2] + r });
+    }
     GpuMemTag gm133_("grass"); // VRAM accounting (#302)
     g.vbo = rlLoadVertexBuffer(inst.data(), (int)(inst.size() * sizeof(float)), false);
     const int stride = kGrassFloats * (int)sizeof(float);
@@ -268,4 +279,104 @@ void Foliage_Draw(const FoliageGpu& g, Shader shader, int modelLoc, const Matrix
         rlDrawVertexArrayInstanced(variantFirst[v], variantCount[v], g.count[v]);
     }
     rlDisableVertexArray();
+}
+
+namespace {
+    // (#2164) grass_cull.comp, loaded on first use; off with RAYLIBGAME_GRASS_HIZ=0 or without compute.
+    ComputeProgram gGrassCull;
+    int gGrassCullState = 0; // 0 untried, 1 ok, -1 unavailable
+    GLint gGcCount = -1, gGcHizTex = -1, gGcHizSize = -1, gGcHizLevels = -1, gGcPrevVP = -1;
+    GLuint gGrassCmds = 0, gGrassBoxes = 0;
+    bool GrassCullReady() {
+        if (gGrassCullState == 0) {
+            const char* e = getenv("RAYLIBGAME_GRASS_HIZ");
+            gGrassCullState = (e && e[0] == '0') || !Compute_Available() || !gGrassCull.load("resources/compute/grass_cull.comp") ? -1 : 1;
+            if (gGrassCullState == 1) {
+                const GLuint p = gGrassCull.id;
+                gGcCount = glGetUniformLocation(p, "count");
+                gGcHizTex = glGetUniformLocation(p, "hizTex"); gGcHizSize = glGetUniformLocation(p, "hizSize");
+                gGcHizLevels = glGetUniformLocation(p, "hizLevels"); gGcPrevVP = glGetUniformLocation(p, "prevViewProj");
+                glGenBuffers(1, &gGrassCmds);
+                glGenBuffers(1, &gGrassBoxes);
+            }
+        }
+        return gGrassCullState == 1;
+    }
+    struct DrawArraysCmd { GLuint count, instances, first, baseInstance; };
+    int gGrassListed = 0; // the last batch's commands
+}
+
+bool Foliage_HizReady() { return GrassCullReady(); }
+
+int Foliage_KeptDraws(int& listed) {
+    listed = gGrassListed;
+    if (gGrassCullState != 1 || gGrassListed == 0) return listed; // plain draws: all kept
+    std::vector<DrawArraysCmd> cmds((size_t)gGrassListed);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gGrassCmds);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(cmds.size() * sizeof(DrawArraysCmd)), cmds.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    int kept = 0;
+    for (const DrawArraysCmd& c : cmds) kept += c.instances > 0;
+    return kept;
+}
+
+void Foliage_DrawBatch(const std::vector<GrassDraw>& draws, Shader shader, int modelLoc, const GrassHiz* hiz) {
+    gGrassListed = 0;
+    if (draws.empty()) return;
+    if (!hiz || !GrassCullReady()) {
+        for (const GrassDraw& d : draws) {
+            Foliage_Draw(*d.g, shader, modelLoc, d.model);
+            for (int v = 0; v < kGrassVariants; ++v) gGrassListed += d.g->vao[v] && d.g->count[v];
+        }
+        return;
+    }
+    static std::vector<DrawArraysCmd> cmds;
+    static std::vector<float> boxes;
+    cmds.clear(); boxes.clear();
+    for (const GrassDraw& d : draws)
+        for (int v = 0; v < kGrassVariants; ++v)
+            if (d.g->vao[v] && d.g->count[v]) {
+                // First vertex 0, as Foliage_Draw: raylib's rlDrawVertexArrayInstanced ignores its offset, so each variant has
+                // always drawn from the start of the tuft buffer (#2168: which look to keep is open; this keeps today's).
+                cmds.push_back({ (GLuint)variantCount[v], (GLuint)d.g->count[v], 0u, 0u });
+                boxes.insert(boxes.end(), d.prevBox, d.prevBox + 16);
+            }
+    if (cmds.empty()) return;
+    gGrassListed = (int)cmds.size();
+    // Fresh storage each batch (orphaned): the previous batch's draws may still be reading the old one.
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gGrassCmds);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(cmds.size() * sizeof(DrawArraysCmd)), cmds.data(), GL_STREAM_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gGrassBoxes);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(boxes.size() * sizeof(float)), boxes.data(), GL_STREAM_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    gGrassCull.use();
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, gGrassBoxes);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, gGrassCmds);
+    constexpr int kHizUnit = 31; // its own unit, as the trees' (#2141): 6 and 7 hold the shadow cascades the grass samples
+    glActiveTexture(GL_TEXTURE0 + kHizUnit);
+    glBindTexture(GL_TEXTURE_2D, hiz->tex);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(gGcHizTex, kHizUnit);
+    glUniform2f(gGcHizSize, (float)hiz->w, (float)hiz->h);
+    glUniform1i(gGcHizLevels, hiz->levels);
+    glUniformMatrix4fv(gGcPrevVP, 1, GL_FALSE, MatrixToFloat(hiz->viewProj));
+    glUniform1ui(gGcCount, (GLuint)cmds.size());
+    glDispatchCompute((GLuint)((cmds.size() + 63) / 64), 1, 1);
+    glActiveTexture(GL_TEXTURE0 + kHizUnit);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+    glUseProgram(shader.id); // back to the grass shader (its uniforms are kept per program)
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, gGrassCmds);
+    size_t k = 0;
+    for (const GrassDraw& d : draws) {
+        rlSetUniformMatrix(modelLoc, d.model);
+        for (int v = 0; v < kGrassVariants; ++v)
+            if (d.g->vao[v] && d.g->count[v]) {
+                glBindVertexArray(d.g->vao[v]);
+                glDrawArraysIndirect(GL_TRIANGLES, (const void*)(k++ * sizeof(DrawArraysCmd)));
+            }
+    }
+    glBindVertexArray(0);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 }
