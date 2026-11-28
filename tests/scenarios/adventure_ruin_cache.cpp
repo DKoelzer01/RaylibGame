@@ -1,7 +1,7 @@
 // adventure/ruin-cache (#2072): a sealed ruin cache and a vault, opened through the real input path (E held, on foot).
 // Never broken; E without what it needs opens nothing; a small cache spends a power cell, a vault keeps the crowbar; the
 // hold takes kCacheHoldSeconds (half of it opens nothing); the rewards land in the inventory and the result shows; opened,
-// it stays open (once per world) and E again gives nothing. The reward pool is Progression's stub until caches.txt lands.
+// it stays open (once per world) and E again gives nothing. The rewards are caches.txt's roll (#2072 slice 2).
 #include "scenario.h"
 #include "buildtool.h"
 #include "gameui.h"
@@ -97,24 +97,24 @@ SCENARIO("adventure/ruin-cache") {
         return true;
     });
     s.step("the full hold opens it: the cell spent, the rewards in, the result shown", 12.0, [](ScenarioCtx& c) {
-        static int stoneBefore = -1; // (at the step's first frame)
-        if (stoneBefore < 0) stoneBefore = inventory.count("stone");
         Aim(c, kSmall);
         if (!HoldE(c, kCacheHoldSeconds + 0.4, 1.0)) return false;
         c.check("opened", Opened(c, kSmall));
         c.eq("the power cell spent", inventory.count("power_cell"), 0);
-        c.eq("the stub's 4 stone in the inventory", inventory.count("stone") - stoneBefore, 4);
-        c.eq("one result line", (int)RuinCache_LastResult().size(), 1);
+        // (#2072 slice 2) What it holds is caches.txt's roll (unit-tested: Caches.*); a small cache holds 2 rewards.
+        c.eq("a small cache's 2 result lines", (int)RuinCache_LastResult().size(), 2);
+        for (const std::string& l : RuinCache_LastResult()) c.note("reward: " + l);
         c.metric("result lines", (double)RuinCache_LastResult().size(), "");
         return true;
     });
     s.step("E on it again: empty, nothing more", 10.0, [](ScenarioCtx& c) {
-        static int stoneBefore = -1;
-        if (stoneBefore < 0) stoneBefore = inventory.count("stone");
+        static double shownBefore = -1.0; // the result screen's lines at the step's first frame
+        static std::vector<std::string> before;
+        if (shownBefore < 0.0) { before = RuinCache_LastResult(); shownBefore = 1.0; }
         Aim(c, kSmall);
         if (!HoldE(c, kCacheHoldSeconds + 0.5, 0.5)) return false;
         c.check("still opened", Opened(c, kSmall));
-        c.eq("no more stone", inventory.count("stone") - stoneBefore, 0);
+        c.check("no new rewards", RuinCache_LastResult() == before);
         return true;
     });
     s.step("the vault: no crowbar, still sealed", 10.0, [](ScenarioCtx& c) {
