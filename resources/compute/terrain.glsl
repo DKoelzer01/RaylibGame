@@ -571,7 +571,7 @@ float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float
                 m = m + (-2.0 - m) * c;
             }
         }
-        if (depth > 30.0 && d > mantleRadius + 40.0) {
+        if (depth > 30.0 && d > mantleRadius + 40.0) { // (these depths mirror kDepth, src/engine/depthtable.h; --test-terrain-gpu checks)
             precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
             precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
             m = min(m, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
