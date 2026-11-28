@@ -148,16 +148,18 @@ SCENARIO("factory/borehole-rig") {
         c.keepCapture("an LV borehole rig drilling a deposit (#2071)");
         return true;
     });
-    s.step("10 s on: 3-6 ore at 1 per 2 s, and the deposit has fewer units", 30.0, [](ScenarioCtx& c) {
+    s.step("10 s on: ore drilled, and the deposit down by as many units", 30.0, [](ScenarioCtx& c) {
         Factory::Sync(c.world);
         const MachineView v = Look(rig);
         int n = 0;
         for (const auto& sl : v.outSlots) n += sl.second;
         c.waitingFor(TextFormat("%d ore, %lld left", n, v.depositLeft));
         if (c.t < 10.0) return false;
+        // (The rate itself is the unit test's: Look's WaitTicks runs the factory faster than scenario time.)
         c.gt("the rig drilled ore", n, 2);
-        c.check("no faster than 1 per 2 s (with the grade)", n <= 10, TextFormat("%d", n));
-        c.check("the deposit's units went down", v.depositLeft < leftAtStart, TextFormat("%lld -> %lld", leftAtStart, v.depositLeft));
+        const long long drawn = leftAtStart - v.depositLeft;
+        c.check("the deposit's units went down", drawn > 0, TextFormat("%lld -> %lld", leftAtStart, v.depositLeft));
+        c.check("its ore is the units drawn times the grade (1 to 1.5)", n + 1 >= drawn && n <= drawn * 3 / 2 + 1, TextFormat("%d ore for %lld units", n, drawn));
         return true;
     });
 }
