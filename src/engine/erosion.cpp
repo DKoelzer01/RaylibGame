@@ -1890,7 +1890,7 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     // A crater 60 m deep and ~450 m across (option B breaches basins up to 8 m deep): the lake the wetness test needs.
     auto height = [](Vector3 d, float) {
         const float dc = Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f });
-        const float crater = 120.0f * std::max(0.0f, 1.0f - dc / 0.3f) - 250.0f * std::max(0.0f, 1.0f - dc / 0.6f); // (on a plateau)
+        const float crater = 120.0f * std::max(0.0f, 1.0f - dc / 0.3f) - 250.0f * std::clamp((0.6f - dc) / 0.2f, 0.0f, 1.0f); // (on a plateau)
         const float sea = 500.0f * std::max(0.0f, -0.2f - d.y); // the south under the sea: the routing's outlets
         return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater - sea;
     };
@@ -1924,7 +1924,7 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     printf("DBG cells %d flowCells %d ponds %d filled %d\n", b.cells(), b.flowCells(), (int)b.ponds().size(), (int)b.filledCells().size());
     ASSERT_FALSE(b.filledCells().empty()) << "no lakes or ponds on the test planet";
     int wet = 0;
-    for (const auto& fc : b.filledCells()) wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f;
+    for (const auto& fc : b.filledCells()) { wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f; printf("DBG fill %d level %.1f h %.1f wet %.2f\n", fc.first, fc.second, b.flowHeight(fc.first), b.fieldsAt(b.flowDir(fc.first)).wetness); }
     EXPECT_EQ(wet, (int)b.filledCells().size()) << "a filled cell's wetness fell under 0.6";
 
     const std::string path = "build/test-1989.erosion";
