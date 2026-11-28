@@ -647,7 +647,7 @@ namespace {
     // part edit tells everyone it is open, the requester gets the result lines.
     void OnCacheAction(uint32_t conn, uint32_t session, Remote& rm, Planetoid& b, Plot& plot, int part) {
         auto refuse = [&](const std::string& why) { ++machineActionsRefused; if (!why.empty()) SendMsg(conn, MsgChat{ 0, why }); };
-        const Part& pt = plot.parts[part];
+        const Part pt = plot.parts[part]; // a copy: opening re-places the part (plot.parts changes under a reference)
         const Vector3 at = plot.toBody({ (pt.origin.x + 0.5f) * kCellSize, (pt.origin.y + 0.5f) * kCellSize, (pt.origin.z + 0.5f) * kCellSize });
         if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kCacheReach) { refuse("That is out of reach"); return; }
         const auto before = AllAmounts(rm.inventory);
@@ -661,7 +661,7 @@ namespace {
         std::string name;
         for (const Session& s : sessions) if (s.id == session) name = s.name;
         for (const auto& [item, n] : overflow) Combat_DropFor(b.name, DVec3(at), InvSlot{ item, (int64_t)n * 100 }, name); // what didn't fit: at the cache
-        SendMsg(conn, MsgChat{ 0, std::string("Opened the ") + CacheKindName(CacheKindOf(pt)) + ":" }); // (a result screen for clients: a later slice)
+        SendMsg(conn, MsgChat{ 0, std::string("Opened the ") + CacheKindName(CacheKindOf(pt)) + ":" }); // (the client's result panel: RuinCache_TakeHostLine)
         for (const CacheRoll& r : rolls) SendMsg(conn, MsgChat{ 0, "  " + r.text });
         ++machineActions;
     }

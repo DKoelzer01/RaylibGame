@@ -44,3 +44,6 @@ void RuinCache_ShowResult(CacheKind kind, const std::vector<std::string>& lines)
 void RuinCache_SetHold(float progress);
 void RuinCache_DrawHUD();
 const std::vector<std::string>& RuinCache_LastResult(); // tests: the lines last shown
+// A joined client: a chat line from the host, which sends a cache's result as "Opened the <kind>:" and "  <reward>" lines.
+// True when it was one (the result panel shows it; the chat still lists it).
+bool RuinCache_TakeHostLine(const std::string& text);

@@ -101,6 +101,23 @@ bool Cache_Open(Planetoid& body, Plot& plot, int part, Inventory& inv, int team,
 void RuinCache_ShowResult(CacheKind kind, const std::vector<std::string>& lines) { shown = lines; shownKind = kind; shownAt = GetTime(); }
 void RuinCache_SetHold(float progress) { hold = progress; holdAt = GetTime(); }
 const std::vector<std::string>& RuinCache_LastResult() { return shown; }
+// A joined client's result comes from the host as chat lines: "Opened the <kind>:", then "  <reward>" for each.
+static double hostResultAt = -1.0;
+bool RuinCache_TakeHostLine(const std::string& text) {
+    static const std::string kHead = "Opened the ";
+    if (text.size() > kHead.size() + 1 && text.rfind(kHead, 0) == 0 && text.back() == ':') {
+        const std::string name = text.substr(kHead.size(), text.size() - kHead.size() - 1);
+        for (CacheKind k : { CacheKind::Small, CacheKind::Vault, CacheKind::DeepVault })
+            if (name == CacheKindName(k)) { RuinCache_ShowResult(k, {}); hostResultAt = GetTime(); return true; }
+        return false;
+    }
+    if (hostResultAt >= 0.0 && GetTime() - hostResultAt < 5.0 && text.size() > 2 && text.rfind("  ", 0) == 0) { // its rewards follow at once
+        shown.push_back(text.substr(2));
+        shownAt = GetTime();
+        return true;
+    }
+    return false;
+}
 
 void RuinCache_DrawHUD() {
     const int sw = GetScreenWidth(), sh = GetScreenHeight();
